@@ -5,6 +5,12 @@ export interface Env {
   BETTER_AUTH_SECRET: string;
   RESEND_API_KEY?: string;
   WEB_ORIGIN: string;
+  /**
+   * Dev-only. Set by the Docker Compose stack so the HTTP driver talks to the local
+   * Neon HTTP proxy sidecar instead of real Neon. Absent on every deployed Worker —
+   * see `createDb` in `db/index.ts` for why the override is needed at all.
+   */
+  NEON_LOCAL_FETCH_ENDPOINT?: string;
 }
 
 /**

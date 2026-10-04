@@ -28,7 +28,7 @@ app.use('*', (c, next) =>
 
 // One DB client per request, shared by every handler in that request.
 app.use('*', async (c, next) => {
-  c.set('db', createDb(c.env.DATABASE_URL));
+  c.set('db', createDb(c.env.DATABASE_URL, c.env.NEON_LOCAL_FETCH_ENDPOINT));
   await next();
 });
 

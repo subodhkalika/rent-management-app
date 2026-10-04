@@ -1,13 +1,28 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryCache, MutationCache } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router-dom';
 import { ApiClientError } from '@/lib/api';
+import { publishAuthRedirect } from '@/lib/auth-redirect';
 import { Toaster } from '@/components/ui/sonner';
 import { App } from '@/App';
 import '@/index.css';
 
+/**
+ * A 401 or 403 from any domain-API call, anywhere in the app, means the session went
+ * bad mid-use (expired, or lost its active organization) rather than this particular
+ * screen having a bug. Route accordingly instead of rendering the raw error — see
+ * docs/TASKS/003-auth-ui.md, "Routing rules". The route guards handle the same two
+ * cases on first load; this handles them after.
+ */
+function handleAuthError(error: unknown) {
+  if (!(error instanceof ApiClientError) || !error.isAuth) return;
+  publishAuthRedirect(error.code === 'unauthorized' ? 'expired' : 'no-org');
+}
+
 const queryClient = new QueryClient({
+  queryCache: new QueryCache({ onError: handleAuthError }),
+  mutationCache: new MutationCache({ onError: handleAuthError }),
   defaultOptions: {
     queries: {
       staleTime: 30_000,

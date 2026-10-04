@@ -14,7 +14,7 @@ import type { Env } from '../types.js';
 export function createAuth(env: Env) {
   return betterAuth({
     secret: env.BETTER_AUTH_SECRET,
-    database: drizzleAdapter(createDb(env.DATABASE_URL), {
+    database: drizzleAdapter(createDb(env.DATABASE_URL, env.NEON_LOCAL_FETCH_ENDPOINT), {
       provider: 'pg',
       schema,
     }),
@@ -45,7 +45,7 @@ export function createAuth(env: Env) {
           // earliest membership; a user who later joins/switches orgs changes this
           // explicitly via the organization plugin's `setActive` endpoint.
           before: async (session) => {
-            const db = createDb(env.DATABASE_URL);
+            const db = createDb(env.DATABASE_URL, env.NEON_LOCAL_FETCH_ENDPOINT);
             const [membership] = await db
               .select({ organizationId: schema.member.organizationId })
               .from(schema.member)
