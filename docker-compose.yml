@@ -1,0 +1,179 @@
+# One-command local dev stack. `docker compose up` brings up Postgres, a Neon HTTP
+# proxy sidecar (so @neondatabase/serverless has something that speaks its HTTP
+# protocol locally), runs migrations once, then starts the API (wrangler dev) and
+# the web app (vite dev) with hot reload. See docs/DOCKER.md.
+#
+# Nothing here touches production. Prod still talks to real Neon over its default
+# endpoint — the override below is wired through NEON_LOCAL_FETCH_ENDPOINT, which is
+# only ever set in this file (see apps/api/src/db/index.ts).
+
+name: rms
+
+x-dev-image: &dev-image
+  build:
+    context: .
+    dockerfile: Dockerfile.dev
+  # The whole repo, bind-mounted, is what makes hot reload work: editing a file on
+  # the host is editing the file the container sees, instantly, no rebuild. The
+  # node_modules overlays below are named volumes mounted *over* the bind mount's
+  # node_modules subdirectories, so the container's own (Linux) install is what's
+  # actually used — the host's node_modules (macOS, possibly arm64, possibly not
+  # even present on a clean checkout) is never read inside the container.
+  volumes: &dev-volumes
+    - .:/workspace
+    - node_modules_root:/workspace/node_modules
+    - node_modules_contract:/workspace/packages/contract/node_modules
+    - node_modules_api:/workspace/apps/api/node_modules
+    - node_modules_web:/workspace/apps/web/node_modules
+    - pnpm_store:/root/.local/share/pnpm/store
+  environment: &dev-env
+    # Keeps wrangler/pnpm/etc. from trying any interactive prompt or telemetry call
+    # — there is no terminal attached and no Cloudflare account in this stack.
+    CI: 'true'
+    WRANGLER_SEND_METRICS: 'false'
+
+services:
+  # One-shot: installs the whole workspace into the named node_modules volumes
+  # above. Runs on every `up`, but pnpm's content-addressable store (cached in the
+  # pnpm_store volume) makes a no-op install take a couple of seconds after the
+  # first run. `api`, `web` and `migrate` all wait for this to finish successfully
+  # before they start — none of them do their own install.
+  deps:
+    <<: *dev-image
+    working_dir: /workspace
+    environment: *dev-env
+    command: ['pnpm', 'install', '--frozen-lockfile']
+
+  # Host port 5433 — deliberately NOT 5432. The developer running this stack
+  # already has their own Postgres on 5432; clashing with it would break that
+  # other setup. Internally, every other service reaches this over the compose
+  # network as `db:5432` — the 5433 remap only matters for host-side `psql`/GUI
+  # clients.
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: rms
+      POSTGRES_PASSWORD: rms_dev_password
+      POSTGRES_DB: rms
+    ports:
+      - '5433:5432'
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U rms -d rms']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # @neondatabase/serverless speaks SQL-over-HTTP, not TCP — real Neon terminates
+  # that HTTP on its own edge proxy. `db` above is a stock Postgres and only speaks
+  # TCP, so this sidecar fronts it with that same HTTP protocol. Not exposed on the
+  # host: only `api`, inside the compose network, ever talks to it.
+  #
+  # The image (github.com/TimoWilhelm/local-neon-http-proxy) requires requests to
+  # arrive addressed to the exact hostname `db.localtest.me` — that's baked into
+  # its TLS/reverse-proxy config — so it's given that as a network alias here
+  # rather than being reachable only as `db-proxy`.
+  db-proxy:
+    image: ghcr.io/timowilhelm/local-neon-http-proxy:main
+    networks:
+      default:
+        aliases:
+          - db.localtest.me
+    environment:
+      PG_CONNECTION_STRING: postgres://rms:rms_dev_password@db:5432/rms
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # No HTTP client baked into the image that treats a 4xx as "up"; this just
+      # proves the proxy's listener is accepting connections at all.
+      test: ['CMD', 'bash', '-c', 'exec 3<>/dev/tcp/127.0.0.1/4444']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Runs `drizzle-kit migrate` and exits. Connects to `db` directly over plain TCP
+  # with a normal `pg` driver — drizzle-kit's CLI never goes through the HTTP proxy,
+  # only the running API does.
+  migrate:
+    <<: *dev-image
+    working_dir: /workspace/apps/api
+    environment:
+      <<: *dev-env
+      DATABASE_URL: postgres://rms:rms_dev_password@db:5432/rms
+    depends_on:
+      deps:
+        condition: service_completed_successfully
+      db:
+        condition: service_healthy
+    command: ['sh', '/workspace/scripts/docker-migrate-entrypoint.sh']
+
+  api:
+    <<: *dev-image
+    working_dir: /workspace/apps/api
+    environment:
+      <<: *dev-env
+      # `--var` (below) puts these into the Worker's `env` for this dev session —
+      # the local equivalent of `wrangler secret put` / `.dev.vars`, without writing
+      # a file into the bind-mounted source. WEB_ORIGIN is left alone: the default
+      # already baked into wrangler.jsonc (http://localhost:5173) matches how the
+      # browser reaches the web container regardless of Docker.
+      DATABASE_URL: postgres://rms:rms_dev_password@db.localtest.me:5432/rms
+      NEON_LOCAL_FETCH_ENDPOINT: http://db.localtest.me:4444/sql
+      # Dev-only, obviously-fake value — never used outside this compose stack.
+      # Real environments set this with `wrangler secret put BETTER_AUTH_SECRET`.
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-dev-only-insecure-secret-do-not-use-in-prod}
+    ports:
+      - '8787:8787'
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      db-proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'curl', '-fs', 'http://localhost:8787/health']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    command:
+      - sh
+      - -c
+      - >-
+        pnpm exec wrangler dev
+        --ip 0.0.0.0 --port 8787
+        --var DATABASE_URL:$$DATABASE_URL
+        --var NEON_LOCAL_FETCH_ENDPOINT:$$NEON_LOCAL_FETCH_ENDPOINT
+        --var BETTER_AUTH_SECRET:$$BETTER_AUTH_SECRET
+
+  web:
+    <<: *dev-image
+    working_dir: /workspace/apps/web
+    environment:
+      <<: *dev-env
+      # Vite reads this at config-eval time (see apps/web/vite.config.ts) to decide
+      # where /v1 and /api/auth get proxied. On the host that defaults to
+      # localhost:8787; inside Compose, `api` is a separate container only
+      # reachable by its service name.
+      API_PROXY_TARGET: http://api:8787
+      # Source is bind-mounted from macOS into a Linux container; filesystem
+      # change notifications don't cross that boundary, so Vite falls back to
+      # polling (see vite.config.ts) — otherwise hot reload silently never fires.
+      CHOKIDAR_USEPOLLING: 'true'
+    ports:
+      - '5173:5173'
+    depends_on:
+      deps:
+        condition: service_completed_successfully
+      api:
+        condition: service_healthy
+    command: ['pnpm', 'exec', 'vite', '--host', '0.0.0.0', '--port', '5173']
+
+volumes:
+  db_data:
+  node_modules_root:
+  node_modules_contract:
+  node_modules_api:
+  node_modules_web:
+  pnpm_store:

@@ -4,6 +4,7 @@ build/
 .wrangler/
 .turbo/
 coverage/
+.pnpm-store/
 
 # secrets — never commit
 .env

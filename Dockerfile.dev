@@ -1,0 +1,19 @@
+# Shared dev image for the local Docker Compose stack only. Not used in CI or
+# production — prod builds are plain `pnpm build` on GitHub Actions runners and
+# `wrangler deploy` (see .github/workflows/deploy.yml). This image never COPYs
+# app source; the repo is bind-mounted at runtime by docker-compose.yml so edits
+# hot-reload without an image rebuild. `pnpm install` also runs at container
+# startup (see docker-compose.yml's `deps` service), not at build time, so that
+# node_modules always matches the container's OS/arch (Linux) even though the
+# image build itself may happen on an arm64 or amd64 host.
+FROM node:22-bookworm-slim
+
+# git: some transitive deps resolve via git refs during install; psql client:
+# lets `migrate`'s healthcheck/debugging use `psql` against `db` if needed.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN corepack enable && corepack prepare pnpm@10.14.0 --activate
+
+WORKDIR /workspace

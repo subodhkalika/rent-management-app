@@ -1,0 +1,17 @@
+# The build context for Dockerfile.dev never needs any of this — the image
+# installs dependencies at container *start*, not build time, and the repo is
+# bind-mounted at runtime (see docker-compose.yml). Keeping the context small also
+# keeps `docker compose build` fast.
+node_modules
+**/node_modules
+dist
+**/dist
+.git
+.wrangler
+**/.wrangler
+.turbo
+**/.turbo
+coverage
+**/coverage
+*.log
+.DS_Store
