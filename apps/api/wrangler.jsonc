@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "rms-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-12-30",
+  // nodejs_compat gives us the few Node shims Better Auth needs on the edge.
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "vars": {
+    "WEB_ORIGIN": "http://localhost:5173"
+  }
+  // Secrets (DATABASE_URL, BETTER_AUTH_SECRET, RESEND_API_KEY, R2_*) are set with
+  // `wrangler secret put` — never listed here.
+  //
+  // R2 bucket for lease documents and receipts; uncomment once the bucket exists:
+  // "r2_buckets": [{ "binding": "DOCS", "bucket_name": "rms-documents" }]
+}
