@@ -1,0 +1,54 @@
+name: CI
+
+# Runs on every PR and every push to main. No deploy here — see deploy.yml.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel a superseded run on the same ref so we don't burn minutes on stale pushes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Typecheck, lint, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      # cache: pnpm caches the pnpm content-addressable store, keyed on pnpm-lock.yaml.
+      # Must come after pnpm/action-setup so the `pnpm` binary is on PATH already.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # One Node version, one OS: a matrix here wouldn't earn its keep on a Workers/Pages app.
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      # Builds every workspace package that has a "build" script (api + web).
+      # packages/contract has none and pnpm -r skips it without failing.
+      - name: Build
+        run: pnpm build

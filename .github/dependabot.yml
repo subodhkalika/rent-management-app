@@ -1,0 +1,26 @@
+version: 2
+
+updates:
+  # Single workspace root: dependabot understands the pnpm workspace via
+  # pnpm-workspace.yaml and updates apps/* and packages/* lockfile entries together.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # Everything in one weekly PR instead of one PR per package — keeps Actions
+      # minutes spent on CI-for-dependency-bumps to a minimum.
+      all-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      all-actions:
+        patterns:
+          - "*"

@@ -7,6 +7,11 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
   "vars": {
+    // Local `wrangler dev` default — the Vite dev server origin. CI's deploy to
+    // production overrides this at deploy time with
+    // `wrangler deploy --var WEB_ORIGIN:<pages-url>` (see .github/workflows/deploy.yml
+    // and docs/DEPLOYMENT.md) rather than hardcoding the production URL here, since
+    // this file also governs local dev.
     "WEB_ORIGIN": "http://localhost:5173"
   }
   // Secrets (DATABASE_URL, BETTER_AUTH_SECRET, RESEND_API_KEY, R2_*) are set with

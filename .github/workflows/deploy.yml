@@ -1,0 +1,93 @@
+name: Deploy
+
+# Fires when the CI workflow finishes on main. workflow_run only ever fires for
+# workflow runs that belong to THIS repository, so a fork PR's "CI" run can never
+# trigger it — forks run their own copy of ci.yml against their own fork, which is
+# a different repository as far as GitHub Actions is concerned.
+#
+# The `branches: [main]` filter matches the run's head branch, and the explicit
+# `event == 'push'` check below rules out a same-repo PR opened from a branch that
+# happens to be named "main". Together this guarantees deploy only ever runs after
+# a successful CI run of a push to main.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+# Deploys queue instead of cancelling each other — never kill a deploy mid-migration.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Migrate and deploy
+    runs-on: ubuntu-latest
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    steps:
+      # Pin to the exact commit CI validated, not whatever main is when this job starts.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Order matters: schema must land before the new API code that depends on it,
+      # and the API must be live before the web app can call its new routes.
+      - name: Run database migrations
+        working-directory: apps/api
+        run: pnpm run db:migrate
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      # --var overrides wrangler.jsonc's checked-in WEB_ORIGIN (which stays
+      # http://localhost:5173 for local `wrangler dev`) just for this deployed
+      # version, with the production Pages origin. Required for CORS: the API
+      # sends credentials:true, which forbids a wildcard Access-Control-Allow-Origin,
+      # so it must echo back the real web origin. vars.WEB_ORIGIN is a repo Variable,
+      # not a secret — see docs/DEPLOYMENT.md "GitHub Actions variables".
+      - name: Deploy API Worker
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: pnpm
+          workingDirectory: apps/api
+          command: deploy --var WEB_ORIGIN:${{ vars.WEB_ORIGIN }}
+
+      # VITE_API_URL is baked into the static bundle at build time (Vite env vars
+      # are not readable at runtime), so it must be set here, not on the Worker.
+      # Must run after "Deploy API Worker" so the URL it points at is already live.
+      - name: Build web app
+        run: pnpm --filter web run build
+        env:
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+
+      # rms-web must already exist as a Cloudflare Pages project — see docs/DEPLOYMENT.md.
+      - name: Deploy web to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: pnpm
+          workingDirectory: apps/web
+          command: pages deploy dist --project-name=rms-web
