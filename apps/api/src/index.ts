@@ -5,6 +5,8 @@ import { secureHeaders } from 'hono/secure-headers';
 import { createDb } from './db/index.js';
 import { createAuth } from './lib/auth.js';
 import { ApiException } from './lib/errors.js';
+import { properties } from './routes/properties.js';
+import { units } from './routes/units.js';
 import type { AppBindings } from './types.js';
 
 const app = new Hono<AppBindings>();
@@ -36,8 +38,8 @@ app.get('/health', (c) => c.json({ ok: true, ts: new Date().toISOString() }));
 app.on(['GET', 'POST'], '/api/auth/*', (c) => createAuth(c.env).handler(c.req.raw));
 
 /* ---- feature routes mount here ---- */
-// app.route('/', properties);
-// app.route('/', units);
+app.route('/', properties);
+app.route('/', units);
 
 app.notFound((c) =>
   c.json({ error: { code: 'not_found', message: 'No such endpoint' } }, 404),

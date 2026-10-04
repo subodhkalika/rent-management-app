@@ -20,5 +20,10 @@ export interface AppBindings {
     db: Database;
     userId: string;
     orgId: string;
+    /** Parsed by `validateBody`/`validateQuery`. Retrieve with `parsedBody`/
+     *  `parsedQuery` from `middleware/validate.ts` rather than `c.get` directly —
+     *  those give back the schema's inferred type instead of `unknown`. */
+    body: unknown;
+    query: unknown;
   };
 }
