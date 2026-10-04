@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router-dom';
 import { ApiClientError } from '@/lib/api';
+import { Toaster } from '@/components/ui/sonner';
 import { App } from '@/App';
 import '@/index.css';
 
@@ -32,6 +33,7 @@ createRoot(root).render(
       <BrowserRouter>
         <App />
       </BrowserRouter>
+      <Toaster />
     </QueryClientProvider>
   </StrictMode>,
 );

@@ -1,4 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
+import { PropertiesListPage } from '@/features/properties/PropertiesListPage';
+import { PropertyDetailPage } from '@/features/properties/PropertyDetailPage';
 
 /**
  * Route table. Feature routes mount here as they land — see docs/TASKS/.
@@ -7,7 +9,8 @@ export function App() {
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/properties" replace />} />
-      <Route path="/properties" element={<Placeholder title="Properties" />} />
+      <Route path="/properties" element={<PropertiesListPage />} />
+      <Route path="/properties/:id" element={<PropertyDetailPage />} />
       <Route path="*" element={<Placeholder title="Page not found" />} />
     </Routes>
   );
