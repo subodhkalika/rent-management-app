@@ -1,34 +1,57 @@
 import { describe, it, expect } from 'vitest';
 import { createDb } from '../index.js';
 import { ApiException } from '../../lib/errors.js';
-import { listPropertiesQuery, getPropertyQuery } from './property.js';
+import {
+  listPropertiesQuery,
+  getPropertyQuery,
+  createPropertyQuery,
+  updatePropertyQuery,
+  softDeletePropertyQuery,
+} from './property.js';
 
 /**
  * These tests never touch a network: `createDb` builds a lazy Neon HTTP client, and
  * `.toSQL()` only compiles the query builder's AST to a SQL string — it does not
- * execute. That's enough to prove the where-clause carries `orgId` and excludes
- * soft-deleted rows without a live database (see ARCHITECTURE.md and
- * db/repo/README.md — repo tests here rely on the guard test for runtime isolation).
+ * execute. That's enough to prove every statement carries `orgId` where it must
+ * (reads in the WHERE clause, the insert in its VALUES) and excludes soft-deleted
+ * rows, without a live database (see ARCHITECTURE.md and db/repo/README.md).
+ *
+ * Every assertion below is table-qualified (`"property"."org_id"`, not just
+ * `"org_id"`) on purpose: these queries join `unit`, whose own `org_id` and
+ * `deleted_at` columns appear in the SQL too (in the unit-count aggregate's
+ * `FILTER` clause). An unqualified `.toContain('"org_id"')` would still pass if the
+ * `property`-level predicate were accidentally deleted, as long as the join
+ * survived — which defeats the point of the assertion.
  */
 const db = createDb('postgres://user:pass@localhost:5432/db');
 
 describe('listPropertiesQuery', () => {
-  it('filters by org_id', () => {
+  it('filters by property.org_id', () => {
     const { sql, params } = listPropertiesQuery('org_1', db, { limit: 25 }).toSQL();
-    expect(sql).toContain('"org_id" =');
+    expect(sql).toContain('"property"."org_id" =');
     expect(params).toContain('org_1');
   });
 
-  it('excludes soft-deleted rows', () => {
+  it('excludes soft-deleted properties', () => {
     const { sql } = listPropertiesQuery('org_1', db, { limit: 25 }).toSQL();
-    expect(sql).toContain('"deleted_at" is null');
+    expect(sql).toContain('"property"."deleted_at" is null');
+  });
+
+  it('joins units scoped by org_id too, not just property_id', () => {
+    // Nothing in the schema stops a unit row's orgId from disagreeing with its own
+    // property's — no current path can create that state, but an unscoped join
+    // would silently fold a mismatched unit's counts into this org's property the
+    // moment one did.
+    const { sql } = listPropertiesQuery('org_1', db, { limit: 25 }).toSQL();
+    expect(sql).toContain('"unit"."org_id" =');
+    expect(sql).toMatch(/left join "unit" on \("unit"\."property_id" = "property"\."id" and "unit"\."org_id" = \$\d+\)/);
   });
 
   it('paginates with a keyset cursor when one is given', () => {
     const id = '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e0f';
     const cursor = btoa(id);
     const { sql, params } = listPropertiesQuery('org_1', db, { limit: 10, cursor }).toSQL();
-    expect(sql).toContain('"id" >');
+    expect(sql).toContain('"property"."id" >');
     expect(params).toContain(id);
   });
 
@@ -45,11 +68,65 @@ describe('listPropertiesQuery', () => {
 });
 
 describe('getPropertyQuery', () => {
-  it('filters by org_id, id, and excludes soft-deleted rows', () => {
+  it('filters by property.org_id, property.id, and excludes soft-deleted rows', () => {
     const { sql, params } = getPropertyQuery('org_1', db, 'prop_1').toSQL();
-    expect(sql).toContain('"org_id" =');
-    expect(sql).toContain('"id" =');
-    expect(sql).toContain('"deleted_at" is null');
+    expect(sql).toContain('"property"."org_id" =');
+    expect(sql).toContain('"property"."id" =');
+    expect(sql).toContain('"property"."deleted_at" is null');
+    expect(params).toEqual(expect.arrayContaining(['org_1', 'prop_1']));
+  });
+
+  it('joins units scoped by org_id too', () => {
+    const { sql } = getPropertyQuery('org_1', db, 'prop_1').toSQL();
+    expect(sql).toContain('"unit"."org_id" =');
+  });
+});
+
+const createBody = {
+  name: 'Maple Court',
+  type: 'multi_family' as const,
+  address: {
+    line1: '123 Maple St',
+    city: 'Springfield',
+    region: 'IL',
+    postalCode: '62704',
+    country: 'US',
+  },
+};
+
+describe('createPropertyQuery', () => {
+  it('inserts with the given org_id as one of the values, not a client-suppliable field', () => {
+    const { sql, params } = createPropertyQuery('org_1', db, 'prop_1', createBody).toSQL();
+    expect(sql).toContain('insert into "property"');
+    expect(sql).toMatch(/\("id", "org_id",/);
+    expect(params).toContain('org_1');
+  });
+});
+
+describe('updatePropertyQuery', () => {
+  it('scopes the UPDATE by property.org_id, property.id, and excludes soft-deleted rows', () => {
+    const { sql, params } = updatePropertyQuery('org_1', db, 'prop_1', { name: 'New name' }).toSQL();
+    expect(sql).toContain('update "property" set');
+    expect(sql).toContain('"property"."org_id" =');
+    expect(sql).toContain('"property"."id" =');
+    expect(sql).toContain('"property"."deleted_at" is null');
+    expect(params).toEqual(expect.arrayContaining(['org_1', 'prop_1']));
+  });
+
+  it('only sets fields present in the patch, plus updatedAt', () => {
+    const { sql } = updatePropertyQuery('org_1', db, 'prop_1', { name: 'New name' }).toSQL();
+    expect(sql).toContain('"name" = $1');
+    expect(sql).not.toContain('"type" =');
+  });
+});
+
+describe('softDeletePropertyQuery', () => {
+  it('scopes the UPDATE by property.org_id, property.id, and excludes already-deleted rows', () => {
+    const { sql, params } = softDeletePropertyQuery('org_1', db, 'prop_1').toSQL();
+    expect(sql).toContain('update "property" set "deleted_at"');
+    expect(sql).toContain('"property"."org_id" =');
+    expect(sql).toContain('"property"."id" =');
+    expect(sql).toContain('"property"."deleted_at" is null');
     expect(params).toEqual(expect.arrayContaining(['org_1', 'prop_1']));
   });
 });

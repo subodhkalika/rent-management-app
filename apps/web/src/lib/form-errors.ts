@@ -28,3 +28,15 @@ export function errorMessage(error: unknown): string {
   if (error instanceof ApiClientError) return error.message;
   return 'Something went wrong. Please try again.';
 }
+
+/**
+ * A text input needs a string to stay controlled, so an empty optional field (notes,
+ * address line 2, ...) lives in form state as `''`. The contract types these fields
+ * as `optional()` (absent, not an empty string) on write and `nullable()` on read —
+ * so convert `''` to `undefined` right before sending, instead of letting `''` and
+ * `null`/absent diverge as two different "no value" states.
+ */
+export function blankToUndefined(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}

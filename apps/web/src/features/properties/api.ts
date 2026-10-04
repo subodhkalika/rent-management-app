@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import {
   routes,
@@ -19,10 +19,21 @@ export const propertiesKeys = {
 const propertyList = paged(property);
 type PropertyList = z.infer<typeof propertyList>;
 
+function propertiesUrl(cursor?: string) {
+  if (!cursor) return routes.properties.list();
+  return `${routes.properties.list()}?${new URLSearchParams({ cursor }).toString()}`;
+}
+
+/** Paginates with the API's keyset cursor via `useInfiniteQuery`, so a landlord with
+ *  more than one page of properties can load the rest instead of silently seeing
+ *  only the first 25. */
 export function useProperties() {
-  return useQuery<PropertyList, ApiClientError>({
+  return useInfiniteQuery<PropertyList, ApiClientError>({
     queryKey: propertiesKeys.list(),
-    queryFn: ({ signal }) => request(routes.properties.list(), { schema: propertyList, signal }),
+    queryFn: ({ pageParam, signal }) =>
+      request(propertiesUrl(pageParam as string | undefined), { schema: propertyList, signal }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
   });
 }
 

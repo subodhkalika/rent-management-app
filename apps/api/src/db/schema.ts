@@ -42,6 +42,82 @@ export const member = pgTable(
   ],
 );
 
+// `session` is Better Auth core + the `activeOrganizationId` column the
+// `organization` plugin adds to it. `requireAuth` (middleware/auth.ts) reads
+// `session.session.activeOrganizationId` — without this column every sign-in
+// would 500 instead of just lacking an active org.
+export const session = pgTable(
+  'session',
+  {
+    id: text().primaryKey(),
+    userId: text().notNull().references(() => user.id, { onDelete: 'cascade' }),
+    token: text().notNull().unique(),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    ipAddress: text(),
+    userAgent: text(),
+    activeOrganizationId: text(),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('session_user_idx').on(t.userId)],
+);
+
+// One row per sign-in method linked to a user. `email_password` stores the hash in
+// `password`; OAuth providers would store tokens here instead (not configured yet).
+export const account = pgTable(
+  'account',
+  {
+    id: text().primaryKey(),
+    userId: text().notNull().references(() => user.id, { onDelete: 'cascade' }),
+    accountId: text().notNull(),
+    providerId: text().notNull(),
+    accessToken: text(),
+    refreshToken: text(),
+    idToken: text(),
+    accessTokenExpiresAt: timestamp({ withTimezone: true }),
+    refreshTokenExpiresAt: timestamp({ withTimezone: true }),
+    scope: text(),
+    password: text(),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('account_user_idx').on(t.userId)],
+);
+
+// Email verification / password reset / magic-link tokens. Better Auth creates and
+// consumes these itself; the API never reads this table directly.
+export const verification = pgTable(
+  'verification',
+  {
+    id: text().primaryKey(),
+    identifier: text().notNull(),
+    value: text().notNull(),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('verification_identifier_idx').on(t.identifier)],
+);
+
+// Pending org invites, created by the `organization` plugin's invite endpoints.
+export const invitation = pgTable(
+  'invitation',
+  {
+    id: text().primaryKey(),
+    organizationId: text().notNull().references(() => organization.id, { onDelete: 'cascade' }),
+    email: text().notNull(),
+    role: text(),
+    status: text().notNull().default('pending'),
+    expiresAt: timestamp({ withTimezone: true }).notNull(),
+    inviterId: text().notNull().references(() => user.id),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('invitation_org_idx').on(t.organizationId),
+    index('invitation_email_idx').on(t.email),
+  ],
+);
+
 /* ------------------------------------------------------------------ *
  * Domain tables.
  *

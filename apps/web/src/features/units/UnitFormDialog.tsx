@@ -36,7 +36,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { applyServerErrors, errorMessage } from '@/lib/form-errors';
+import { applyServerErrors, blankToUndefined, errorMessage } from '@/lib/form-errors';
 import { useCreateUnit, useUpdateUnit } from './api';
 import { RentInput } from './RentInput';
 
@@ -98,7 +98,8 @@ export function UnitFormDialog({ open, onOpenChange, propertyId, unit }: UnitFor
   const mutation = isEditing ? updateMutation : createMutation;
 
   const onSubmit = form.handleSubmit((values) => {
-    mutation.mutate(values, {
+    const payload: CreateUnitBody = { ...values, notes: blankToUndefined(values.notes) };
+    mutation.mutate(payload, {
       onSuccess: () => {
         toast.success(isEditing ? 'Unit updated' : 'Unit added');
         onOpenChange(false);

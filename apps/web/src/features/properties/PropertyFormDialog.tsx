@@ -36,7 +36,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useCreateProperty, useUpdateProperty } from './api';
-import { applyServerErrors, errorMessage } from '@/lib/form-errors';
+import { applyServerErrors, blankToUndefined, errorMessage } from '@/lib/form-errors';
 
 const propertyTypes = Object.keys(propertyTypeLabels) as PropertyType[];
 
@@ -82,7 +82,12 @@ export function PropertyFormDialog({ open, onOpenChange, property }: PropertyFor
   const mutation = isEditing ? updateMutation : createMutation;
 
   const onSubmit = form.handleSubmit((values) => {
-    mutation.mutate(values, {
+    const payload: CreatePropertyBody = {
+      ...values,
+      address: { ...values.address, line2: blankToUndefined(values.address.line2) },
+      notes: blankToUndefined(values.notes),
+    };
+    mutation.mutate(payload, {
       onSuccess: () => {
         toast.success(isEditing ? 'Property updated' : 'Property added');
         onOpenChange(false);

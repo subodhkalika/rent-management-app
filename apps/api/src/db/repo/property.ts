@@ -3,6 +3,7 @@ import { uuidv7, type CreatePropertyBody, type UpdatePropertyBody } from '@rms/c
 import type { Database } from '../index.js';
 import { property, unit } from '../schema.js';
 import { decodeCursor } from '../../lib/pagination.js';
+import { softDeleteUnitsByProperty } from './unit.js';
 
 /**
  * A property row with its unit counts folded in. `unitCount` / `occupiedUnitCount`
@@ -58,7 +59,12 @@ export function listPropertiesQuery(
   return db
     .select(propertyColumns)
     .from(property)
-    .leftJoin(unit, eq(unit.propertyId, property.id))
+    // Scoped by orgId too, not just propertyId: nothing in the schema stops a unit
+    // row from carrying an orgId that disagrees with its own property's (see
+    // db/repo/unit.ts — same note on listUnitsQuery). No current path can create
+    // that state, but an unscoped join would silently fold a mismatched unit's
+    // counts into this org's property the moment one did.
+    .leftJoin(unit, and(eq(unit.propertyId, property.id), eq(unit.orgId, orgId)))
     .where(and(...conditions))
     .groupBy(property.id)
     .orderBy(asc(property.id))
@@ -79,7 +85,7 @@ export function getPropertyQuery(orgId: string, db: Database, id: string) {
   return db
     .select(propertyColumns)
     .from(property)
-    .leftJoin(unit, eq(unit.propertyId, property.id))
+    .leftJoin(unit, and(eq(unit.propertyId, property.id), eq(unit.orgId, orgId)))
     .where(and(eq(property.orgId, orgId), eq(property.id, id), isNull(property.deletedAt)))
     .groupBy(property.id)
     .limit(1);
@@ -90,13 +96,18 @@ export async function getProperty(orgId: string, db: Database, id: string): Prom
   return row ?? null;
 }
 
-export async function createProperty(
+/**
+ * Insert query builder, split out from `createProperty` so a test can assert on its
+ * `.toSQL()` (here, that `orgId` is one of the inserted values) the same way the
+ * read queries above are asserted — see property.test.ts.
+ */
+export function createPropertyQuery(
   orgId: string,
   db: Database,
+  id: string,
   data: CreatePropertyBody,
-): Promise<PropertyRow> {
-  const id = uuidv7();
-  await db.insert(property).values({
+) {
+  return db.insert(property).values({
     id,
     orgId,
     name: data.name,
@@ -109,18 +120,34 @@ export async function createProperty(
     country: data.address.country,
     notes: data.notes ?? null,
   });
+}
+
+export async function createProperty(
+  orgId: string,
+  db: Database,
+  data: CreatePropertyBody,
+): Promise<PropertyRow> {
+  const id = uuidv7();
+  await createPropertyQuery(orgId, db, id, data);
 
   const created = await getProperty(orgId, db, id);
   if (!created) throw new Error('Property not found immediately after insert');
   return created;
 }
 
-export async function updateProperty(
+/**
+ * Update query builder, split out from `updateProperty` so its `WHERE` can be
+ * asserted via `.toSQL()` without a live database (property.test.ts) — the same
+ * motivation as `listPropertiesQuery`/`getPropertyQuery`: a dropped `eq(orgId, ...)`
+ * here would let any caller holding a UUID mutate another org's property, and
+ * nothing short of reading the SQL text catches that.
+ */
+export function updatePropertyQuery(
   orgId: string,
   db: Database,
   id: string,
   data: UpdatePropertyBody,
-): Promise<PropertyRow | null> {
+) {
   const patch: Partial<typeof property.$inferInsert> = { updatedAt: new Date() };
   if (data.name !== undefined) patch.name = data.name;
   if (data.type !== undefined) patch.type = data.type;
@@ -134,25 +161,51 @@ export async function updateProperty(
   }
   if (data.notes !== undefined) patch.notes = data.notes ?? null;
 
-  const result = await db
+  return db
     .update(property)
     .set(patch)
     .where(and(eq(property.orgId, orgId), eq(property.id, id), isNull(property.deletedAt)))
     .returning({ id: property.id });
+}
 
+export async function updateProperty(
+  orgId: string,
+  db: Database,
+  id: string,
+  data: UpdatePropertyBody,
+): Promise<PropertyRow | null> {
+  const result = await updatePropertyQuery(orgId, db, id, data);
   if (result.length === 0) return null;
   return getProperty(orgId, db, id);
 }
 
-/** Soft delete: leases and payments reference properties, so financial history must
- *  survive a landlord removing one from their active list. Returns whether a row
- *  was actually (soft-)deleted, so the route can 404 instead of silently no-op-ing. */
-export async function softDeleteProperty(orgId: string, db: Database, id: string): Promise<boolean> {
-  const result = await db
+/** Soft-delete query builder, split out so its `WHERE` is independently assertable
+ *  via `.toSQL()` — see `updatePropertyQuery` above for why. */
+export function softDeletePropertyQuery(orgId: string, db: Database, id: string) {
+  return db
     .update(property)
     .set({ deletedAt: new Date(), updatedAt: new Date() })
     .where(and(eq(property.orgId, orgId), eq(property.id, id), isNull(property.deletedAt)))
     .returning({ id: property.id });
+}
 
-  return result.length > 0;
+/**
+ * Soft delete: leases and payments reference properties, so financial history must
+ * survive a landlord removing one from their active list. Returns whether a row
+ * was actually (soft-)deleted, so the route can 404 instead of silently no-op-ing.
+ *
+ * Cascades to the property's units in the same call. The FK's `onDelete: 'cascade'`
+ * (schema.ts) only fires on a hard `DELETE`, never on this `UPDATE` — without doing
+ * it here explicitly, a deleted property's units would keep `deletedAt IS NULL` and
+ * stay fully readable and mutable at `/v1/units/:id`, while disappearing from the
+ * property's own unit list. (This runs as two sequential statements, not a single
+ * transaction: the Neon HTTP driver used here has no interactive transactions — see
+ * db/index.ts.)
+ */
+export async function softDeleteProperty(orgId: string, db: Database, id: string): Promise<boolean> {
+  const result = await softDeletePropertyQuery(orgId, db, id);
+  if (result.length === 0) return false;
+
+  await softDeleteUnitsByProperty(orgId, db, id);
+  return true;
 }

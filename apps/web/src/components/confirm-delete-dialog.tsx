@@ -39,8 +39,9 @@ export function ConfirmDeleteDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Delete {itemKind}?</AlertDialogTitle>
           <AlertDialogDescription>
-            This permanently deletes <strong className="font-medium text-foreground">{itemName}</strong>
-            {consequence ? ` ${consequence}` : ''} This cannot be undone.
+            This removes <strong className="font-medium text-foreground">{itemName}</strong> from
+            your {itemKind === 'property' ? 'portfolio' : 'records'}.
+            {consequence ? ` ${consequence}` : ''} You won't be able to undo this from here.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

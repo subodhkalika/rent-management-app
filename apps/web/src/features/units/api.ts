@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import {
   routes,
@@ -8,7 +8,7 @@ import {
   type CreateUnitBody,
   type UpdateUnitBody,
 } from '@rms/contract';
-import { request } from '@/lib/api';
+import { ApiClientError, request } from '@/lib/api';
 
 export const unitsKeys = {
   all: ['units'] as const,
@@ -17,12 +17,23 @@ export const unitsKeys = {
 };
 
 const unitList = paged(unit);
+type UnitList = z.infer<typeof unitList>;
 
+function unitsUrl(propertyId: string, cursor?: string) {
+  if (!cursor) return routes.units.list(propertyId);
+  return `${routes.units.list(propertyId)}?${new URLSearchParams({ cursor }).toString()}`;
+}
+
+/** Paginates with the API's keyset cursor via `useInfiniteQuery` — a property with
+ *  more than one page of units can load the rest instead of silently seeing only
+ *  the first 25. */
 export function useUnits(propertyId: string) {
-  return useQuery({
+  return useInfiniteQuery<UnitList, ApiClientError>({
     queryKey: unitsKeys.list(propertyId),
-    queryFn: ({ signal }) =>
-      request(routes.units.list(propertyId), { schema: unitList, signal }),
+    queryFn: ({ pageParam, signal }) =>
+      request(unitsUrl(propertyId, pageParam as string | undefined), { schema: unitList, signal }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     enabled: propertyId.length > 0,
   });
 }

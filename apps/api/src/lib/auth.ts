@@ -1,6 +1,7 @@
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { organization } from 'better-auth/plugins';
+import { asc, eq } from 'drizzle-orm';
 import { createDb, schema } from '../db/index.js';
 import type { Env } from '../types.js';
 
@@ -34,6 +35,30 @@ export function createAuth(env: Env) {
         membershipLimit: 20,
       }),
     ],
+    databaseHooks: {
+      session: {
+        create: {
+          // The organization plugin does NOT set `activeOrganizationId` on its own —
+          // without this, `requireAuth` 403s "Select an organization before
+          // continuing" on every request, forever, since nothing in this app's UI
+          // flow calls `setActive` either. Default new sessions to the user's
+          // earliest membership; a user who later joins/switches orgs changes this
+          // explicitly via the organization plugin's `setActive` endpoint.
+          before: async (session) => {
+            const db = createDb(env.DATABASE_URL);
+            const [membership] = await db
+              .select({ organizationId: schema.member.organizationId })
+              .from(schema.member)
+              .where(eq(schema.member.userId, session.userId))
+              .orderBy(asc(schema.member.createdAt))
+              .limit(1);
+
+            if (!membership) return;
+            return { data: { activeOrganizationId: membership.organizationId } };
+          },
+        },
+      },
+    },
   });
 }
 

@@ -23,10 +23,20 @@ const statusVariant = {
 } as const;
 
 export function UnitsSection({ propertyId }: { propertyId: string }) {
-  const { data, isPending, isError, error, refetch } = useUnits(propertyId);
+  const {
+    data,
+    isPending,
+    isError,
+    error,
+    refetch,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useUnits(propertyId);
   const [addOpen, setAddOpen] = useState(false);
   const [editingUnit, setEditingUnit] = useState<Unit | null>(null);
   const [deletingUnit, setDeletingUnit] = useState<Unit | null>(null);
+  const items = data?.pages.flatMap((page) => page.items) ?? [];
 
   return (
     <section className="mt-8">
@@ -42,60 +52,75 @@ export function UnitsSection({ propertyId }: { propertyId: string }) {
           <UnitsSkeleton />
         ) : isError ? (
           <UnitsError message={error.message} onRetry={() => void refetch()} />
-        ) : data.items.length === 0 ? (
+        ) : items.length === 0 ? (
           <UnitsEmpty onAdd={() => setAddOpen(true)} />
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Label</TableHead>
-                <TableHead>Beds / baths</TableHead>
-                <TableHead>Sq ft</TableHead>
-                <TableHead>Market rent</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="w-0">
-                  <span className="sr-only">Actions</span>
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data.items.map((unit) => (
-                <TableRow key={unit.id}>
-                  <TableCell className="font-medium">{unit.label}</TableCell>
-                  <TableCell>
-                    {unit.bedrooms} bd / {unit.bathrooms} ba
-                  </TableCell>
-                  <TableCell>{unit.squareFeet ? unit.squareFeet.toLocaleString() : '—'}</TableCell>
-                  <TableCell>{formatMoney(unit.marketRentCents, unit.currency)}</TableCell>
-                  <TableCell>
-                    <Badge variant={statusVariant[unit.status]}>
-                      {unitStatusLabels[unit.status]}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={`Edit ${unit.label}`}
-                        onClick={() => setEditingUnit(unit)}
-                      >
-                        <Pencil />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label={`Delete ${unit.label}`}
-                        onClick={() => setDeletingUnit(unit)}
-                      >
-                        <Trash2 />
-                      </Button>
-                    </div>
-                  </TableCell>
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Label</TableHead>
+                  <TableHead>Beds / baths</TableHead>
+                  <TableHead>Sq ft</TableHead>
+                  <TableHead>Market rent</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="w-0">
+                    <span className="sr-only">Actions</span>
+                  </TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {items.map((unit) => (
+                  <TableRow key={unit.id}>
+                    <TableCell className="font-medium">{unit.label}</TableCell>
+                    <TableCell>
+                      {unit.bedrooms} bd / {unit.bathrooms} ba
+                    </TableCell>
+                    <TableCell>
+                      {unit.squareFeet ? unit.squareFeet.toLocaleString() : '—'}
+                    </TableCell>
+                    <TableCell>{formatMoney(unit.marketRentCents, unit.currency)}</TableCell>
+                    <TableCell>
+                      <Badge variant={statusVariant[unit.status]}>
+                        {unitStatusLabels[unit.status]}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`Edit ${unit.label}`}
+                          onClick={() => setEditingUnit(unit)}
+                        >
+                          <Pencil />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`Delete ${unit.label}`}
+                          onClick={() => setDeletingUnit(unit)}
+                        >
+                          <Trash2 />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            {hasNextPage && (
+              <div className="mt-4 flex justify-center">
+                <Button
+                  variant="outline"
+                  onClick={() => void fetchNextPage()}
+                  disabled={isFetchingNextPage}
+                >
+                  {isFetchingNextPage ? 'Loading…' : 'Load more'}
+                </Button>
+              </div>
+            )}
+          </>
         )}
       </div>
 

@@ -16,8 +16,19 @@ import { useProperties } from './api';
 import { PropertyFormDialog } from './PropertyFormDialog';
 
 export function PropertiesListPage() {
-  const { data, isPending, isError, error, refetch, isFetching } = useProperties();
+  const {
+    data,
+    isPending,
+    isError,
+    error,
+    refetch,
+    isFetching,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useProperties();
   const [addOpen, setAddOpen] = useState(false);
+  const items = data?.pages.flatMap((page) => page.items) ?? [];
 
   return (
     <main className="mx-auto max-w-5xl p-6">
@@ -38,42 +49,55 @@ export function PropertiesListPage() {
           <PropertiesListSkeleton />
         ) : isError ? (
           <PropertiesListError message={error.message} onRetry={() => void refetch()} />
-        ) : data.items.length === 0 ? (
+        ) : items.length === 0 ? (
           <PropertiesListEmpty onAdd={() => setAddOpen(true)} />
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Address</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Occupancy</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data.items.map((prop) => (
-                <TableRow key={prop.id} className="cursor-pointer">
-                  <TableCell className="font-medium">
-                    <Link
-                      to={`/properties/${prop.id}`}
-                      className="focus-visible:underline hover:underline"
-                    >
-                      {prop.name}
-                    </Link>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {formatAddress(prop.address)}
-                  </TableCell>
-                  <TableCell>{propertyTypeLabels[prop.type]}</TableCell>
-                  <TableCell>
-                    {prop.occupiedUnitCount} of {prop.unitCount} occupied
-                  </TableCell>
+          <>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Address</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Occupancy</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {items.map((prop) => (
+                  <TableRow key={prop.id} className="cursor-pointer">
+                    <TableCell className="font-medium">
+                      <Link
+                        to={`/properties/${prop.id}`}
+                        className="focus-visible:underline hover:underline"
+                      >
+                        {prop.name}
+                      </Link>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {formatAddress(prop.address)}
+                    </TableCell>
+                    <TableCell>{propertyTypeLabels[prop.type]}</TableCell>
+                    <TableCell>
+                      {prop.occupiedUnitCount} of {prop.unitCount} occupied
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            {hasNextPage && (
+              <div className="mt-4 flex justify-center">
+                <Button
+                  variant="outline"
+                  onClick={() => void fetchNextPage()}
+                  disabled={isFetchingNextPage}
+                >
+                  {isFetchingNextPage ? 'Loading…' : 'Load more'}
+                </Button>
+              </div>
+            )}
+          </>
         )}
-        {isFetching && !isPending && (
+        {isFetching && !isPending && !isFetchingNextPage && (
           <p className="mt-2 text-xs text-muted-foreground" aria-live="polite">
             Refreshing…
           </p>
