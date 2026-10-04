@@ -11,7 +11,7 @@ CI/CD lives in:
 Read both before changing either; they assume the exact npm script names in
 `apps/api/package.json` and `apps/web/package.json`.
 
-**Read §5 before the first deploy.** The API and web app end up on different domains
+**Read §6 before the first deploy.** The API and web app end up on different domains
 on the free tier, which affects whether login works in every browser — see below.
 
 ## 1. Neon Postgres **[one-time, manual]**
@@ -60,19 +60,44 @@ Upload**, name it `rms-web`.) You do not need to configure a build step in the
 Pages project itself — `deploy.yml` builds the app and pushes the static output
 directly with `wrangler pages deploy`.
 
-This also fixes the Pages project's `*.pages.dev` URL, which you need for step 4.
+This also fixes the Pages project's `*.pages.dev` URL, which you need for step 5.
 If the name `rms-web` is already taken globally on `pages.dev`, Cloudflare will
 assign a different subdomain — check the dashboard for the actual URL and use
-*that* in step 4, not the assumed one.
+*that* in step 5, not the assumed one.
 
-## 4. GitHub Actions variables
+## 4. Bootstrap: create the Worker **[one-time, manual]**
+
+`deploy.yml` only ever runs `wrangler deploy` (update an existing Worker) and
+`wrangler secret put` (set a secret on an existing Worker) — neither creates a
+Worker from scratch non-interactively. Something has to create `rms-api` once,
+by hand, before step 9's `wrangler secret put` commands or the automated
+pipeline in step 10 can touch it. (Running `wrangler secret put` against a
+Worker that doesn't exist yet prompts "No worker named rms-api found — create
+one?", which has no TTY to answer in CI and will hang or fail there too.)
+
+From the repo root, with dependencies installed (`pnpm install`, once):
+
+```bash
+cd apps/api
+CLOUDFLARE_API_TOKEN=<token from step 2> CLOUDFLARE_ACCOUNT_ID=<account id from step 2> \
+  pnpm dlx wrangler deploy
+```
+
+This deploys `rms-api` with whatever's checked in — including the default,
+localhost `WEB_ORIGIN` from `wrangler.jsonc` — which is fine, since nothing
+depends on this deploy working correctly. Its only job is to make the Worker
+exist. The command's output prints the live `*.workers.dev` URL; copy it down
+for step 5. (Steps 9 and 10 will immediately deploy real secrets and the real
+`WEB_ORIGIN` over this placeholder.)
+
+## 5. GitHub Actions variables
 
 Settings → Secrets and variables → Actions → **Variables** tab (not Secrets —
 these are public URLs, not sensitive). Read by `deploy.yml`:
 
 | Variable | Used by | Value |
 |---|---|---|
-| `VITE_API_URL` | Build-web step | The API Worker's URL, e.g. `https://rms-api.<your-subdomain>.workers.dev` — **no trailing slash** (`apps/web/src/lib/api.ts` concatenates it directly onto each request path) |
+| `VITE_API_URL` | Build-web step | The API Worker's URL from step 4, e.g. `https://rms-api.<your-subdomain>.workers.dev` — **no trailing slash** (`apps/web/src/lib/api.ts` concatenates it directly onto each request path) |
 | `WEB_ORIGIN` | Deploy-API step | The Pages project's URL from step 3, e.g. `https://rms-web.pages.dev` — **no trailing slash** |
 
 Both are baked in at deploy time, not read at runtime:
@@ -88,13 +113,14 @@ Both are baked in at deploy time, not read at runtime:
   sends CORS with `credentials: true`, which forbids a wildcard origin, so this
   must be the exact Pages URL or the browser rejects every cross-origin response.
 
-Find the Worker's `*.workers.dev` URL after its first deploy (Cloudflare dashboard
-→ Workers & Pages → rms-api — or predict it from your account's workers.dev
-subdomain, shown at the top of that same list). Set both variables *before* the
-first deploy if you can predict both URLs, or do one deploy, read the actual URLs
-off the dashboard, set the variables, and push an empty commit to redeploy.
+Set both now. There is no working order in which you reach step 10 before these
+are set: `deploy.yml`'s first step, "Verify required deploy variables are set",
+fails the job immediately with an `::error::` annotation if either is empty —
+by design, so an empty `VITE_API_URL` or `WEB_ORIGIN` can never deploy silently
+broken config (see §10 and the step's comments in `deploy.yml` for exactly what
+breaks if it didn't).
 
-## 5. Known limitation: cross-site session cookies
+## 6. Known limitation: cross-site session cookies
 
 On the free tier, the API (`*.workers.dev`) and the web app (`*.pages.dev`) are
 different registrable domains — there is no way around this without a custom
@@ -132,7 +158,7 @@ pass. Flagging as a required follow-up:
 - [ ] `backend-dev`: set `sameSite: 'none', secure: true` on the session cookie
       in `apps/api/src/lib/auth.ts` regardless — needed as an interim fix even
       before the proxy lands, and harmless once same-origin makes it moot.
-- [ ] `devops` (follow-up task): once the proxy exists, `VITE_API_URL` in step 4
+- [ ] `devops` (follow-up task): once the proxy exists, `VITE_API_URL` in step 5
       can be dropped and `apps/web/vite.config.ts`'s proxy paths become the
       source of truth for what the Pages Function needs to forward.
 
@@ -141,7 +167,7 @@ the cookie fix above applied) and silently fail in others (Safari, Firefox
 private browsing, future Chrome). Don't treat a successful login in one browser
 during testing as proof this is fixed.
 
-## 6. Cloudflare R2 bucket **[one-time, manual, when document storage lands]**
+## 7. Cloudflare R2 bucket **[one-time, manual, when document storage lands]**
 
 Not needed until the API actually uses R2. When it does:
 
@@ -155,7 +181,7 @@ If the app later needs presigned URLs via R2's S3-compatible API, that needs its
 own `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` Worker secrets (create an R2 API
 token for those from the R2 dashboard) — add them here when that lands.
 
-## 7. GitHub Secrets
+## 8. GitHub Secrets
 
 Settings → Secrets and variables → Actions → **Secrets** tab → **New repository
 secret**. These are read by the workflows in `.github/workflows/`:
@@ -167,12 +193,14 @@ secret**. These are read by the workflows in `.github/workflows/`:
 | `DATABASE_URL` | deploy.yml (migrate step only) | Neon **direct/unpooled** string from step 1 |
 
 CI (`ci.yml`) needs none of these — it never deploys or touches the database.
-(See step 4 above for the two non-secret **variables** deploy.yml also needs.)
+(See step 5 above for the two non-secret **variables** deploy.yml also needs.)
 
-## 8. Wrangler (Worker) secrets
+## 9. Wrangler (Worker) secrets
 
 These are runtime secrets for the deployed Worker, set once directly against
-Cloudflare (not GitHub) with `wrangler secret put <NAME>` from `apps/api/`:
+Cloudflare (not GitHub) with `wrangler secret put <NAME>` from `apps/api/`.
+Safe to run now — step 4 already created `rms-api`, so this sets secrets on an
+existing Worker instead of hitting the create-a-placeholder prompt:
 
 ```bash
 cd apps/api
@@ -190,19 +218,23 @@ pnpm dlx wrangler secret put RESEND_API_KEY       # from resend.com → API Keys
 A Worker secret set with `wrangler secret put` persists across deploys — `deploy.yml`
 never sets these, it only runs `wrangler deploy`, which leaves existing secrets alone.
 
-## 9. First deploy
+## 10. First deploy
 
-Once steps 1–8 are done:
+Once steps 1–9 are done:
 
 1. Push to `main` (or merge a PR into it).
 2. `CI` runs: typecheck, lint, test, build.
-3. On success, `Deploy` runs automatically: migrate → deploy API Worker → build
-   and deploy web to Pages.
+3. On success, `Deploy` runs: a variables check, then migrate → deploy API
+   Worker → build and deploy web to Pages.
+   - If step 5's variables aren't set, this fails immediately at "Verify
+     required deploy variables are set" with an `::error::` saying which one —
+     go set it, then re-run the workflow from the Actions tab (or push again).
+     Nothing downstream (migrations included) runs until both are set.
 4. Check **Actions** tab for both workflows green, then hit the Worker's
    `*.workers.dev` URL and the Pages `*.pages.dev` URL to confirm.
-5. Remember §5: a successful page load does not mean login works in every browser.
+5. Remember §6: a successful page load does not mean login works in every browser.
 
-## 10. Rolling back a bad deploy
+## 11. Rolling back a bad deploy
 
 **API Worker** — Cloudflare keeps every deployed version:
 
@@ -220,7 +252,7 @@ deploy is live and user-facing.
 - Dashboard → **Workers & Pages → rms-web → Deployments** → find the last-good
   one → **⋮ → Rollback to this deployment**.
 - Or redeploy from the last-good commit: `git checkout <good-sha> -- apps/web && pnpm --filter web run build && pnpm dlx wrangler pages deploy apps/web/dist --project-name=rms-web`.
-  (Set `VITE_API_URL` in your shell first — see step 4 — since this bypasses `deploy.yml`.)
+  (Set `VITE_API_URL` in your shell first — see step 5 — since this bypasses `deploy.yml`.)
 
 **Database migration** — there is no automatic down-migration. Because
 migrations must be forward-compatible (see `docs/ARCHITECTURE.md` §8 and

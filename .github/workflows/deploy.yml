@@ -31,6 +31,28 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push'
     steps:
+      # Fail before touching anything (migrations included) if either required
+      # deploy-time variable is unset. Without this, `--var WEB_ORIGIN:` deploys
+      # the Worker with an empty CORS origin — cors({ origin: '' }) rejects every
+      # browser request and Better Auth's trustedOrigins: [''] rejects every
+      # sign-in — and an unset VITE_API_URL silently ships BASE = '' in the web
+      # bundle, both of which deploy "successfully" and fail silently in the
+      # browser. See docs/DEPLOYMENT.md step 5 for where to set these.
+      - name: Verify required deploy variables are set
+        run: |
+          missing=0
+          if [ -z "${{ vars.WEB_ORIGIN }}" ]; then
+            echo "::error::Repository variable WEB_ORIGIN is not set. Deploying now would publish the Worker with an empty CORS origin, rejecting every browser request. Set it under Settings -> Secrets and variables -> Actions -> Variables (docs/DEPLOYMENT.md step 5)."
+            missing=1
+          fi
+          if [ -z "${{ vars.VITE_API_URL }}" ]; then
+            echo "::error::Repository variable VITE_API_URL is not set. Building now would ship the web app with no API base URL, so every request would resolve against the Pages domain instead of the API. Set it under Settings -> Secrets and variables -> Actions -> Variables (docs/DEPLOYMENT.md step 5)."
+            missing=1
+          fi
+          if [ "$missing" = "1" ]; then
+            exit 1
+          fi
+
       # Pin to the exact commit CI validated, not whatever main is when this job starts.
       - name: Checkout
         uses: actions/checkout@v4
