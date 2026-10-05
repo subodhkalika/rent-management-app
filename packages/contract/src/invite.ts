@@ -54,3 +54,29 @@ export const inviteAccepted = z.object({
   accountCreated: z.boolean(),
 });
 export type InviteAccepted = z.infer<typeof inviteAccepted>;
+
+/**
+ * What the accept page may show BEFORE the caller proves anything beyond holding the
+ * token. Safe to expose: the token is 256 bits, so possessing it already demonstrates
+ * possession of the emailed link.
+ *
+ * It must fail exactly like `acceptInvite` — one identical 404 for bad, expired,
+ * revoked, already-accepted and archived. A preview that distinguished those cases
+ * would become the enumeration oracle the accept endpoint was built to avoid, undoing
+ * that property through a read-only route.
+ */
+export const invitePreview = z.object({
+  /** The landlord's organization name — what the recipient recognises. */
+  orgName: z.string(),
+  /** First name only. Enough to confirm whose invite this is, without exposing a
+   *  full identity to whoever holds a forwarded link. */
+  tenantFirstName: z.string(),
+  /** The address the invite was issued to. The account is created with THIS value,
+   *  never one typed by the caller, so showing it read-only is honest. */
+  email: z.string(),
+  /** True when an account already exists at that address, so the page can offer
+   *  "sign in to accept" instead of a password form. */
+  accountExists: z.boolean(),
+  expiresAt: z.string().datetime(),
+});
+export type InvitePreview = z.infer<typeof invitePreview>;

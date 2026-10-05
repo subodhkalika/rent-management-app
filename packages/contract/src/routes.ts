@@ -31,6 +31,8 @@ export const routes = {
   portal: {
     /** Public: the caller is not signed in yet when accepting a fresh invite. */
     acceptInvite: () => '/v1/portal/invites/accept',
+    /** Public. Fails with the same uniform 404 as acceptInvite — see invite.ts. */
+    invitePreview: (token: string) => `/v1/portal/invites/${token}`,
     profile: (tenantId: string) => `/v1/portal/${tenantId}/profile`,
   },
   units: {

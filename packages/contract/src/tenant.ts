@@ -64,6 +64,16 @@ export const tenant = z.object({
   portalAccess,
   /** Set once an invite is accepted. Lets the landlord see which login is bound. */
   portalEmail: z.string().nullable(),
+  /**
+   * The address a live invite was issued to, and when it lapses. Both non-null only
+   * while `portalAccess === 'invited'`.
+   *
+   * `invitedEmail` is not redundant with the tenant's own email: editing the tenant
+   * revokes any live invite precisely because the two can diverge, and until that
+   * lands the landlord needs to see where an outstanding link actually went.
+   */
+  invitedEmail: z.string().nullable(),
+  inviteExpiresAt: z.string().datetime().nullable(),
   remindersOptedOut: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

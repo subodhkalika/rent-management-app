@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { uuid } from './common.js';
+import { uuid, timezone } from './common.js';
 
 export const propertyType = z.enum([
   'single_family',
@@ -42,6 +42,14 @@ export const createPropertyBody = z.object({
   name: z.string().trim().min(1, 'Name is required').max(120),
   type: propertyType,
   address,
+  /**
+   * IANA timezone of the property itself, not of the landlord or the tenant.
+   *
+   * This is the only timezone-sensitive value in the system: it answers "what is
+   * today, here", which decides when rent is due and when a charge becomes overdue.
+   * A Perth property settled in UTC would flip to overdue eight hours early.
+   */
+  timezone,
   notes: z.string().trim().max(2000).optional(),
 });
 export type CreatePropertyBody = z.infer<typeof createPropertyBody>;
@@ -57,6 +65,7 @@ export const property = z.object({
   type: propertyType,
   address,
   notes: z.string().nullable(),
+  timezone: z.string(),
   unitCount: z.number().int().nonnegative(),
   occupiedUnitCount: z.number().int().nonnegative(),
   createdAt: z.string().datetime(),
