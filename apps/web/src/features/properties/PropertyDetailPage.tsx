@@ -1,7 +1,13 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Clock, Pencil, Trash2 } from 'lucide-react';
-import { formatAddress, propertyTypeLabels, type Property } from '@rms/contract';
+import {
+  formatAddress,
+  propertyTypeLabels,
+  calendarSystemLabels,
+  type Property,
+} from '@rms/contract';
+import { moveOutBillingPolicyTitle, moveOutBillingPolicyHelp, calendarSystemHelp } from './billing-settings-copy';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
@@ -67,6 +73,8 @@ export function PropertyDetailPage() {
         <UtcTimezoneBanner property={property} onFix={() => setEditOpen(true)} />
       )}
 
+      {property && <BillingSettingsSummary property={property} />}
+
       <UnitsSection propertyId={id} />
 
       {property && (
@@ -81,6 +89,33 @@ export function PropertyDetailPage() {
         </>
       )}
     </main>
+  );
+}
+
+/** Plain-language summary of the two property-level billing settings — both decide
+ *  real money outcomes (what a departing tenant owes, what a billing period even
+ *  is), so they belong next to the rest of the property's facts, not buried in the
+ *  edit form. */
+function BillingSettingsSummary({ property }: { property: Property }) {
+  return (
+    <div className="mt-4 grid grid-cols-1 gap-4 rounded-lg border p-4 sm:grid-cols-2">
+      <div>
+        <h2 className="text-sm font-medium text-muted-foreground">Calendar</h2>
+        <p className="mt-1 text-sm font-medium">{calendarSystemLabels[property.calendar]}</p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {calendarSystemHelp[property.calendar]}
+        </p>
+      </div>
+      <div>
+        <h2 className="text-sm font-medium text-muted-foreground">Move-out billing</h2>
+        <p className="mt-1 text-sm font-medium">
+          {moveOutBillingPolicyTitle[property.moveOutBillingPolicy]}
+        </p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {moveOutBillingPolicyHelp[property.moveOutBillingPolicy]}
+        </p>
+      </div>
+    </div>
   );
 }
 

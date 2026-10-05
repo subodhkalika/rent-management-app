@@ -64,7 +64,14 @@ function isValid(year: number, month: number, day: number): boolean {
   return day >= 1 && day <= daysInMonth(year, month);
 }
 
+const GREGORIAN_MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+] as const;
+
 export const gregorian: Calendar = {
+  monthNames: GREGORIAN_MONTH_NAMES,
+  decompose: (d) => parseIsoDate(d),
   id: 'gregorian',
   daysInMonth,
   monthsInYear: () => 12,

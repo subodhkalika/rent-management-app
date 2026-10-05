@@ -45,6 +45,20 @@ export interface Calendar {
   endOfMonth(d: IsoDate): IsoDate;
   /** `year`/`month`/`day` are in THIS calendar's own numbering. Never throws. */
   isValid(year: number, month: number, day: number): boolean;
+
+  /* ---- presentation ----
+   * The arithmetic above answers "where does a period begin and end". These answer
+   * "what do I call this date", which display needs and the rest does not. They are
+   * on the interface so a formatter can render any calendar without a switch — the
+   * moment UI code branches on calendar id, a third calendar means touching every
+   * screen again.
+   */
+
+  /** Decomposes a Gregorian `IsoDate` into THIS calendar's year/month/day.
+   *  Throws if the date falls outside the calendar's supported range. */
+  decompose(d: IsoDate): { year: number; month: number; day: number };
+  /** Month names in this calendar's own order, index 0 = month 1. */
+  readonly monthNames: readonly string[];
 }
 
 export function calendarForSystem(system: CalendarSystem): Calendar {

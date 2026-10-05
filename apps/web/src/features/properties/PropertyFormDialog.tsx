@@ -2,9 +2,13 @@ import { useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { toast } from 'sonner';
+import type { z } from 'zod';
 import {
   createPropertyBody,
   propertyTypeLabels,
+  moveOutBillingPolicy,
+  calendarSystem,
+  calendarSystemLabels,
   type CreatePropertyBody,
   type Property,
   type PropertyType,
@@ -37,11 +41,22 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Combobox } from '@/components/combobox';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { useCreateProperty, useUpdateProperty } from './api';
 import { applyServerErrors, blankToUndefined, errorMessage } from '@/lib/form-errors';
 import { browserTimezone, timezoneOptions } from './timezones';
+import { moveOutBillingPolicyTitle, moveOutBillingPolicyHelp, calendarSystemHelp } from './billing-settings-copy';
 
 const propertyTypes = Object.keys(propertyTypeLabels) as PropertyType[];
+const moveOutBillingPolicies = moveOutBillingPolicy.options;
+const calendarSystems = calendarSystem.options;
+
+// `moveOutBillingPolicy` and `calendar` both have a Zod `.default()`, so the
+// schema's input type (what the form holds before submit) makes them optional,
+// while its output type (what `handleSubmit` hands back, and what the mutation
+// sends) makes them required. react-hook-form's resolver generics expect exactly
+// that split — same pattern as `UnitFormInput` / `TenantFormInput`.
+type PropertyFormInput = z.input<typeof createPropertyBody>;
 
 function emptyValues(): CreatePropertyBody {
   return {
@@ -51,6 +66,12 @@ function emptyValues(): CreatePropertyBody {
     // Right far more often than UTC — saves most landlords a decision they would
     // otherwise never think to make, and leave wrong.
     timezone: browserTimezone(),
+    // Legally conservative and matches the behaviour every existing property
+    // already has, so defaulting it costs no one a surprise.
+    moveOutBillingPolicy: 'bill_full_term',
+    // Follows the building's market; most landlords on this product bill in
+    // Gregorian, so that stays the default rather than asking up front.
+    calendar: 'gregorian',
     notes: '',
   };
 }
@@ -61,6 +82,8 @@ function valuesFromProperty(property: Property): CreatePropertyBody {
     type: property.type,
     address: property.address,
     timezone: property.timezone,
+    moveOutBillingPolicy: property.moveOutBillingPolicy,
+    calendar: property.calendar,
     notes: property.notes ?? '',
   };
 }
@@ -74,7 +97,7 @@ interface PropertyFormDialogProps {
 
 export function PropertyFormDialog({ open, onOpenChange, property }: PropertyFormDialogProps) {
   const isEditing = !!property;
-  const form = useForm<CreatePropertyBody>({
+  const form = useForm<PropertyFormInput, unknown, CreatePropertyBody>({
     resolver: zodResolver(createPropertyBody),
     defaultValues: property ? valuesFromProperty(property) : emptyValues(),
   });
@@ -262,6 +285,90 @@ export function PropertyFormDialog({ open, onOpenChange, property }: PropertyFor
                     Rent due dates and overdue status are evaluated in this property's own
                     timezone, so get this right rather than leaving it at your own.
                   </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="calendar"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Calendar</FormLabel>
+                  <FormControl>
+                    <RadioGroup
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      className="gap-2"
+                    >
+                      {calendarSystems.map((option) => (
+                        <label
+                          key={option}
+                          htmlFor={`calendar-${option}`}
+                          className="flex items-start gap-3 rounded-md border p-3 text-sm has-[:checked]:border-primary"
+                        >
+                          <RadioGroupItem
+                            value={option}
+                            id={`calendar-${option}`}
+                            className="mt-0.5"
+                          />
+                          <span>
+                            <span className="block font-medium">
+                              {calendarSystemLabels[option]}
+                            </span>
+                            <span className="block text-muted-foreground">
+                              {calendarSystemHelp[option]}
+                            </span>
+                          </span>
+                        </label>
+                      ))}
+                    </RadioGroup>
+                  </FormControl>
+                  <FormDescription>
+                    This changes what a billing period <em>is</em>, not merely how dates are
+                    shown.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="moveOutBillingPolicy"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Move-out billing</FormLabel>
+                  <FormControl>
+                    <RadioGroup
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      className="gap-2"
+                    >
+                      {moveOutBillingPolicies.map((option) => (
+                        <label
+                          key={option}
+                          htmlFor={`move-out-policy-${option}`}
+                          className="flex items-start gap-3 rounded-md border p-3 text-sm has-[:checked]:border-primary"
+                        >
+                          <RadioGroupItem
+                            value={option}
+                            id={`move-out-policy-${option}`}
+                            className="mt-0.5"
+                          />
+                          <span>
+                            <span className="block font-medium">
+                              {moveOutBillingPolicyTitle[option]}
+                            </span>
+                            <span className="block text-muted-foreground">
+                              {moveOutBillingPolicyHelp[option]}
+                            </span>
+                          </span>
+                        </label>
+                      ))}
+                    </RadioGroup>
+                  </FormControl>
                   <FormMessage />
                 </FormItem>
               )}

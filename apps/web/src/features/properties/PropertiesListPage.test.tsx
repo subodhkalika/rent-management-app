@@ -21,6 +21,8 @@ function makeProperty(name: string): Property {
     },
     notes: null,
     timezone: 'America/Chicago',
+    moveOutBillingPolicy: 'bill_full_term',
+    calendar: 'gregorian',
     unitCount: 1,
     occupiedUnitCount: 0,
     createdAt: now,

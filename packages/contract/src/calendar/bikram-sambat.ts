@@ -1,7 +1,7 @@
 import type { IsoDate } from '../common.js';
 import { parseIsoDate, toIsoDate, daysFromCivil, civilFromDays } from './civil-days.js';
 import type { Calendar } from './index.js';
-import { BS_MIN_YEAR, BS_MAX_YEAR, BS_EPOCH_AD, BS_MONTH_LENGTHS } from './bs-data.js';
+import { BS_MIN_YEAR, BS_MAX_YEAR, BS_EPOCH_AD, BS_MONTH_LENGTHS, BS_MONTH_NAMES } from './bs-data.js';
 
 /**
  * Bikram Sambat, table-driven from `bs-data.ts`.
@@ -200,6 +200,8 @@ function isValid(year: number, month: number, day: number): boolean {
 }
 
 export const bikramSambat: Calendar = {
+  monthNames: BS_MONTH_NAMES,
+  decompose: (d) => bsFromIso(d),
   id: 'bikram_sambat',
   daysInMonth: bsDaysInMonth,
   monthsInYear,
