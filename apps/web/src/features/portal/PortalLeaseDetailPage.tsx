@@ -41,7 +41,7 @@ export function PortalLeaseDetailPage() {
 }
 
 function LeaseContent({ lease }: { lease: NonNullable<ReturnType<typeof usePortalLease>['data']> }) {
-  const through = defaultPreviewThrough(lease.startDate, lease.endDate);
+  const through = defaultPreviewThrough(lease.startDate, lease.endDate, lease.propertyTimezone);
   const scheduleQuery = usePortalLeaseSchedule(lease.id, through);
 
   return (

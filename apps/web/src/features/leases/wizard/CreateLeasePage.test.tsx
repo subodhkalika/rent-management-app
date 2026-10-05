@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
@@ -187,5 +187,45 @@ describe('CreateLeasePage wizard', () => {
     // Rent defaulted from the unit's market rent (150000 cents = $1,500.00),
     // computed by the SAME `buildSchedule` the create wizard exists to preview.
     expect((await screen.findAllByText('$1,500.00')).length).toBeGreaterThan(0);
+  });
+
+  it('shows an error, never a silently-defaulted Gregorian/bill_full_term preview, when the property fails to load (regression)', async () => {
+    // Everything resolves except the single property-by-id fetch the review step
+    // needs for its calendar and move-out policy — exactly the case that used to
+    // fall back to 'gregorian' / 'bill_full_term' and preview the wrong schedule
+    // with no indication anything was wrong.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((input: string | URL) => {
+        const url = new URL(String(input), 'http://localhost');
+        const path = url.pathname;
+        if (path === '/v1/properties') return jsonResponse({ items: [property], nextCursor: null });
+        if (path === `/v1/properties/${property.id}`) {
+          return jsonResponse({ error: { code: 'internal', message: 'Server exploded' } }, 500);
+        }
+        if (path === `/v1/properties/${property.id}/units`) return jsonResponse({ items: [unit], nextCursor: null });
+        if (path === '/v1/tenants') return jsonResponse({ items: [tenant], nextCursor: null });
+        return jsonResponse({ error: { code: 'not_found', message: `No stub for ${path}` } }, 404);
+      }),
+    );
+    const user = userEvent.setup();
+    renderWizard();
+
+    await pickUnit(user);
+    await user.click(screen.getByRole('button', { name: /^next$/i }));
+    await user.click(await screen.findByRole('checkbox', { name: /select ada lovelace/i }));
+    await user.click(screen.getByRole('button', { name: /^next$/i }));
+    // The property fetch failed, so the "default start date to today" effect
+    // never fires — fill it by hand so the Terms step's own validation passes and
+    // the point under test (the Review step's reaction to a failed property) is
+    // actually reached.
+    fireEvent.change(await screen.findByLabelText(/start date/i), { target: { value: '2026-01-01' } });
+    await user.click(screen.getByRole('button', { name: /^next$/i }));
+
+    expect(await screen.findByText(/couldn't load this unit's property/i)).toBeInTheDocument();
+    // Never a schedule table rendered on top of the error — a missing preview is
+    // honest, a confidently wrong one is not.
+    expect(screen.queryByRole('heading', { name: /^schedule preview$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 });

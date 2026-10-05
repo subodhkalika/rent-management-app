@@ -1,5 +1,12 @@
 import { useState } from 'react';
-import { rentFrequency, rentFrequencyLabels, type Property, type Unit } from '@rms/contract';
+import {
+  rentFrequency,
+  rentFrequencyLabels,
+  MAX_BILLING_DAY,
+  MAX_BILLING_DAY_ANY,
+  type Property,
+  type Unit,
+} from '@rms/contract';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
@@ -26,6 +33,11 @@ export function TermsStep({ form, property, unit }: TermsStepProps) {
   const frequency = form.watch('rentFrequency');
   const errors = form.formState.errors;
   const currency = unit?.currency;
+  // The property may not have resolved yet (the unit was just picked); fall back
+  // to the widest ceiling any calendar allows rather than hardcoding Gregorian's
+  // 31 — a Bikram Sambat month reaches 32 (`MAX_BILLING_DAY`), and the server
+  // validates the real per-calendar bound regardless of what this attribute says.
+  const maxBillingDay = property ? MAX_BILLING_DAY[property.calendar] : MAX_BILLING_DAY_ANY;
 
   return (
     <div className="space-y-6">
@@ -94,7 +106,7 @@ export function TermsStep({ form, property, unit }: TermsStepProps) {
             id="wizard-billingDay"
             type="number"
             min={1}
-            max={31}
+            max={maxBillingDay}
             step={1}
             value={form.watch('billingDay') ?? 1}
             onChange={(e) => form.setValue('billingDay', e.target.valueAsNumber, { shouldValidate: true })}

@@ -205,7 +205,7 @@ function LeaseScheduleTab({
 }) {
   // Computed server-side via the SAME `buildSchedule` the create wizard's preview
   // calls — `GET /leases/:id/schedule` is pure computation, nothing written.
-  const through = defaultPreviewThrough(startDate, endDate);
+  const through = defaultPreviewThrough(startDate, endDate, propertyTimezone);
   const { data, isPending, isError, error, refetch } = useLeaseSchedule(leaseId, through);
 
   if (isPending) return <Skeleton className="mt-4 h-40 w-full" />;

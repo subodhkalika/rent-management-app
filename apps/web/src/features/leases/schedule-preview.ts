@@ -1,4 +1,15 @@
-import { billingTermsFor, buildSchedule, addDays, type LeaseSummary, type PlannedCharge, type IsoDate } from '@rms/contract';
+import {
+  billingTermsFor,
+  buildSchedule,
+  addDays,
+  maxIsoDate,
+  minIsoDate,
+  localToday,
+  type LeaseSummary,
+  type PlannedCharge,
+  type IsoDate,
+  type Timezone,
+} from '@rms/contract';
 
 /**
  * Everything `billingTermsFor` needs, in `LeaseSummary`'s own field names
@@ -31,14 +42,45 @@ export function previewSchedule(lease: PreviewLeaseInput, through: IsoDate): Pla
 }
 
 /**
- * How far forward to preview when there's no `endDate` to bound it. A rolling
- * lease could otherwise want an unbounded schedule — this just decides how much of
- * it a screen renders, a display concern, not a billing one. `addDays` is the
- * contract's own pure day-number helper (not a second date-maths implementation),
- * used here only to pick a window, never to decide a period, a due date, or an
- * amount — all of those still come from `buildSchedule` alone.
+ * Mirrors `apps/api/src/lib/schedule.ts`'s `TEN_YEARS_IN_DAYS` exactly — the
+ * backend's own INPUT SANITY ceiling ("through must be within 10 years of
+ * startDate"), not a billing computation. Pure day-count arithmetic, never
+ * calendar-dependent, so it can never throw for a Bikram Sambat property. Not
+ * imported (the backend's constant lives in an apps/api-only file) but pinned to
+ * the identical value so the preview can never ask the route for a window it would
+ * 422 on — a lease running longer than this clamps, it does not error.
  */
-export function defaultPreviewThrough(startDate: IsoDate, endDate: IsoDate | null): IsoDate {
-  if (endDate) return endDate;
-  return addDays(startDate, 366 * 3);
+const SCHEDULE_SANITY_DAYS = 3653;
+
+/** How far forward the create wizard's and lease-detail's preview windows run,
+ *  from whichever is later: the lease's start, or today. Three years is enough
+ *  runway to be useful without the table growing unbounded. */
+const PREVIEW_RUNWAY_DAYS = 366 * 3;
+
+/**
+ * How far forward to preview. A display choice, not a billing one — it only picks
+ * the `through` argument handed to `buildSchedule`, never a period, a due date or
+ * an amount — so computing it here, outside `billing.ts`, is legitimate.
+ *
+ * MUST anchor on TODAY (in the property's own timezone — §1.8, never the
+ * browser's), not on `startDate` alone. A rolling lease that started years ago is
+ * the NORMAL case for a long-running tenancy: anchoring purely on `startDate`
+ * walked the window into the past the moment a lease was more than
+ * `PREVIEW_RUNWAY_DAYS` old, showing a schedule with no current period and no
+ * "next due" row for every single one of them. Clamped to `endDate` when present,
+ * and to the backend's own 10-year-from-`startDate` sanity bound either way, so
+ * this can never ask `GET .../schedule` for a `through` it will 422 on.
+ */
+export function defaultPreviewThrough(
+  startDate: IsoDate,
+  endDate: IsoDate | null,
+  propertyTimezone: Timezone,
+  now?: Date,
+): IsoDate {
+  const today = localToday(propertyTimezone, now);
+  const windowStart = maxIsoDate(startDate, today);
+  const forward = addDays(windowStart, PREVIEW_RUNWAY_DAYS);
+  const sanityCap = addDays(startDate, SCHEDULE_SANITY_DAYS);
+  const upperBound = endDate ? minIsoDate(endDate, sanityCap) : sanityCap;
+  return minIsoDate(forward, upperBound);
 }

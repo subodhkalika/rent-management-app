@@ -4,7 +4,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { toast } from 'sonner';
 import { ArrowLeft } from 'lucide-react';
-import { localToday, type Unit } from '@rms/contract';
+import { localToday, validateBillingTerms, billingTermsFromCreateBody, type Unit } from '@rms/contract';
 import { Button } from '@/components/ui/button';
 import { useProperty } from '@/features/properties/api';
 import { applyServerErrors, blankToUndefined, errorMessage } from '@/lib/form-errors';
@@ -43,7 +43,8 @@ export function CreateLeasePage() {
   const navigate = useNavigate();
   const [stepIndex, setStepIndex] = useState(0);
   const [selectedUnit, setSelectedUnit] = useState<Unit | undefined>(undefined);
-  const { data: property } = useProperty(selectedUnit?.propertyId ?? '');
+  const propertyQuery = useProperty(selectedUnit?.propertyId ?? '');
+  const property = propertyQuery.data;
 
   const form = useForm<WizardInput, unknown, CreateLeaseBody>({
     resolver: zodResolver(createLeaseBody),
@@ -82,7 +83,33 @@ export function CreateLeasePage() {
 
   async function goNext() {
     const valid = await form.trigger(fieldsByStep[step]);
-    if (valid) setStepIndex((i) => Math.min(i + 1, STEPS.length - 1));
+    if (!valid) return;
+
+    // `createLeaseBody`'s own superRefine only checks calendar-INDEPENDENT rules
+    // now (a request schema can't see which property, and therefore which
+    // calendar, a lease belongs to — see the contract's own note on
+    // `createLeaseBody`). The wizard DOES know the calendar by this step, so it
+    // calls `validateBillingTerms` directly via the exported
+    // `billingTermsFromCreateBody` adapter — the one sanctioned way to build
+    // those terms — rather than let an invalid `ledgerStartDate` surface only as
+    // a server 422 after submit (docs/PLAN-PHASE2.md §8.2 item 5).
+    if (step === 'Terms' && property) {
+      const values = form.getValues();
+      // `billingDay` carries a zod `.default(1)`, so the form's INPUT type allows
+      // it to be momentarily `undefined`; `billingTermsFromCreateBody` wants the
+      // resolved value, same fallback the schema itself would apply.
+      const terms = billingTermsFromCreateBody(
+        { ...values, billingDay: values.billingDay ?? 1 },
+        property.calendar,
+      );
+      const error = validateBillingTerms(terms);
+      if (error) {
+        form.setError('ledgerStartDate', { type: 'validate', message: error });
+        return;
+      }
+    }
+
+    setStepIndex((i) => Math.min(i + 1, STEPS.length - 1));
   }
 
   function goBack() {
@@ -138,7 +165,7 @@ export function CreateLeasePage() {
         )}
         {step === 'Tenants' && <TenantsStep form={form} />}
         {step === 'Terms' && <TermsStep form={form} property={property} unit={selectedUnit} />}
-        {step === 'Review' && <ReviewStep form={form} property={property} unit={selectedUnit} />}
+        {step === 'Review' && <ReviewStep form={form} propertyQuery={propertyQuery} unit={selectedUnit} />}
       </div>
 
       <div className="mt-6 flex items-center justify-between">

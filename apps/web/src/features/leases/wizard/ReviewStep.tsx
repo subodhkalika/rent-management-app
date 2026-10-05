@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import type { UseQueryResult } from '@tanstack/react-query';
 import {
   formatMoney,
   rentFrequencyLabels,
@@ -7,6 +8,9 @@ import {
   type Unit,
   type PlannedCharge,
 } from '@rms/contract';
+import type { ApiClientError } from '@/lib/api';
+import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useTenants } from '@/features/tenants/api';
 import { formatCivilDate } from '@/lib/format-civil-date';
 import { LeaseScheduleTable } from '../LeaseScheduleTable';
@@ -16,8 +20,11 @@ import type { WizardForm } from './types';
 
 interface ReviewStepProps {
   form: WizardForm;
-  property?: Property;
   unit?: Unit;
+  /** The selected unit's property — its calendar and move-out policy decide what
+   *  this preview even means, so the step must know whether it has actually
+   *  resolved, not just whatever value happens to be sitting in cache. */
+  propertyQuery: UseQueryResult<Property, ApiClientError>;
 }
 
 const PREVIEW_ROW_CAP = 36;
@@ -27,22 +34,23 @@ const PREVIEW_ROW_CAP = 36;
  * preview computed client-side by `buildSchedule`, not fetched, so the landlord
  * sees the actual charges this lease will generate before committing to it.
  */
-export function ReviewStep({ form, property, unit }: ReviewStepProps) {
+export function ReviewStep({ form, unit, propertyQuery }: ReviewStepProps) {
   const values = form.watch();
   const tenantsQuery = useTenants();
   const tenants = tenantsQuery.data?.pages.flatMap((p) => p.items) ?? [];
   const selectedTenants = tenants.filter((t) => values.tenantIds?.includes(t.id));
   const primaryTenant = tenants.find((t) => t.id === values.primaryTenantId);
   const currency = unit?.currency ?? 'USD';
-  const calendar = property?.calendar ?? 'gregorian';
-  const policy = property?.moveOutBillingPolicy ?? 'bill_full_term';
+  const property = propertyQuery.data;
 
+  // Hooks stay unconditional (Rules of Hooks) — the loading/error branches below
+  // only decide what JSX this returns, never whether this memo runs.
   const { periods, truncated, previewError } = useMemo((): {
     periods: PlannedCharge[];
     truncated: number;
     previewError: string | null;
   } => {
-    if (!values.startDate || !values.rentFrequency) {
+    if (!property || !values.startDate || !values.rentFrequency) {
       return { periods: [], truncated: 0, previewError: null };
     }
     const leaseInput: PreviewLeaseInput = {
@@ -53,11 +61,11 @@ export function ReviewStep({ form, property, unit }: ReviewStepProps) {
       endDate: values.endDate ?? null,
       ledgerStartDate: values.ledgerStartDate ?? values.startDate,
       moveOutDate: null,
-      moveOutBillingPolicy: policy,
-      calendar,
+      moveOutBillingPolicy: property.moveOutBillingPolicy,
+      calendar: property.calendar,
     };
     try {
-      const through = defaultPreviewThrough(values.startDate, values.endDate ?? null);
+      const through = defaultPreviewThrough(values.startDate, values.endDate ?? null, property.timezone);
       const full = previewSchedule(leaseInput, through);
       return {
         periods: full.slice(0, PREVIEW_ROW_CAP),
@@ -76,15 +84,53 @@ export function ReviewStep({ form, property, unit }: ReviewStepProps) {
     // keystroke across unrelated steps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    property,
     values.startDate,
     values.endDate,
     values.rentFrequency,
     values.rentCents,
     values.billingDay,
     values.ledgerStartDate,
-    policy,
-    calendar,
   ]);
+
+  // A missing preview is honest; a confidently wrong one is not. Defaulting the
+  // calendar to Gregorian and the policy to `bill_full_term` while the property
+  // query was still loading (or had failed) previously meant a Bikram Sambat
+  // landlord could review a schedule computed in the wrong calendar entirely —
+  // never flagged as wrong, never matching what they'd actually be billed.
+  if (propertyQuery.isPending) {
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-40 w-full" aria-label="Loading this unit's property" />
+        <p className="text-sm text-muted-foreground">
+          Loading this unit's property — the preview needs its calendar and billing policy.
+        </p>
+      </div>
+    );
+  }
+
+  if (propertyQuery.isError || !property) {
+    return (
+      <div
+        role="alert"
+        aria-live="polite"
+        className="rounded-md border border-destructive/30 bg-destructive/5 p-4"
+      >
+        <p className="text-sm font-medium">Couldn't load this unit's property</p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          The schedule preview needs the property's calendar and move-out billing policy to be
+          accurate, so it can't be shown without them.
+          {propertyQuery.error && ` ${propertyQuery.error.message}`}
+        </p>
+        <Button variant="outline" size="sm" className="mt-2" onClick={() => void propertyQuery.refetch()}>
+          Try again
+        </Button>
+      </div>
+    );
+  }
+
+  const calendar = property.calendar;
+  const policy = property.moveOutBillingPolicy;
 
   return (
     <div className="space-y-6">
