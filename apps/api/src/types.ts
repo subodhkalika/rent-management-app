@@ -20,6 +20,9 @@ export interface Env {
   DATABASE_URL: string;
   BETTER_AUTH_SECRET: string;
   RESEND_API_KEY?: string;
+  /** Mailtrap sandbox, local development only — see lib/email.ts. */
+  MAILTRAP_API_TOKEN?: string;
+  MAILTRAP_INBOX_ID?: string;
   /** Optional. Falls back to Resend's sandbox sender (lib/email.ts) — fine until a
    *  verified domain exists (blocking prerequisite for Phase 4, docs/PLAN-V1.md §6). */
   RESEND_FROM_EMAIL?: string;

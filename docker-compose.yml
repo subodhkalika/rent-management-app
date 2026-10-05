@@ -124,6 +124,13 @@ services:
       # Dev-only, obviously-fake value — never used outside this compose stack.
       # Real environments set this with `wrangler secret put BETTER_AUTH_SECRET`.
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-dev-only-insecure-secret-do-not-use-in-prod}
+      # Optional Mailtrap sandbox — set both in a gitignored `.env` at the repo root
+      # and every invite and password-reset email is captured there instead of being
+      # skipped. Without them, sends are logged and discarded (see lib/email.ts).
+      # Mailtrap's SMTP credentials will NOT work: Workers cannot open TCP sockets,
+      # so this uses its HTTP send API and needs an API token, not the SMTP password.
+      MAILTRAP_API_TOKEN: ${MAILTRAP_API_TOKEN:-}
+      MAILTRAP_INBOX_ID: ${MAILTRAP_INBOX_ID:-}
     ports:
       - '8787:8787'
     depends_on:
@@ -146,6 +153,8 @@ services:
         --var DATABASE_URL:$$DATABASE_URL
         --var NEON_LOCAL_FETCH_ENDPOINT:$$NEON_LOCAL_FETCH_ENDPOINT
         --var BETTER_AUTH_SECRET:$$BETTER_AUTH_SECRET
+        --var MAILTRAP_API_TOKEN:$$MAILTRAP_API_TOKEN
+        --var MAILTRAP_INBOX_ID:$$MAILTRAP_INBOX_ID
 
   web:
     <<: *dev-image

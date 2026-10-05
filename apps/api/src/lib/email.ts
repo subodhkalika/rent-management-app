@@ -13,6 +13,16 @@
 export interface EmailEnv {
   RESEND_API_KEY?: string;
   RESEND_FROM_EMAIL?: string;
+  /**
+   * Mailtrap sandbox, for local development only. Never set in production — prod
+   * secrets are set with `wrangler secret put`, and these two are not among them.
+   *
+   * Mailtrap's SMTP credentials are useless here: Workers cannot open TCP sockets, so
+   * nodemailer and every other SMTP client is unavailable. Its HTTP send API works
+   * fine, which is the same reason the database goes through an HTTP proxy locally.
+   */
+  MAILTRAP_API_TOKEN?: string;
+  MAILTRAP_INBOX_ID?: string;
 }
 
 export interface SendEmailInput {
@@ -31,6 +41,13 @@ const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 const DEFAULT_FROM = 'Rent Manager <onboarding@resend.dev>';
 
 export async function sendEmail(env: EmailEnv, input: SendEmailInput): Promise<void> {
+  // Dev first: when a Mailtrap sandbox is configured, every message is captured there
+  // and nothing reaches a real inbox. This is what makes the password-reset flow
+  // testable locally at all — its token exists only inside the email.
+  if (env.MAILTRAP_API_TOKEN && env.MAILTRAP_INBOX_ID) {
+    return sendViaMailtrap(env, input);
+  }
+
   if (!env.RESEND_API_KEY) {
     console.log(`[email] RESEND_API_KEY not set — skipping send to ${input.to}: "${input.subject}"`);
     return;
@@ -120,4 +137,37 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+/**
+ * Mailtrap's sandbox HTTP API. Captures mail in an inbox instead of delivering it, so
+ * a mistyped tenant address in development can never reach a real person.
+ */
+async function sendViaMailtrap(env: EmailEnv, input: SendEmailInput): Promise<void> {
+  const url = `https://sandbox.api.mailtrap.io/api/send/${env.MAILTRAP_INBOX_ID}`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Api-Token': env.MAILTRAP_API_TOKEN!,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: { email: 'no-reply@rentmanager.local', name: 'Rent Manager (dev)' },
+        to: [{ email: input.to }],
+        subject: input.subject,
+        html: input.html,
+        text: input.text,
+      }),
+    });
+    if (!res.ok) {
+      // Body may name the misconfiguration (bad token, wrong inbox) but never carries
+      // the message contents, so it is safe to log.
+      console.error(`[email] Mailtrap returned ${res.status} for ${input.to}:`, await res.text());
+      return;
+    }
+    console.log(`[email] captured in Mailtrap sandbox: "${input.subject}" -> ${input.to}`);
+  } catch (err) {
+    console.error(`[email] Mailtrap send failed for ${input.to}:`, err);
+  }
 }
