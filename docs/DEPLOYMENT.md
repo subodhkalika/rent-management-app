@@ -192,7 +192,16 @@ secret**. These are read by the workflows in `.github/workflows/`:
 | `CLOUDFLARE_ACCOUNT_ID` | deploy.yml (API + Pages deploy) | Account ID from step 2 |
 | `DATABASE_URL` | deploy.yml (migrate step only) | Neon **direct/unpooled** string from step 1 |
 
-CI (`ci.yml`) needs none of these — it never deploys or touches the database.
+CI (`ci.yml`) needs none of these secrets, and never touches the real database.
+It does now run a **throwaway Postgres** (a `postgres:17-alpine` service
+container, same image as `docker-compose.yml`'s `db`, plus the same Neon HTTP
+proxy sidecar) so `apps/api/src/db/repo/lease.integration.test.ts` and
+`.../portal/lease.integration.test.ts` run instead of silently skipping — see
+that database's own comment block in `ci.yml` for why both pieces are needed.
+Its credentials are hardcoded directly in the workflow file (`rms` /
+`rms_ci_password`), not a GitHub secret: the database exists only for the
+lifetime of one job, is never reachable from outside it, and holds nothing
+real. Nothing to set by hand here.
 (See step 5 above for the two non-secret **variables** deploy.yml also needs.)
 
 ## 9. Wrangler (Worker) secrets

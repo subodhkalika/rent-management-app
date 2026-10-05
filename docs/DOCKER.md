@@ -42,6 +42,14 @@ driver path as production.
 Migrations skip the proxy — `drizzle-kit` uses a normal TCP driver and talks to `db`
 directly. Same database, two paths in, by design.
 
+`.github/workflows/ci.yml` reproduces this exact pair (a `postgres:17-alpine` service
+container plus the same proxy image) so `apps/api`'s live-Postgres integration tests
+run in CI instead of skipping. If you're touching that workflow: migrations there hit
+the Postgres service container directly over TCP, same as `migrate` above; the
+integration tests go through the proxy, same as `api` above. Mixing the two up — e.g.
+pointing migrations at the proxy, or the tests at bare Postgres — is the most likely
+way that job breaks.
+
 ## First time through the app
 
 There is no seed data. Create an account:

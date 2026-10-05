@@ -18,6 +18,65 @@ jobs:
   build:
     name: Typecheck, lint, test, build
     runs-on: ubuntu-latest
+
+    # Ephemeral, throwaway database for this job only — never the real Neon
+    # database (deploy.yml's migrate step uses secrets.DATABASE_URL for that).
+    # Mirrors docker-compose.yml's db/db-proxy pair exactly: a stock
+    # postgres:17-alpine fronted by the same Neon HTTP proxy image, because
+    # apps/api's runtime driver (@neondatabase/serverless) only speaks SQL over
+    # HTTP, not plain TCP — see docs/DOCKER.md "Why there is a proxy in front of
+    # Postgres". Without db-proxy, DATABASE_URL alone is not enough to unskip
+    # the integration suites below; they'd fail (or silently 500) against bare
+    # Postgres even with the right connection string.
+    #
+    # GitHub Actions starts every service container in this list in parallel —
+    # there is no depends_on between them like docker-compose.yml has, and
+    # db-proxy's healthcheck below only proves its own TCP listener is up, not
+    # that its one-time startup step against postgres succeeded. Confirmed by
+    # hand: db-proxy's entrypoint runs `psql ... -c "CREATE SCHEMA IF NOT EXISTS
+    # neon_control_plane" -c "CREATE TABLE neon_control_plane.endpoints (...)"`
+    # once, on container start, with no retry and no check of psql's exit code —
+    # if postgres isn't accepting connections yet at that exact moment (likely,
+    # since both services start at once here), that psql call fails silently,
+    # db-proxy starts its listener anyway and reports healthy, and every query
+    # through it then 500s with "Control plane request failed: relation
+    # neon_control_plane.endpoints does not exist". The "Prepare the Neon
+    # control-plane shim table" step below re-runs that same DDL, idempotently,
+    # from a job step — which only runs after postgres's own healthcheck (not
+    # db-proxy's) has already passed — closing the race instead of hoping
+    # db-proxy wins it.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: rms
+          POSTGRES_PASSWORD: rms_ci_password
+          POSTGRES_DB: rms
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U rms -d rms"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=10
+
+      # PG_CONNECTION_STRING here is a hostname ("postgres") reachable because
+      # GitHub puts every service container for this job on one shared Docker
+      # network — that's internal, service-to-service traffic, unrelated to how
+      # the job's own steps reach either service (see the DATABASE_URL comments
+      # below).
+      db-proxy:
+        image: ghcr.io/timowilhelm/local-neon-http-proxy:main
+        env:
+          PG_CONNECTION_STRING: postgres://rms:rms_ci_password@postgres:5432/rms
+        ports:
+          - 4444:4444
+        options: >-
+          --health-cmd="bash -c 'exec 3<>/dev/tcp/127.0.0.1/4444'"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,8 +106,123 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # DATABASE_URL is unset for this step on purpose — every other package's
+      # tests, plus every non-integration test in apps/api, run exactly as they
+      # do today. lease.integration.test.ts and portal/lease.integration.test.ts
+      # are `describe.skipIf(!DATABASE_URL)`-gated and skip here too; they run
+      # for real a few steps down, against the services above, where a skip is
+      # treated as a failure instead of silently passing.
       - name: Test
         run: pnpm test
+
+      # drizzle-kit (used by db:migrate below) auto-detects a driver by walking
+      # node_modules for the first of 'pg', 'postgres', '@vercel/postgres',
+      # '@neondatabase/serverless' it can resolve, then dynamically imports it.
+      # apps/api depends on @neondatabase/serverless (the Worker runtime's HTTP
+      # driver) but not 'pg' (a plain TCP driver), so left alone drizzle-kit picks
+      # the HTTP one — which only knows how to reach a *remote* Neon/Vercel/Supabase
+      # endpoint over a websocket, and hangs/fails against the plain-TCP `postgres`
+      # service above. docker-compose.yml's `migrate` service hits this exact
+      # problem; scripts/docker-migrate-entrypoint.sh works around it by installing
+      # `pg` into a scratch package and copying it into the one node_modules
+      # directory that's an ancestor of every pnpm store path, so Node's
+      # directory-walk resolution finds it from anywhere in the workspace. Same
+      # fix, same reasoning, here — nothing added to package.json or the lockfile.
+      - name: Install pg driver so drizzle-kit uses TCP, not the HTTP driver
+        run: |
+          work="$(mktemp -d)"
+          echo '{}' > "$work/package.json"
+          (cd "$work" && npm install pg --no-fund --no-audit --silent)
+          cp -r "$work"/node_modules/* node_modules/
+          rm -rf "$work"
+
+      # Closes the startup race described in the `services:` comment above:
+      # db-proxy's own one-time init of this schema/table can silently fail if
+      # it ran before postgres was ready. Re-running the exact same DDL here,
+      # idempotently, after postgres's healthcheck has already passed, means
+      # db-proxy's control-plane lookups succeed regardless of which order the
+      # two service containers actually came up in. Uses the `pg` driver just
+      # installed above (plain TCP, same as the migration step) — this step
+      # only talks to postgres directly, never through db-proxy.
+      - name: Prepare the Neon control-plane shim table
+        run: |
+          node -e '
+            const { Client } = require("pg");
+            (async () => {
+              const client = new Client({ connectionString: "postgres://rms:rms_ci_password@localhost:5432/rms" });
+              await client.connect();
+              await client.query("CREATE SCHEMA IF NOT EXISTS neon_control_plane");
+              await client.query("CREATE TABLE IF NOT EXISTS neon_control_plane.endpoints (endpoint_id VARCHAR(255) PRIMARY KEY, allowed_ips VARCHAR(255))");
+              await client.end();
+            })().catch((err) => { console.error(err); process.exit(1); });
+          '
+
+      # Direct TCP to the postgres service via its mapped host port — this job's
+      # steps run on the runner itself, not inside a container, so "localhost"
+      # (not the service id "postgres") is how they reach a service container.
+      # No proxy needed: drizzle-kit's CLI never goes through db-proxy, only the
+      # Neon HTTP driver (used by the app and by the integration tests below) does.
+      - name: Run database migrations
+        working-directory: apps/api
+        run: pnpm run db:migrate
+        env:
+          DATABASE_URL: postgres://rms:rms_ci_password@localhost:5432/rms
+
+      # Pin db.localtest.me to loopback instead of relying on public DNS for it.
+      # It resolves there anyway (localtest.me is a real wildcard DNS service
+      # pointing *.localtest.me at 127.0.0.1), and db-proxy's Caddy/TLS config
+      # requires requests addressed to exactly this hostname (see
+      # docker-compose.yml's comment on the db-proxy service) — but a real DNS
+      # round trip per query is unnecessary latency this job shouldn't pay for,
+      # and a flaky/slow public resolver shouldn't be able to make CI flaky.
+      - name: Pin db.localtest.me to loopback
+        run: echo "127.0.0.1 db.localtest.me" | sudo tee -a /etc/hosts
+
+      # THE point of this job: lease.integration.test.ts and
+      # portal/lease.integration.test.ts are `describe.skipIf(!DATABASE_URL)` —
+      # they stay runnable with nothing installed (a developer's laptop) but
+      # silently skip, and still exit 0, if DATABASE_URL is ever unset or
+      # misconfigured here. Running them as their own named step with an
+      # explicit pending/failed check (not just `pnpm test`'s exit code) is what
+      # makes a misconfiguration here loud instead of a green check mark that
+      # quietly ran 41 fewer tests than it claims.
+      #
+      # DATABASE_URL's host is db.localtest.me, not localhost, even though both
+      # resolve to the same place: @neondatabase/serverless parses a hostname
+      # label from it (here, "db") and sends it as routing/auth info to db-proxy,
+      # matching the exact pattern docker-compose.yml's `api` service uses
+      # against the same proxy image. The port in this URL is never dialled
+      # directly — the HTTP driver only ever talks to NEON_LOCAL_FETCH_ENDPOINT.
+      - name: Integration tests against live Postgres (must not be skipped)
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgres://rms:rms_ci_password@db.localtest.me:5432/rms
+          NEON_LOCAL_FETCH_ENDPOINT: http://db.localtest.me:4444/sql
+        run: |
+          set -e
+          pnpm exec vitest run \
+            src/db/repo/lease.integration.test.ts \
+            src/db/repo/portal/lease.integration.test.ts \
+            --reporter=default \
+            --reporter=json --outputFile=/tmp/integration-report.json
+
+          node -e '
+            const r = require("/tmp/integration-report.json");
+            const { numTotalTests: total, numPassedTests: passed, numFailedTests: failed, numPendingTests: pending } = r;
+            console.log(`integration tests: ${passed}/${total} passed, ${failed} failed, ${pending} skipped`);
+            if (total === 0) {
+              console.error("::error::Zero integration tests were collected — lease.integration.test.ts and/or portal/lease.integration.test.ts failed to load. Check the step output above for the real error.");
+              process.exit(1);
+            }
+            if (pending > 0) {
+              console.error(`::error::${pending} of ${total} integration test(s) were SKIPPED instead of run. describe.skipIf(!DATABASE_URL) fired, meaning DATABASE_URL was not seen as set — check this step'\''s env and the postgres/db-proxy service containers above.`);
+              process.exit(1);
+            }
+            if (failed > 0 || !r.success) {
+              console.error(`::error::${failed} integration test(s) failed against the live database.`);
+              process.exit(1);
+            }
+          '
 
       # Builds every workspace package that has a "build" script (api + web).
       # packages/contract has none and pnpm -r skips it without failing.
