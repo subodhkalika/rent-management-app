@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
 import type { MeContext } from '@rms/contract';
-import { requireSession } from '../middleware/auth.js';
 import { getSession } from '../lib/auth.js';
 import { getLandlordMembership } from '../db/repo/auth/organization.js';
 import { resolveScope } from '../db/repo/portal/scope.js';
@@ -9,7 +8,9 @@ import type { AppBindings } from '../types.js';
 
 export const me = new Hono<AppBindings>();
 
-me.use('*', requireSession);
+// Auth is applied centrally in src/index.ts — see middleware/auth-layer.ts.
+// A `.use('*')` here would leak onto every route in the app: this router is mounted
+// with app.route('/', me), so the wildcard registers at /* and matches everything.
 
 /**
  * "Who am I, and in what capacity" — docs/PLAN-V1.md §3.1. The web root guard uses

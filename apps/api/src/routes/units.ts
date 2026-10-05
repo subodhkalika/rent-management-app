@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
 import { updateUnitBody, type UpdateUnitBody } from '@rms/contract';
-import { requireAuth } from '../middleware/auth.js';
 import { validateBody, parsedBody } from '../middleware/validate.js';
 import { notFound } from '../lib/errors.js';
 import { requireUuidParam } from '../lib/params.js';
@@ -10,7 +9,8 @@ import type { AppBindings } from '../types.js';
 
 export const units = new Hono<AppBindings>();
 
-units.use('*', requireAuth);
+// Auth is applied centrally in src/index.ts — see the auth layering table there.
+// A `.use('*')` here would leak onto every route in the app, not just this router's.
 
 units.get('/v1/units/:id', async (c) => {
   const orgId = c.get('orgId');

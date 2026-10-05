@@ -8,7 +8,6 @@ import {
   type PageQuery,
   type InviteCreated,
 } from '@rms/contract';
-import { requireAuth } from '../middleware/auth.js';
 import { validateBody, validateQuery, parsedBody, parsedQuery } from '../middleware/validate.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
 import { requireUuidParam } from '../lib/params.js';
@@ -22,7 +21,8 @@ import type { AppBindings } from '../types.js';
 
 export const tenants = new Hono<AppBindings>();
 
-tenants.use('*', requireAuth);
+// Auth is applied centrally in src/index.ts — see the auth layering table there.
+// A `.use('*')` here would leak onto every route in the app, not just this router's.
 
 const INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days — docs/PLAN-V1.md §1.3
 

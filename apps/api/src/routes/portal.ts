@@ -6,7 +6,6 @@ import {
   type UpdatePortalProfileBody,
   type InviteAccepted,
 } from '@rms/contract';
-import { requireTenant } from '../middleware/auth.js';
 import { validateBody, parsedBody } from '../middleware/validate.js';
 import { conflict, notFound, validationFailed, inviteInvalid } from '../lib/errors.js';
 import { requireUuidParam } from '../lib/params.js';
@@ -148,7 +147,8 @@ portal.post('/v1/portal/invites/accept', validateBody(acceptInviteBody), async (
 // exact failure mode docs/PLAN-V1.md §1.1 rejects the tenant-as-org-member model
 // for. Registered AFTER the public accept route above, so that one route is still
 // reachable before this applies (see its own comment).
-portal.use('/v1/portal/*', requireTenant);
+// Auth is applied centrally in src/index.ts — see the auth layering table there.
+// A `.use('*')` here would leak onto every route in the app, not just this router's.
 
 portal.get('/v1/portal/:tenantId/profile', async (c) => {
   const scope = c.get('tenantScope');

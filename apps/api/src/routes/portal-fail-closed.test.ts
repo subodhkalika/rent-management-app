@@ -33,6 +33,9 @@ vi.mock('../db/repo/public/invite.js', () => ({
   findUserByEmail: vi.fn(),
 }));
 
+// Dynamic, like `portal` below: a static import would pull middleware/auth.js in
+// before vi.mock's factory variables are initialised.
+const { authLayer } = await import('../middleware/auth-layer.js');
 const { portal } = await import('./portal.js');
 
 function buildApp() {
@@ -41,6 +44,7 @@ function buildApp() {
     c.set('db', {} as never);
     await next();
   });
+  app.use('/v1/*', authLayer);
   app.route('/', portal);
   app.notFound((c) => c.json({ error: { code: 'not_found', message: 'No such endpoint' } }, 404));
   app.onError((err, c) => {

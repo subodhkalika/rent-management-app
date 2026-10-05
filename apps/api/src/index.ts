@@ -5,6 +5,7 @@ import { secureHeaders } from 'hono/secure-headers';
 import { createDb } from './db/index.js';
 import { createAuth } from './lib/auth.js';
 import { ApiException } from './lib/errors.js';
+import { authLayer } from './middleware/auth-layer.js';
 import { properties } from './routes/properties.js';
 import { units } from './routes/units.js';
 import { me } from './routes/me.js';
@@ -39,6 +40,10 @@ app.get('/health', (c) => c.json({ ok: true, ts: new Date().toISOString() }));
 
 // Better Auth owns everything under /api/auth — sign-up, sign-in, sessions, orgs.
 app.on(['GET', 'POST'], '/api/auth/*', (c) => createAuth(c.env).handler(c.req.raw));
+
+
+// Every /v1 path is classified in one table — see middleware/auth-layer.ts.
+app.use('/v1/*', authLayer);
 
 /* ---- feature routes mount here ---- */
 app.route('/', properties);

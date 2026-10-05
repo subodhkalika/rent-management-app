@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 import { ApiException } from '../lib/errors.js';
 import type { AppBindings } from '../types.js';
+import { authLayer } from '../middleware/auth-layer.js';
 
 /**
  * Route-level tests for the landlord tenant endpoints.
@@ -47,6 +48,7 @@ function buildApp() {
     c.set('db', {} as never);
     await next();
   });
+  app.use('/v1/*', authLayer);
   app.route('/', tenants);
   // Mirrors index.ts's onError — a test app with no error handler returns Hono's
   // default plain-text 500 for a thrown ApiException instead of the real JSON error
