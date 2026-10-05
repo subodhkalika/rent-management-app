@@ -69,36 +69,45 @@ export interface LeaseRow {
   updatedAt: Date;
 }
 
-/** Live (removed_on IS NULL) roster count per lease, scoped to this org. */
-function tenantCountSubquery(orgId: string, db: Database) {
-  return db
-    .select({
-      leaseId: leaseTenant.leaseId,
-      count: sql<number>`count(*)`.mapWith(Number).as('count'),
-    })
-    .from(leaseTenant)
-    .where(and(eq(leaseTenant.orgId, orgId), isNull(leaseTenant.removedOn)))
-    .groupBy(leaseTenant.leaseId)
-    .as('tenant_count');
+/**
+ * Live (removed_on IS NULL) roster count per lease, scoped to this org. A
+ * CORRELATED SCALAR subquery, not a joined derived table: an earlier version used
+ * `LEFT JOIN (SELECT ... GROUP BY lease_id) tenant_count` and referenced its
+ * `.count` column directly in the outer select, which Postgres then rejected with
+ * `column reference "count" is ambiguous` (and the equivalent primary-tenant-name
+ * subquery with `"name"`, colliding with `property.name`) — Drizzle 0.45's render
+ * of a column pulled straight off an `.as(...)`-aliased derived table does not
+ * reliably table-qualify it in the surrounding query. A correlated subquery sidesteps
+ * the whole class of bug: it has no separate FROM-list entry to collide with.
+ */
+function tenantCountColumn(orgId: string) {
+  return sql<number>`(
+    select count(*) from ${leaseTenant}
+    where ${leaseTenant.leaseId} = ${lease.id}
+      and ${leaseTenant.orgId} = ${orgId}
+      and ${leaseTenant.removedOn} is null
+  )`.mapWith(Number);
 }
 
 /** The live primary tenant's display name per lease. At most one row per lease by
- *  construction (`lease_tenant_primary_uq`). */
-function primaryTenantSubquery(orgId: string, db: Database) {
-  return db
-    .select({
-      leaseId: leaseTenant.leaseId,
-      name: sql<string>`${tenant.firstName} || ' ' || ${tenant.lastName}`.as('name'),
-    })
-    .from(leaseTenant)
-    .innerJoin(tenant, eq(tenant.id, leaseTenant.tenantId))
-    .where(and(eq(leaseTenant.orgId, orgId), eq(leaseTenant.isPrimary, true), isNull(leaseTenant.removedOn)))
-    .as('primary_tenant');
+ *  construction (`lease_tenant_primary_uq`). Same correlated-subquery reasoning
+ *  as `tenantCountColumn` above. */
+function primaryTenantNameColumn(orgId: string) {
+  return sql<string | null>`(
+    select ${tenant.firstName} || ' ' || ${tenant.lastName}
+    from ${leaseTenant}
+    inner join ${tenant} on ${tenant.id} = ${leaseTenant.tenantId}
+    where ${leaseTenant.leaseId} = ${lease.id}
+      and ${leaseTenant.orgId} = ${orgId}
+      and ${leaseTenant.isPrimary} = true
+      and ${leaseTenant.removedOn} is null
+    limit 1
+  )`;
 }
 
 /** The column map shared by every lease read below. Split out so the aggregate
  *  math (tenantCount / primaryTenantName) is defined exactly once. */
-function leaseColumns(tenantCount: ReturnType<typeof tenantCountSubquery>, primaryTenant: ReturnType<typeof primaryTenantSubquery>) {
+function leaseColumns(orgId: string) {
   return {
     id: lease.id,
     chainId: lease.chainId,
@@ -120,8 +129,8 @@ function leaseColumns(tenantCount: ReturnType<typeof tenantCountSubquery>, prima
     depositCents: lease.depositCents,
     openingBalanceCents: lease.openingBalanceCents,
     ledgerStartDate: lease.ledgerStartDate,
-    tenantCount: sql<number>`coalesce(${tenantCount.count}, 0)`.mapWith(Number),
-    primaryTenantName: primaryTenant.name,
+    tenantCount: tenantCountColumn(orgId),
+    primaryTenantName: primaryTenantNameColumn(orgId),
     renewedFromLeaseId: lease.renewedFromLeaseId,
     endReason: lease.endReason,
     createdAt: lease.createdAt,
@@ -141,9 +150,6 @@ export function listLeasesQuery(
     tenantId?: string;
   },
 ) {
-  const tc = tenantCountSubquery(orgId, db);
-  const pt = primaryTenantSubquery(orgId, db);
-
   const conditions = [eq(lease.orgId, orgId), isNull(lease.deletedAt)];
   if (opts.cursor) conditions.push(gt(lease.id, decodeCursor(opts.cursor)));
   if (opts.status) conditions.push(eq(lease.status, opts.status));
@@ -162,14 +168,12 @@ export function listLeasesQuery(
   }
 
   return db
-    .select(leaseColumns(tc, pt))
+    .select(leaseColumns(orgId))
     .from(lease)
     // Scoped by orgId too, not just the FK — belt-and-suspenders, same reasoning
     // as property.ts's unit join.
     .innerJoin(unit, and(eq(unit.id, lease.unitId), eq(unit.orgId, orgId)))
     .innerJoin(property, and(eq(property.id, unit.propertyId), eq(property.orgId, orgId)))
-    .leftJoin(tc, eq(tc.leaseId, lease.id))
-    .leftJoin(pt, eq(pt.leaseId, lease.id))
     .where(and(...conditions))
     .orderBy(asc(lease.id))
     .limit(opts.limit + 1);
@@ -193,16 +197,11 @@ export async function listLeases(
 }
 
 export function getLeaseQuery(orgId: string, db: Database, id: string) {
-  const tc = tenantCountSubquery(orgId, db);
-  const pt = primaryTenantSubquery(orgId, db);
-
   return db
-    .select(leaseColumns(tc, pt))
+    .select(leaseColumns(orgId))
     .from(lease)
     .innerJoin(unit, and(eq(unit.id, lease.unitId), eq(unit.orgId, orgId)))
     .innerJoin(property, and(eq(property.id, unit.propertyId), eq(property.orgId, orgId)))
-    .leftJoin(tc, eq(tc.leaseId, lease.id))
-    .leftJoin(pt, eq(pt.leaseId, lease.id))
     .where(and(eq(lease.orgId, orgId), eq(lease.id, id), isNull(lease.deletedAt)))
     .limit(1);
 }
@@ -285,12 +284,9 @@ export interface LeaseDetailRow extends LeaseRow {
 }
 
 export function getLeaseDetailQuery(orgId: string, db: Database, id: string) {
-  const tc = tenantCountSubquery(orgId, db);
-  const pt = primaryTenantSubquery(orgId, db);
-
   return db
     .select({
-      ...leaseColumns(tc, pt),
+      ...leaseColumns(orgId),
       notes: lease.notes,
       unitStatus: unit.status,
       addressLine1: property.addressLine1,
@@ -303,8 +299,6 @@ export function getLeaseDetailQuery(orgId: string, db: Database, id: string) {
     .from(lease)
     .innerJoin(unit, and(eq(unit.id, lease.unitId), eq(unit.orgId, orgId)))
     .innerJoin(property, and(eq(property.id, unit.propertyId), eq(property.orgId, orgId)))
-    .leftJoin(tc, eq(tc.leaseId, lease.id))
-    .leftJoin(pt, eq(pt.leaseId, lease.id))
     .where(and(eq(lease.orgId, orgId), eq(lease.id, id), isNull(lease.deletedAt)))
     .limit(1);
 }

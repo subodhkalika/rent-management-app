@@ -101,6 +101,20 @@ describe('getLeaseDetailQuery', () => {
     expect(sql).toContain('"property"."address_line1"');
     expect(params).toEqual(expect.arrayContaining(['org_A', 'lease_1']));
   });
+
+  it(
+    'tenantCount and primaryTenantName are CORRELATED scalar subqueries, never a joined derived ' +
+      "table whose bare column name can collide with property.name — regression test for the " +
+      '"column reference \\"name\\" is ambiguous" bug a real Postgres caught (not a toSQL-only check)',
+    () => {
+      const { sql } = getLeaseDetailQuery('org_A', db, 'lease_1').toSQL();
+      expect(sql).not.toContain('left join (select');
+      expect(sql).not.toMatch(/,\s*"name",/);
+      expect(sql).not.toMatch(/,\s*"count",/);
+      // Both correlated subqueries reference lease.id to correlate to the outer row.
+      expect(sql.match(/"lease"\."id"/g)!.length).toBeGreaterThanOrEqual(2);
+    },
+  );
 });
 
 describe('listLeaseTenantsQuery', () => {
