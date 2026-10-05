@@ -1,7 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { readdirSync, readFileSync } from 'node:fs';
+import { describe, it, expect, afterAll } from 'vitest';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { listSourceFiles, exportedFunctions, readSource, QUERY_VERBS } from '../../lib/repoGuard.js';
 
 /**
  * Static guard for the one rule that cannot be allowed to regress: every query on an
@@ -10,71 +12,57 @@ import { fileURLToPath } from 'node:url';
  * A missing filter is not a bug, it is one landlord reading another's portfolio. Code
  * review catches most of these; this catches the rest, on every PR, for free — no
  * database required.
+ *
+ * History: this guard used to call a non-recursive `readdirSync`, so anything under
+ * a subdirectory (e.g. `db/repo/portal/`) was invisible to it — see
+ * docs/PLAN-V1.md §0.2.A. `listSourceFiles` (lib/repoGuard.ts) now recurses. The
+ * "recursion proof" suite at the bottom of this file demonstrates, against a throwaway
+ * fixture directory, that a violation placed in a nested subdirectory is still caught.
  */
 
 const REPO_DIR = dirname(fileURLToPath(import.meta.url));
-const QUERY_VERBS = /\bdb\s*\.\s*(select|insert|update|delete|query)\b/;
 
-function repoFiles(): string[] {
-  return readdirSync(REPO_DIR).filter(
-    (f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && !f.endsWith('.d.ts'),
-  );
+// `db/repo/portal/**` and `db/repo/system/**` (the latter lands in a later phase) take
+// a different first parameter by design (`scope: TenantScope`, no caller principal at
+// all) and are covered by their own dedicated guards — see
+// `db/repo/portal/portal-tenancy.guard.test.ts`. `db/repo/public/**` takes no scope at
+// all by design (there is none yet — see its module comment) and is covered by
+// `db/repo/public/invite-lookup.guard.test.ts`. Excluding them here is not a loophole:
+// every file in the repo tree is claimed by exactly one guard, never by zero.
+const EXEMPT_PREFIXES = ['portal/', 'system/', 'public/'];
+
+function landlordRepoFiles(): string[] {
+  return listSourceFiles(REPO_DIR).filter((f) => !EXEMPT_PREFIXES.some((p) => f.startsWith(p)));
 }
 
-/** Splits a source file into top-level exported functions by brace matching. */
-function exportedFunctions(src: string): { name: string; params: string; body: string }[] {
-  const out: { name: string; params: string; body: string }[] = [];
-  const header = /export\s+(?:async\s+)?function\s+(\w+)\s*\(/g;
-
-  for (let m = header.exec(src); m; m = header.exec(src)) {
-    const name = m[1]!;
-    let i = m.index + m[0].length;
-
-    // Walk the parameter list to its closing paren.
-    let depth = 1;
-    const paramStart = i;
-    while (i < src.length && depth > 0) {
-      if (src[i] === '(') depth++;
-      else if (src[i] === ')') depth--;
-      i++;
-    }
-    const params = src.slice(paramStart, i - 1);
-
-    // Walk to the opening brace, then match it.
-    while (i < src.length && src[i] !== '{') i++;
-    const bodyStart = ++i;
-    depth = 1;
-    while (i < src.length && depth > 0) {
-      if (src[i] === '{') depth++;
-      else if (src[i] === '}') depth--;
-      i++;
-    }
-    out.push({ name, params, body: src.slice(bodyStart, i - 1) });
-  }
-  return out;
-}
-
-/** Strips comments and string literals so a mention inside either never counts. */
-function stripNoise(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/\/\/[^\n]*/g, ' ')
-    .replace(/`(?:\\.|[^`\\])*`/g, '``')
-    .replace(/'(?:\\.|[^'\\])*'/g, "''")
-    .replace(/"(?:\\.|[^"\\])*"/g, '""');
-}
+/**
+ * Bump this UP whenever a legitimate landlord repo file is added. Never lower it to
+ * make a failing suite pass — the entire point of a floor is that an empty (or
+ * near-empty) glob fails loudly instead of silently passing every `it()` below
+ * vacuously, which is exactly how the original bug went unnoticed.
+ */
+const MIN_LANDLORD_REPO_FILES = 3; // property.ts, unit.ts, tenant.ts
 
 describe('tenant isolation guard', () => {
-  const files = repoFiles();
+  const files = landlordRepoFiles();
 
   it('finds the repository directory', () => {
-    // A rename that silently empties this guard would be worse than no guard at all.
     expect(REPO_DIR).toContain(join('db', 'repo'));
+  });
+
+  it('discovers at least the expected floor of landlord repo files', () => {
+    expect(
+      files.length,
+      `Expected at least ${MIN_LANDLORD_REPO_FILES} landlord repo files, found ${files.length}: ` +
+        `[${files.join(', ')}]. If this is a refactor that legitimately removes files, lower the ` +
+        'floor explicitly and explain why in the same commit. If it is not, something broke ' +
+        'file discovery and every check below is about to pass for the wrong reason.',
+    ).toBeGreaterThanOrEqual(MIN_LANDLORD_REPO_FILES);
   });
 
   for (const file of files) {
     describe(file, () => {
-      const src = stripNoise(readFileSync(join(REPO_DIR, file), 'utf8'));
+      const src = readSource(REPO_DIR, file);
       const fns = exportedFunctions(src);
 
       it('exports at least one function', () => {
@@ -99,10 +87,75 @@ describe('tenant isolation guard', () => {
             /\borgId\b/.test(fn.body),
             `${file} :: ${fn.name}() runs a query without referencing orgId. ` +
               'Every read, update and delete on an org-owned table must include it in WHERE — ' +
-              'otherwise one landlord can reach another landlord\'s rows.',
+              "otherwise one landlord can reach another landlord's rows.",
           ).toBe(true);
         });
       }
     });
   }
+});
+
+describe('recursion proof', () => {
+  // Builds a throwaway `<tmp>/bad/leak.ts` — a file in a SUBDIRECTORY, exactly the
+  // shape that escaped the old non-recursive guard — and proves the fixed file
+  // discovery still finds it, and the violation-detection logic still flags it.
+  // This is not an abstract claim; it is run against a real nested file every time
+  // the suite runs.
+  const fixtureRoot = mkdtempSync(join(tmpdir(), 'repo-guard-fixture-'));
+
+  afterAll(() => {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  });
+
+  it('finds a file nested in a subdirectory', () => {
+    mkdirSync(join(fixtureRoot, 'bad'), { recursive: true });
+    writeFileSync(
+      join(fixtureRoot, 'bad', 'leak.ts'),
+      [
+        '// Deliberately missing orgId — this is the violation under test.',
+        'export async function leakAcrossOrgs(id, db) {',
+        "  return db.select().from('tenant').where(id);",
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const files = listSourceFiles(fixtureRoot);
+    expect(files).toContain('bad/leak.ts');
+  });
+
+  it('flags the missing-orgId violation once the nested file is found', () => {
+    const src = readSource(fixtureRoot, 'bad/leak.ts');
+    const [fn] = exportedFunctions(src);
+    expect(fn, 'expected the fixture to parse one exported function').toBeDefined();
+    expect(QUERY_VERBS.test(fn!.body)).toBe(true);
+
+    const first = fn!.params.split(',')[0]?.trim() ?? '';
+    // This is the exact assertion the main suite above runs on every real repo file.
+    // Here it must FAIL (the fixture is deliberately bad), which is what proves the
+    // recursive guard would catch this if it were committed for real.
+    expect(/^orgId\s*:/.test(first)).toBe(false);
+  });
+
+  it('a well-formed nested file would pass the same check', () => {
+    writeFileSync(
+      join(fixtureRoot, 'bad', 'fixed.ts'),
+      [
+        "import { and, eq } from 'drizzle-orm';",
+        'export async function listSomething(orgId: string, db: unknown) {',
+        "  return (db as { select: () => unknown }).select().from('tenant')" +
+          ".where(and(eq('tenant.orgId', orgId)));",
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const src = readSource(fixtureRoot, 'bad/fixed.ts');
+    const [fn] = exportedFunctions(src);
+    const first = fn!.params.split(',')[0]?.trim() ?? '';
+    expect(/^orgId\s*:/.test(first)).toBe(true);
+    expect(/\borgId\b/.test(fn!.body)).toBe(true);
+  });
 });

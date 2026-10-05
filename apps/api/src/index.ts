@@ -7,6 +7,9 @@ import { createAuth } from './lib/auth.js';
 import { ApiException } from './lib/errors.js';
 import { properties } from './routes/properties.js';
 import { units } from './routes/units.js';
+import { me } from './routes/me.js';
+import { tenants } from './routes/tenants.js';
+import { portal } from './routes/portal.js';
 import type { AppBindings } from './types.js';
 
 const app = new Hono<AppBindings>();
@@ -40,6 +43,9 @@ app.on(['GET', 'POST'], '/api/auth/*', (c) => createAuth(c.env).handler(c.req.ra
 /* ---- feature routes mount here ---- */
 app.route('/', properties);
 app.route('/', units);
+app.route('/', me);
+app.route('/', tenants);
+app.route('/', portal);
 
 app.notFound((c) =>
   c.json({ error: { code: 'not_found', message: 'No such endpoint' } }, 404),

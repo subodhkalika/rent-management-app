@@ -41,3 +41,12 @@ export const validationFailed = (d: Record<string, string[]>) =>
  * letting one landlord probe another's portfolio.
  */
 export const notFound = (what = 'Resource') => new ApiException('not_found', `${what} not found`);
+
+/**
+ * The ONE response for every invite failure — bad token, expired, revoked, already
+ * accepted, tenant archived. The sameness is the anti-enumeration property
+ * (docs/PLAN-V1.md §1.3): differentiating any of these would tell a caller which
+ * guess was "closer". Always this exact message, never a more specific one.
+ */
+export const inviteInvalid = () =>
+  new ApiException('not_found', 'This invitation is no longer valid. Ask your landlord to send a new one.');

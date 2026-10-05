@@ -3,6 +3,7 @@ import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { organization } from 'better-auth/plugins';
 import { asc, eq } from 'drizzle-orm';
 import { createDb, schema } from '../db/index.js';
+import { sendEmail, renderResetPasswordEmail } from './email.js';
 import type { Env } from '../types.js';
 
 /**
@@ -18,7 +19,18 @@ export function createAuth(env: Env) {
       provider: 'pg',
       schema,
     }),
-    emailAndPassword: { enabled: true, requireEmailVerification: false },
+    emailAndPassword: {
+      enabled: true,
+      requireEmailVerification: false,
+      // Landlords had no password-recovery path at all before this phase — see
+      // docs/PLAN-V1.md §1.3. Tenants get the same flow; Better Auth doesn't
+      // distinguish the two actor types, which is fine here since a password reset
+      // only ever needs the already-verified email on the user row.
+      sendResetPassword: async ({ user, url }) => {
+        const email = renderResetPasswordEmail({ userName: user.name, url });
+        await sendEmail(env, { ...email, to: user.email });
+      },
+    },
     trustedOrigins: [env.WEB_ORIGIN],
     session: {
       expiresIn: 60 * 60 * 24 * 30, // 30 days

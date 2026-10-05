@@ -1,4 +1,7 @@
 # Copy to .dev.vars (gitignored) and fill in. Never commit the real file.
 DATABASE_URL="postgresql://user:pass@ep-xxx.neon.tech/rms?sslmode=require"
 BETTER_AUTH_SECRET="generate with: openssl rand -base64 32"
+# Optional. Absent locally — invite/reset emails log and no-op instead of sending
+# (lib/email.ts). Set both to test real delivery against Resend's sandbox sender.
 RESEND_API_KEY="re_..."
+RESEND_FROM_EMAIL="Rent Manager <onboarding@resend.dev>"

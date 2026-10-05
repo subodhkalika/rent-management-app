@@ -38,7 +38,41 @@ rather than fabricate a date.
 while `portalAccess === 'invited'`. Landlord-facing only; it appears in no portal
 response.
 
-## 3. Naming check, not a change
+## 3. `property.timezone` exists in the database and can never be set — fix this first
+
+Found by `backend-dev`. The most consequential of the three, because the feature looks
+implemented and silently is not.
+
+`property.timezone` is `NOT NULL DEFAULT 'UTC'` in the schema, but
+`createPropertyBody`, `updatePropertyBody` and `property` in the contract have no
+`timezone` field. So no request can ever carry one and no response can return one.
+**Every property stays 'UTC' forever.**
+
+That quietly guts the date model the whole ledger rests on:
+
+- `localToday(property.timezone)` always answers "today in UTC"
+- Arrears flip at UTC midnight, which is the wrong local day for most of the world —
+  a Perth landlord (UTC+8) sees rent marked overdue eight hours early, a Los Angeles
+  one (UTC-8) sees it marked a day late
+- Phase 4's reminders are scheduled on a `scheduled_for` date computed in the
+  property's timezone, so they would go out on the wrong local day
+
+Nothing fails. No test catches it. It is only visible as rent being overdue on the
+wrong date, which looks like a billing bug rather than a missing field.
+
+**Add to `packages/contract/src/property.ts`:**
+- `timezone` (the `timezone` schema from `common.ts`) on `createPropertyBody`,
+  required going forward
+- the same on `updatePropertyBody` via `.partial()`
+- `timezone` on the `property` response
+
+Then the frontend's timezone field and the "confirm your timezone" banner — already in
+the phase 1 frontend brief, and not buildable until this lands — can round-trip.
+
+Do this one before 1 and 2: it is the only one of the three that is actively wrong
+rather than merely missing.
+
+## 4. Naming check, not a change
 
 The plan describes separate `DELETE /v1/tenants/:id/invite` and
 `DELETE /v1/tenants/:id/portal-access`. The contract exposes only the latter, so the UI
