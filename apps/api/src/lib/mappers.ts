@@ -23,6 +23,7 @@ export function mapProperty(row: PropertyRow): Property {
       country: row.country,
     },
     notes: row.notes,
+    timezone: row.timezone,
     unitCount: row.unitCount,
     occupiedUnitCount: row.occupiedUnitCount,
     createdAt: row.createdAt.toISOString(),
@@ -61,6 +62,12 @@ export function derivePortalAccess(
 }
 
 export function mapTenant(row: TenantRow): Tenant {
+  const access = derivePortalAccess(row);
+  // `invitedEmail`/`inviteExpiresAt` are non-null only while the tenant reads as
+  // 'invited' — every other state (none/active/revoked) means the most recent
+  // invite, if any, is no longer live, so surfacing its email/expiry would show a
+  // landlord a link that can no longer be accepted.
+  const invited = access === 'invited';
   return {
     id: row.id,
     firstName: row.firstName,
@@ -71,8 +78,10 @@ export function mapTenant(row: TenantRow): Tenant {
     emergencyContactPhone: row.emergencyContactPhone,
     notes: row.notes,
     status: row.status,
-    portalAccess: derivePortalAccess(row),
+    portalAccess: access,
     portalEmail: row.portalEmail,
+    invitedEmail: invited ? row.latestInviteEmail : null,
+    inviteExpiresAt: invited && row.latestInviteExpiresAt ? row.latestInviteExpiresAt.toISOString() : null,
     remindersOptedOut: row.remindersOptedOut,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),

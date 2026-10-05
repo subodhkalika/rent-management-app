@@ -17,6 +17,7 @@ const propertyRow: PropertyRow = {
   postalCode: '62704',
   country: 'US',
   notes: null,
+  timezone: 'Australia/Perth',
   unitCount: 4,
   occupiedUnitCount: 3,
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -140,6 +141,7 @@ const tenantRow: TenantRow = {
   remindersOptedOut: false,
   userId: null,
   portalEmail: null,
+  latestInviteEmail: null,
   latestInviteAcceptedAt: null,
   latestInviteRevokedAt: null,
   latestInviteExpiresAt: null,
@@ -162,6 +164,39 @@ describe('mapTenant', () => {
     expect(mapped.latestInviteAcceptedAt).toBeUndefined();
     expect(mapped.latestInviteRevokedAt).toBeUndefined();
     expect(mapped.latestInviteExpiresAt).toBeUndefined();
+  });
+
+  it('invitedEmail/inviteExpiresAt are null when portalAccess is "none"', () => {
+    const mapped = mapTenant(tenantRow);
+    expect(mapped.portalAccess).toBe('none');
+    expect(mapped.invitedEmail).toBeNull();
+    expect(mapped.inviteExpiresAt).toBeNull();
+  });
+
+  it('invitedEmail/inviteExpiresAt are populated only while portalAccess is "invited"', () => {
+    const future = new Date(Date.now() + 1000 * 60 * 60 * 24);
+    const invitedRow: TenantRow = {
+      ...tenantRow,
+      latestInviteEmail: 'dana@example.com',
+      latestInviteExpiresAt: future,
+    };
+    const mapped = mapTenant(invitedRow);
+    expect(mapped.portalAccess).toBe('invited');
+    expect(mapped.invitedEmail).toBe('dana@example.com');
+    expect(mapped.inviteExpiresAt).toBe(future.toISOString());
+  });
+
+  it('invitedEmail/inviteExpiresAt go back to null once access is "active" even if latestInvite* is still set', () => {
+    const mapped = mapTenant({
+      ...tenantRow,
+      userId: 'user_1',
+      latestInviteEmail: 'dana@example.com',
+      latestInviteAcceptedAt: new Date('2026-01-01T00:00:00.000Z'),
+      latestInviteExpiresAt: new Date('2026-06-15T00:00:00.000Z'),
+    });
+    expect(mapped.portalAccess).toBe('active');
+    expect(mapped.invitedEmail).toBeNull();
+    expect(mapped.inviteExpiresAt).toBeNull();
   });
 });
 

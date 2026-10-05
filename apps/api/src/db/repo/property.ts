@@ -21,6 +21,7 @@ export interface PropertyRow {
   postalCode: string;
   country: string;
   notes: string | null;
+  timezone: string;
   unitCount: number;
   occupiedUnitCount: number;
   createdAt: Date;
@@ -40,6 +41,7 @@ const propertyColumns = {
   postalCode: property.postalCode,
   country: property.country,
   notes: property.notes,
+  timezone: property.timezone,
   createdAt: property.createdAt,
   updatedAt: property.updatedAt,
   unitCount: sql<number>`count(${unit.id}) filter (where ${unit.deletedAt} is null)`.mapWith(Number),
@@ -118,6 +120,7 @@ export function createPropertyQuery(
     region: data.address.region,
     postalCode: data.address.postalCode,
     country: data.address.country,
+    timezone: data.timezone,
     notes: data.notes ?? null,
   });
 }
@@ -159,6 +162,7 @@ export function updatePropertyQuery(
     patch.postalCode = data.address.postalCode;
     patch.country = data.address.country;
   }
+  if (data.timezone !== undefined) patch.timezone = data.timezone;
   if (data.notes !== undefined) patch.notes = data.notes ?? null;
 
   return db

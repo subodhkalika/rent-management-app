@@ -92,6 +92,7 @@ const createBody = {
     postalCode: '62704',
     country: 'US',
   },
+  timezone: 'America/Chicago',
 };
 
 describe('createPropertyQuery', () => {
@@ -100,6 +101,12 @@ describe('createPropertyQuery', () => {
     expect(sql).toContain('insert into "property"');
     expect(sql).toMatch(/\("id", "org_id",/);
     expect(params).toContain('org_1');
+  });
+
+  it('inserts the timezone from the request body, not the column default', () => {
+    const { sql, params } = createPropertyQuery('org_1', db, 'prop_1', createBody).toSQL();
+    expect(sql).toContain('"timezone"');
+    expect(params).toContain('America/Chicago');
   });
 });
 
@@ -117,6 +124,17 @@ describe('updatePropertyQuery', () => {
     const { sql } = updatePropertyQuery('org_1', db, 'prop_1', { name: 'New name' }).toSQL();
     expect(sql).toContain('"name" = $1');
     expect(sql).not.toContain('"type" =');
+  });
+
+  it('sets timezone when present in the patch', () => {
+    const { sql, params } = updatePropertyQuery('org_1', db, 'prop_1', { timezone: 'Australia/Perth' }).toSQL();
+    expect(sql).toContain('"timezone" =');
+    expect(params).toContain('Australia/Perth');
+  });
+
+  it('leaves timezone untouched when absent from the patch', () => {
+    const { sql } = updatePropertyQuery('org_1', db, 'prop_1', { name: 'New name' }).toSQL();
+    expect(sql).not.toContain('"timezone" =');
   });
 });
 

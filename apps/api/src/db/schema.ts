@@ -152,10 +152,10 @@ export const property = pgTable(
     // IANA zone, e.g. "Australia/Perth". Drives "what is today" for arrears and
     // reminders (docs/PLAN-V1.md §4.4) — never stored elsewhere. Safe single-step
     // migration (`NOT NULL DEFAULT`), but 'UTC' is the wrong answer for a real
-    // non-UTC landlord; see docs/PLAN-V1.md §2.3. NOTE: `packages/contract/src/
-    // property.ts` has no `timezone` field on `createPropertyBody` / `property` yet,
-    // so there is currently no route that can set this to anything but the default —
-    // flagged to the orchestrator, not worked around here.
+    // non-UTC landlord; see docs/PLAN-V1.md §2.3. `createPropertyBody` now requires
+    // this field and `updatePropertyBody` accepts it (docs/TASKS/005), so every
+    // property created from here on gets a real value; existing rows keep 'UTC'
+    // until the landlord is prompted to fix them.
     timezone: text().notNull().default('UTC'),
 
     notes: text(),

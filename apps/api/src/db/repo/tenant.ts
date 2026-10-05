@@ -10,11 +10,14 @@ import { isUniqueViolation } from '../../lib/db-errors.js';
  * A tenant row with the two pieces of portal state folded in:
  * - `portalEmail`: the bound login's email, via a left join on `user` — null until
  *   an invite is accepted.
- * - `latestInvite*`: the three columns of the most recent `tenant_invite` row for
- *   this tenant (if any), via a `DISTINCT ON` derived table. `mapTenant`
- *   (lib/mappers.ts) turns these into the contract's `portalAccess` enum — kept out
- *   of SQL so the state machine is one small, directly-unit-testable function
- *   instead of a CASE expression nobody can safely change.
+ * - `latestInvite*`: the columns of the most recent `tenant_invite` row for this
+ *   tenant (if any), via a `DISTINCT ON` derived table. `mapTenant` (lib/mappers.ts)
+ *   turns `latestInviteAcceptedAt`/`latestInviteRevokedAt`/`latestInviteExpiresAt`
+ *   into the contract's `portalAccess` enum — kept out of SQL so the state machine
+ *   is one small, directly-unit-testable function instead of a CASE expression
+ *   nobody can safely change. `latestInviteEmail` rides along the same join and is
+ *   surfaced as `invitedEmail`, but only while that derived state is 'invited' — see
+ *   `mapTenant`.
  */
 export interface TenantRow {
   id: string;
@@ -29,6 +32,7 @@ export interface TenantRow {
   remindersOptedOut: boolean;
   userId: string | null;
   portalEmail: string | null;
+  latestInviteEmail: string | null;
   latestInviteAcceptedAt: Date | null;
   latestInviteRevokedAt: Date | null;
   latestInviteExpiresAt: Date | null;
@@ -47,6 +51,7 @@ function tenantColumns(orgId: string, db: Database) {
       [tenantInvite.tenantId],
       {
         tenantId: tenantInvite.tenantId,
+        email: tenantInvite.email,
         acceptedAt: tenantInvite.acceptedAt,
         revokedAt: tenantInvite.revokedAt,
         expiresAt: tenantInvite.expiresAt,
@@ -71,6 +76,7 @@ function tenantColumns(orgId: string, db: Database) {
       remindersOptedOut: tenant.remindersOptedOut,
       userId: tenant.userId,
       portalEmail: user.email,
+      latestInviteEmail: latestInvite.email,
       latestInviteAcceptedAt: latestInvite.acceptedAt,
       latestInviteRevokedAt: latestInvite.revokedAt,
       latestInviteExpiresAt: latestInvite.expiresAt,

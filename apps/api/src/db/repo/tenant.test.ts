@@ -50,6 +50,15 @@ describe('listTenantsQuery', () => {
     expect(sql).toContain('"tenant_invite"."org_id" =');
   });
 
+  it("carries the latest invite's email through the same org-scoped subquery, for invitedEmail", () => {
+    // mapTenant (lib/mappers.ts) only surfaces this while portalAccess === 'invited',
+    // but the row has to carry it from somewhere — this is the one query that joins
+    // tenant_invite at all, so the column rides along the SAME org-scoped subquery
+    // rather than a second, independently-scoped lookup.
+    const { sql } = listTenantsQuery('org_A', db, { limit: 25 }).toSQL();
+    expect(sql).toMatch(/"latest_invite"\."email"/);
+  });
+
   it('paginates with a keyset cursor when one is given', () => {
     const id = '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e0f';
     const cursor = btoa(id);

@@ -1,10 +1,12 @@
 import { Hono } from 'hono';
 import {
   acceptInviteBody,
+  inviteToken,
   updatePortalProfileBody,
   type AcceptInviteBody,
   type UpdatePortalProfileBody,
   type InviteAccepted,
+  type InvitePreview,
 } from '@rms/contract';
 import { validateBody, parsedBody } from '../middleware/validate.js';
 import { conflict, notFound, validationFailed, inviteInvalid } from '../lib/errors.js';
@@ -13,12 +15,37 @@ import { sha256Hex } from '../lib/tokens.js';
 import { mapPortalProfile } from '../lib/mappers.js';
 import { getSession, createAuth } from '../lib/auth.js';
 import { markEmailVerified } from '../db/repo/auth/user.js';
-import { findInviteByTokenHash, findUserByEmail } from '../db/repo/public/invite.js';
+import {
+  findInviteByTokenHash,
+  findUserByEmail,
+  type InviteLookupRow,
+} from '../db/repo/public/invite.js';
 import * as tenantRepo from '../db/repo/tenant.js';
 import * as profileRepo from '../db/repo/portal/profile.js';
 import type { AppBindings } from '../types.js';
 
 export const portal = new Hono<AppBindings>();
+
+/**
+ * True while an invite is still usable: not accepted, not revoked, not expired, and
+ * the tenant it belongs to is neither archived nor soft-deleted.
+ *
+ * Shared by `acceptInvite` and the preview route below on purpose — see
+ * docs/TASKS/005-phase1-amendments.md §1. Both routes must fold every invalid state
+ * into the exact same `inviteInvalid()` 404; a second, independently-written
+ * conjunction here would be one future edit away from silently diverging and turning
+ * the read-only preview route into an enumeration oracle for the write route it is
+ * supposed to mirror.
+ */
+function isInviteLive(invite: InviteLookupRow, now: Date): boolean {
+  return (
+    invite.revokedAt === null &&
+    invite.acceptedAt === null &&
+    invite.expiresAt > now &&
+    invite.tenantDeletedAt === null &&
+    invite.tenantStatus !== 'archived'
+  );
+}
 
 /**
  * Accepting an invite is reachable by anyone — no `requireAuth`/`requireTenant` on
@@ -46,13 +73,7 @@ portal.post('/v1/portal/invites/accept', validateBody(acceptInviteBody), async (
   if (!invite) throw inviteInvalid();
 
   const now = new Date();
-  const isLive =
-    invite.revokedAt === null &&
-    invite.acceptedAt === null &&
-    invite.expiresAt > now &&
-    invite.tenantDeletedAt === null &&
-    invite.tenantStatus !== 'archived';
-  if (!isLive) throw inviteInvalid();
+  if (!isInviteLive(invite, now)) throw inviteInvalid();
 
   // A defensive check, not the expected path: an invite this function found "live"
   // should never also have a bound tenant.userId (binding and marking accepted
@@ -137,6 +158,54 @@ portal.post('/v1/portal/invites/accept', validateBody(acceptInviteBody), async (
     res.headers.append('set-cookie', cookie);
   }
   return res;
+});
+
+/**
+ * Public preview of an invite, keyed off the token itself — see docs/TASKS/
+ * 005-phase1-amendments.md §1. Registered next to `acceptInvite` above (also public)
+ * and before the "closed by default" wildcard comment below, for the same reason:
+ * the request never reaches `requireTenant` for this path because `authLayer`
+ * (middleware/auth-layer.ts) classifies it as public by its exact shape before
+ * routing gets here — see `PUBLIC_PATH_PATTERNS` there.
+ *
+ * MUST fail with the exact same `inviteInvalid()` 404 as `acceptInvite`, for every
+ * invalid state — unknown token, expired, revoked, already accepted, tenant archived
+ * or soft-deleted. Differentiating any of those here would make this read-only route
+ * the enumeration oracle `acceptInvite` was built not to be. `isInviteLive` above is
+ * shared with `acceptInvite` for exactly this reason — do not re-derive the
+ * conjunction locally.
+ */
+portal.get('/v1/portal/invites/:token', async (c) => {
+  const db = c.get('db');
+  const rawToken = c.req.param('token');
+
+  // A malformed token must 404 identically to a well-formed one that simply does
+  // not match any row — never a different error that would tell a caller their
+  // input even had the right shape.
+  const parsedToken = inviteToken.safeParse(rawToken);
+  if (!parsedToken.success) throw inviteInvalid();
+
+  const tokenHash = await sha256Hex(parsedToken.data);
+  const invite = await findInviteByTokenHash(db, tokenHash);
+  if (!invite) throw inviteInvalid();
+
+  if (!isInviteLive(invite, new Date())) throw inviteInvalid();
+
+  // Possession of the token already proves possession of the emailed link, so
+  // revealing whether an account exists for it is not a new leak — it only lets the
+  // page choose "sign in to accept" over a password form.
+  const existingUser = await findUserByEmail(db, invite.email);
+
+  const response: InvitePreview = {
+    orgName: invite.orgName,
+    // First name only — enough to confirm whose invite this is without exposing a
+    // full identity to whoever holds a forwarded link.
+    tenantFirstName: invite.tenantFirstName,
+    email: invite.email,
+    accountExists: existingUser !== null,
+    expiresAt: invite.expiresAt.toISOString(),
+  };
+  return c.json(response);
 });
 
 // Closed by default: every OTHER path under /v1/portal/* requires a resolved tenant

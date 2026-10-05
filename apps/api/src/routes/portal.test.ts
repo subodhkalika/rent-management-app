@@ -237,6 +237,112 @@ describe('accept invite — signed in, binding the current user', () => {
   });
 });
 
+describe('GET invite preview — byte-identical 404 to acceptInvite for every invalid state', () => {
+  it('no invite matches the token hash at all', async () => {
+    inviteRepoMock.findInviteByTokenHash.mockResolvedValue(null);
+    const res = await get(`/v1/portal/invites/${'a'.repeat(64)}`);
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: { message: string } }).error.message).toBe(INVALID_INVITE_MESSAGE);
+  });
+
+  it('a malformed token (wrong shape) gets the exact same 404, not a validation error', async () => {
+    // No DB lookup even happens — the token never matches the contract's
+    // `inviteToken` shape, so this must fail identically to "no invite found",
+    // never a 422 that would tell a caller their guess at least had the right shape.
+    const res = await get('/v1/portal/invites/not-a-real-token');
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: { message: string } }).error.message).toBe(INVALID_INVITE_MESSAGE);
+    expect(inviteRepoMock.findInviteByTokenHash).not.toHaveBeenCalled();
+  });
+
+  it('expired', async () => {
+    inviteRepoMock.findInviteByTokenHash.mockResolvedValue(liveInvite({ expiresAt: new Date(Date.now() - 1000) }));
+    const res = await get(`/v1/portal/invites/${'a'.repeat(64)}`);
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: { message: string } }).error.message).toBe(INVALID_INVITE_MESSAGE);
+  });
+
+  it('revoked', async () => {
+    inviteRepoMock.findInviteByTokenHash.mockResolvedValue(liveInvite({ revokedAt: new Date() }));
+    const res = await get(`/v1/portal/invites/${'a'.repeat(64)}`);
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: { message: string } }).error.message).toBe(INVALID_INVITE_MESSAGE);
+  });
+
+  it('already accepted', async () => {
+    inviteRepoMock.findInviteByTokenHash.mockResolvedValue(liveInvite({ acceptedAt: new Date() }));
+    const res = await get(`/v1/portal/invites/${'a'.repeat(64)}`);
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: { message: string } }).error.message).toBe(INVALID_INVITE_MESSAGE);
+  });
+
+  it('tenant archived since the invite was issued', async () => {
+    inviteRepoMock.findInviteByTokenHash.mockResolvedValue(liveInvite({ tenantStatus: 'archived' }));
+    const res = await get(`/v1/portal/invites/${'a'.repeat(64)}`);
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: { message: string } }).error.message).toBe(INVALID_INVITE_MESSAGE);
+  });
+
+  it('tenant soft-deleted since the invite was issued', async () => {
+    inviteRepoMock.findInviteByTokenHash.mockResolvedValue(liveInvite({ tenantDeletedAt: new Date() }));
+    const res = await get(`/v1/portal/invites/${'a'.repeat(64)}`);
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: { message: string } }).error.message).toBe(INVALID_INVITE_MESSAGE);
+  });
+
+  it('every one of the above produces the exact same message, word for word, as acceptInvite', async () => {
+    const states = [
+      null,
+      liveInvite({ expiresAt: new Date(Date.now() - 1) }),
+      liveInvite({ revokedAt: new Date() }),
+      liveInvite({ acceptedAt: new Date() }),
+      liveInvite({ tenantStatus: 'archived' }),
+      liveInvite({ tenantDeletedAt: new Date() }),
+    ];
+    const messages: string[] = [];
+    for (const state of states) {
+      inviteRepoMock.findInviteByTokenHash.mockResolvedValue(state);
+      const res = await get(`/v1/portal/invites/${'a'.repeat(64)}`);
+      expect(res.status).toBe(404);
+      messages.push(((await res.json()) as { error: { message: string } }).error.message);
+    }
+    expect(new Set(messages).size).toBe(1);
+    expect(messages[0]).toBe(INVALID_INVITE_MESSAGE);
+  });
+});
+
+describe('GET invite preview — success shape', () => {
+  it('returns orgName, FIRST name only, email, accountExists, and expiresAt', async () => {
+    inviteRepoMock.findInviteByTokenHash.mockResolvedValue(
+      liveInvite({ tenantFirstName: 'Dana', tenantLastName: 'Lee', orgName: 'Alice Lettings', email: 'dana@example.com' }),
+    );
+    inviteRepoMock.findUserByEmail.mockResolvedValue(null);
+
+    const res = await get(`/v1/portal/invites/${'a'.repeat(64)}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      orgName: 'Alice Lettings',
+      tenantFirstName: 'Dana',
+      email: 'dana@example.com',
+      accountExists: false,
+      expiresAt: expect.any(String),
+    });
+    // Never the last name, never a combined display name.
+    expect(JSON.stringify(body)).not.toMatch(/Lee/);
+  });
+
+  it('accountExists is true when a user already exists for the invite email', async () => {
+    inviteRepoMock.findInviteByTokenHash.mockResolvedValue(liveInvite());
+    inviteRepoMock.findUserByEmail.mockResolvedValue({ id: 'existing_user' });
+
+    const res = await get(`/v1/portal/invites/${'a'.repeat(64)}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { accountExists: boolean };
+    expect(body.accountExists).toBe(true);
+  });
+});
+
 describe('portal profile — tenant resolving another tenant record (docs/PLAN-V1.md §1.6)', () => {
   it("GET .../profile for a tenantId not in the caller's scope is 404, not 403", async () => {
     profileRepoMock.getProfile.mockResolvedValue(null); // the repo already enforces this; route just surfaces it
@@ -276,6 +382,10 @@ describe('portal profile — tenant resolving another tenant record (docs/PLAN-V
     expect(JSON.stringify(body)).not.toMatch(/notes/i);
   });
 });
+
+async function get(path: string) {
+  return buildApp().request(path, {}, testEnv);
+}
 
 async function post(path: string, json: unknown) {
   return buildApp().request(

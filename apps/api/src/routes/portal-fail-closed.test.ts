@@ -109,4 +109,27 @@ describe('every /v1/portal/* path is closed by default', () => {
     expect(res.status).toBe(404);
     expect(getSessionMock).not.toHaveBeenCalled();
   });
+
+  it('the public invite-preview route is reachable with NO session at all', async () => {
+    getSessionMock.mockResolvedValue(null);
+
+    const res = await buildApp().request(`/v1/portal/invites/${'a'.repeat(64)}`, {}, testEnv);
+
+    // findInviteByTokenHash is mocked to resolve null, so this is the ordinary
+    // "invalid invite" 404 — what matters here is that it is NOT 401/403, which
+    // would mean the auth-layer's new pattern failed to classify this path as
+    // public and `requireTenant` ran ahead of the route handler.
+    expect(res.status).toBe(404);
+    expect(getSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('the auth-layer public pattern for invite preview does NOT also expose the profile route', async () => {
+    getSessionMock.mockResolvedValue(null);
+
+    const res = await buildApp().request('/v1/portal/some-tenant-id/profile', {}, testEnv);
+
+    // Must still require a tenant session — proves the new pattern is anchored to
+    // `/invites/<one segment>` and cannot be satisfied by any other /v1/portal/* path.
+    expect(res.status).toBe(401);
+  });
 });
