@@ -12,6 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { UnitLeaseCell } from '@/features/leases/UnitLeaseCell';
 import { useUnits } from './api';
 import { UnitFormDialog } from './UnitFormDialog';
 import { DeleteUnitDialog } from './DeleteUnitDialog';
@@ -64,6 +65,7 @@ export function UnitsSection({ propertyId }: { propertyId: string }) {
                   <TableHead>Sq ft</TableHead>
                   <TableHead>Market rent</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Lease</TableHead>
                   <TableHead className="w-0">
                     <span className="sr-only">Actions</span>
                   </TableHead>
@@ -84,6 +86,9 @@ export function UnitsSection({ propertyId }: { propertyId: string }) {
                       <Badge variant={statusVariant[unit.status]}>
                         {unitStatusLabels[unit.status]}
                       </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <UnitLeaseCell unitId={unit.id} />
                     </TableCell>
                     <TableCell>
                       <div className="flex justify-end gap-1">

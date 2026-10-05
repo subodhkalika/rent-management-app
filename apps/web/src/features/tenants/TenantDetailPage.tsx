@@ -5,6 +5,7 @@ import { tenantFullName, tenantStatusLabels } from '@rms/contract';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { TenantLeasesCard } from '@/features/leases/TenantLeasesCard';
 import { useTenant } from './api';
 import { TenantFormDialog } from './TenantFormDialog';
 import { DeleteTenantDialog } from './DeleteTenantDialog';
@@ -76,6 +77,10 @@ export function TenantDetailPage() {
         <>
           <div className="mt-6">
             <PortalAccessPanel tenant={tenant} />
+          </div>
+
+          <div className="mt-6">
+            <TenantLeasesCard tenantId={tenant.id} />
           </div>
 
           <TenantFormDialog open={editOpen} onOpenChange={setEditOpen} tenant={tenant} />

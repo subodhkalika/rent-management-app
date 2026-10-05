@@ -1,10 +1,11 @@
 import { Hono } from 'hono';
 import { updateUnitBody, type UpdateUnitBody } from '@rms/contract';
 import { validateBody, parsedBody } from '../middleware/validate.js';
-import { notFound } from '../lib/errors.js';
+import { conflict, notFound } from '../lib/errors.js';
 import { requireUuidParam } from '../lib/params.js';
 import { mapUnit } from '../lib/mappers.js';
 import * as unitRepo from '../db/repo/unit.js';
+import * as leaseRepo from '../db/repo/lease.js';
 import type { AppBindings } from '../types.js';
 
 export const units = new Hono<AppBindings>();
@@ -37,6 +38,12 @@ units.delete('/v1/units/:id', async (c) => {
   const orgId = c.get('orgId');
   const db = c.get('db');
   const id = requireUuidParam(c.req.param('id'), 'Unit');
+
+  // docs/PLAN-PHASE2.md §3.6: 409 while the unit has an active lease.
+  const activeLeaseCount = await leaseRepo.countActiveLeasesForUnit(orgId, db, id);
+  if (activeLeaseCount > 0) {
+    throw conflict('This unit has an active lease. End the lease before deleting the unit.');
+  }
 
   const ok = await unitRepo.softDeleteUnit(orgId, db, id);
   if (!ok) throw notFound('Unit');

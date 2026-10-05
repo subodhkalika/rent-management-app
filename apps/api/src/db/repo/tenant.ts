@@ -245,9 +245,10 @@ export function archiveTenantQuery(orgId: string, db: Database, id: string) {
  * Archives a tenant: soft delete + `status = 'archived'`. Drops them out of
  * `requireTenant`'s scope on their next request (docs/PLAN-V1.md §5.2).
  *
- * The plan also requires this to 409 while any lease on the tenant is `active` — no
- * `lease` table exists yet (Phase 2), so that check is not implemented here. Noted,
- * not silently skipped.
+ * The 409-while-on-an-active-lease precondition (docs/PLAN-PHASE2.md §3.6) is
+ * enforced by the ROUTE (routes/tenants.ts), via `leaseRepo.countActiveLeasesForTenant`
+ * — not here, so this function stays a plain soft delete usable without a lease in
+ * play (and without this repo importing lease.ts).
  */
 export async function archiveTenant(orgId: string, db: Database, id: string): Promise<boolean> {
   const result = await archiveTenantQuery(orgId, db, id);

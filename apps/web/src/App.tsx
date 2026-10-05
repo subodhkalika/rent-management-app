@@ -3,6 +3,11 @@ import { PropertiesListPage } from '@/features/properties/PropertiesListPage';
 import { PropertyDetailPage } from '@/features/properties/PropertyDetailPage';
 import { TenantsListPage } from '@/features/tenants/TenantsListPage';
 import { TenantDetailPage } from '@/features/tenants/TenantDetailPage';
+import { LeasesListPage } from '@/features/leases/LeasesListPage';
+import { LeaseDetailPage } from '@/features/leases/LeaseDetailPage';
+import { CreateLeasePage } from '@/features/leases/wizard/CreateLeasePage';
+import { PortalLeasesListPage } from '@/features/portal/PortalLeasesListPage';
+import { PortalLeaseDetailPage } from '@/features/portal/PortalLeaseDetailPage';
 import { SignInPage } from '@/features/auth/SignInPage';
 import { SignUpPage } from '@/features/auth/SignUpPage';
 import { ForgotPasswordPage } from '@/features/auth/ForgotPasswordPage';
@@ -50,6 +55,9 @@ export function App() {
             <Route path="/properties/:id" element={<PropertyDetailPage />} />
             <Route path="/tenants" element={<TenantsListPage />} />
             <Route path="/tenants/:id" element={<TenantDetailPage />} />
+            <Route path="/leases" element={<LeasesListPage />} />
+            <Route path="/leases/new" element={<CreateLeasePage />} />
+            <Route path="/leases/:id" element={<LeaseDetailPage />} />
           </Route>
         </Route>
 
@@ -57,6 +65,8 @@ export function App() {
           <Route element={<AppShell />}>
             <Route path="/portal" element={<Navigate to="/portal/profile" replace />} />
             <Route path="/portal/profile" element={<PortalProfilePage />} />
+            <Route path="/portal/leases" element={<PortalLeasesListPage />} />
+            <Route path="/portal/leases/:id" element={<PortalLeaseDetailPage />} />
           </Route>
         </Route>
 

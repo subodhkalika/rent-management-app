@@ -127,6 +127,44 @@ export function AppShell() {
               >
                 Tenants
               </Link>
+              <Link
+                to="/leases"
+                className={cn(
+                  'transition-colors',
+                  location.pathname.startsWith('/leases')
+                    ? 'font-medium text-foreground'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                Leases
+              </Link>
+            </nav>
+          )}
+
+          {ctx && isPortalRoute && (
+            <nav className="ml-4 flex items-center gap-4 text-sm" aria-label="Tenant">
+              <Link
+                to="/portal/leases"
+                className={cn(
+                  'transition-colors',
+                  location.pathname.startsWith('/portal/leases')
+                    ? 'font-medium text-foreground'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                My leases
+              </Link>
+              <Link
+                to="/portal/profile"
+                className={cn(
+                  'transition-colors',
+                  location.pathname.startsWith('/portal/profile')
+                    ? 'font-medium text-foreground'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                My profile
+              </Link>
             </nav>
           )}
         </div>

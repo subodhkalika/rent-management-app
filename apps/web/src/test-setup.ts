@@ -16,3 +16,18 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
 if (typeof Element.prototype.scrollIntoView !== 'function') {
   Element.prototype.scrollIntoView = () => {};
 }
+
+// jsdom has no Pointer Events implementation at all — Radix's `Select` (and any
+// other primitive built on pointer capture) calls `hasPointerCapture` /
+// `setPointerCapture` / `releasePointerCapture` on every pointer interaction, and
+// without these a plain `userEvent.click()` on a trigger throws a TypeError that
+// has nothing to do with the behaviour under test.
+if (typeof Element.prototype.hasPointerCapture !== 'function') {
+  Element.prototype.hasPointerCapture = () => false;
+}
+if (typeof Element.prototype.setPointerCapture !== 'function') {
+  Element.prototype.setPointerCapture = () => {};
+}
+if (typeof Element.prototype.releasePointerCapture !== 'function') {
+  Element.prototype.releasePointerCapture = () => {};
+}

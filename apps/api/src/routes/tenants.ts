@@ -17,6 +17,7 @@ import { generateInviteToken, sha256Hex } from '../lib/tokens.js';
 import { sendEmail, renderInviteEmail } from '../lib/email.js';
 import { getOrganizationName } from '../db/repo/auth/organization.js';
 import * as tenantRepo from '../db/repo/tenant.js';
+import * as leaseRepo from '../db/repo/lease.js';
 import type { AppBindings } from '../types.js';
 
 export const tenants = new Hono<AppBindings>();
@@ -72,9 +73,13 @@ tenants.delete('/v1/tenants/:id', async (c) => {
   const db = c.get('db');
   const id = requireUuidParam(c.req.param('id'), 'Tenant');
 
-  // docs/PLAN-V1.md §5.2 also requires a 409 while any lease on the tenant is
-  // active. No `lease` table exists yet (Phase 2) — not implemented here, noted
-  // rather than silently skipped.
+  // docs/PLAN-PHASE2.md §3.6: 409 while the tenant is on any active lease, rather
+  // than archiving them out from under a tenancy that is still being billed.
+  const activeLeaseCount = await leaseRepo.countActiveLeasesForTenant(orgId, db, id);
+  if (activeLeaseCount > 0) {
+    throw conflict('This tenant is on an active lease. End the lease before removing the tenant.');
+  }
+
   const ok = await tenantRepo.archiveTenant(orgId, db, id);
   if (!ok) throw notFound('Tenant');
   return c.body(null, 204);

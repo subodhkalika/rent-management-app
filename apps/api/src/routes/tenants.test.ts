@@ -40,6 +40,9 @@ vi.mock('../db/repo/tenant.js', () => tenantRepoMock);
 const authOrgRepoMock = { getOrganizationName: vi.fn() };
 vi.mock('../db/repo/auth/organization.js', () => authOrgRepoMock);
 
+const leaseRepoMock = { countActiveLeasesForTenant: vi.fn() };
+vi.mock('../db/repo/lease.js', () => leaseRepoMock);
+
 const { tenants } = await import('./tenants.js');
 
 function buildApp() {
@@ -186,5 +189,50 @@ describe('no portal route ever reads an orgId from the request', () => {
     await buildApp().request('/v1/tenants?orgId=org_B&limit=5', {}, testEnv);
 
     expect(tenantRepoMock.listTenants).toHaveBeenCalledWith('org_A', expect.anything(), expect.anything());
+  });
+});
+
+describe('DELETE /v1/tenants/:id — docs/PLAN-PHASE2.md §3.6', () => {
+  it('409s while the tenant is on an active lease, naming the active lease', async () => {
+    leaseRepoMock.countActiveLeasesForTenant.mockResolvedValue(1);
+
+    const res = await buildApp().request(
+      '/v1/tenants/00000000-0000-7000-8000-000000000001',
+      { method: 'DELETE' },
+      testEnv,
+    );
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toContain('active lease');
+    expect(tenantRepoMock.archiveTenant).not.toHaveBeenCalled();
+  });
+
+  it('archives normally when the tenant has no active lease', async () => {
+    leaseRepoMock.countActiveLeasesForTenant.mockResolvedValue(0);
+    tenantRepoMock.archiveTenant.mockResolvedValue(true);
+
+    const res = await buildApp().request(
+      '/v1/tenants/00000000-0000-7000-8000-000000000001',
+      { method: 'DELETE' },
+      testEnv,
+    );
+
+    expect(res.status).toBe(204);
+    expect(tenantRepoMock.archiveTenant).toHaveBeenCalledOnce();
+  });
+
+  it('the active-lease count is scoped by the session orgId, never the request', async () => {
+    currentOrgId = 'org_B';
+    leaseRepoMock.countActiveLeasesForTenant.mockResolvedValue(0);
+    tenantRepoMock.archiveTenant.mockResolvedValue(false);
+
+    await buildApp().request('/v1/tenants/00000000-0000-7000-8000-000000000001', { method: 'DELETE' }, testEnv);
+
+    expect(leaseRepoMock.countActiveLeasesForTenant).toHaveBeenCalledWith(
+      'org_B',
+      expect.anything(),
+      '00000000-0000-7000-8000-000000000001',
+    );
   });
 });

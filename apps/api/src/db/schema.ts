@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
-  pgTable, text, timestamp, uuid, integer, bigint, real,
-  boolean, index, uniqueIndex, pgEnum,
+  pgTable, text, timestamp, uuid, integer, bigint, real, date, smallint,
+  boolean, index, uniqueIndex, pgEnum, check, type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 
 /* ------------------------------------------------------------------ *
@@ -313,5 +313,153 @@ export const tenantInvite = pgTable(
     // partial-uniqueness escape hatch for).
     uniqueIndex('tenant_invite_token_uq').on(t.tokenHash),
     index('tenant_invite_tenant_idx').on(t.orgId, t.tenantId),
+  ],
+);
+
+/* ------------------------------------------------------------------ *
+ * Lease — docs/PLAN-PHASE2.md §3. Unit + tenant(s), date range, rent,
+ * deposit, status. `move_out_billing_policy` and `calendar` are NOT columns
+ * here — they are resolved LIVE from `property` on every read (Amendment A.3
+ * / docs/DATES.md), so a settings flip takes effect on the next read with no
+ * backfill and no per-lease override ever possible.
+ * ------------------------------------------------------------------ */
+
+export const leaseStatusEnum = pgEnum('lease_status', [
+  'draft', 'active', 'ended', 'terminated', 'cancelled',
+]);
+
+export const rentFrequencyEnum = pgEnum('rent_frequency', ['monthly', 'yearly']);
+
+export const lease = pgTable(
+  'lease',
+  {
+    id: uuid().primaryKey(),
+    orgId: text().notNull().references(() => organization.id, { onDelete: 'cascade' }),
+    // Restrict, not cascade: units are soft-deleted, so a cascade here would be a
+    // latent data-loss path for financial history (PLAN-PHASE2.md §3.2).
+    unitId: uuid().notNull().references(() => unit.id, { onDelete: 'restrict' }),
+
+    // = id for a fresh lease, = predecessor.chainId on renewal. Phase 3 balances
+    // aggregate on this.
+    chainId: uuid().notNull(),
+    renewedFromLeaseId: uuid().references((): AnyPgColumn => lease.id, { onDelete: 'set null' }),
+
+    startDate: date().notNull(),
+    // NULL = rolling. Inclusive. The only thing that clips the schedule under
+    // `bill_full_term` (see billing.ts's `effectiveBillingEnd`).
+    endDate: date(),
+    // Actual hand-back. Affects billing only under the property's
+    // `stop_at_move_out` policy, and then only by SHORTENING (Amendment A).
+    moveOutDate: date(),
+
+    rentCents: bigint({ mode: 'number' }).notNull(),
+    // Copied from the unit at create. Immutable. Not in createLeaseBody.
+    currency: text().notNull(),
+    rentFrequency: rentFrequencyEnum().notNull().default('monthly'),
+    // 1..32 — the 32 ceiling is Bikram Sambat's (packages/contract's
+    // MAX_BILLING_DAY_ANY / Calendar.maxDayOfMonth); 31 is Gregorian's own
+    // ceiling. The CHECK below only enforces the wider, calendar-agnostic bound —
+    // the per-calendar bound is enforced by `validateBillingTerms` in the contract,
+    // called against the lease's resolved property.calendar.
+    billingDay: smallint().notNull().default(1),
+    depositCents: bigint({ mode: 'number' }).notNull().default(0),
+    // Written in Phase 2, materialised as a charge by Phase 3. Non-negative: a
+    // prepaid tenant is a Phase 3 payment, not a negative opening balance.
+    openingBalanceCents: bigint({ mode: 'number' }).notNull().default(0),
+    // Must equal startDate or be a period start (validateBillingTerms).
+    ledgerStartDate: date().notNull(),
+
+    status: leaseStatusEnum().notNull().default('draft'),
+    endReason: text(),
+    endNote: text(),
+    // Landlord-private. Structurally absent from every portal shape.
+    notes: text(),
+
+    // Soft delete, same convention as property/unit/tenant — never set outside
+    // `draft`/`cancelled` (enforced by hardDeleteLease's WHERE, not by a CHECK:
+    // a CHECK can't reference the value a row had before THIS update). Named
+    // `hardDeleteLease` in the repo (docs/PLAN-PHASE2.md §8.1) to mark it as a
+    // stronger, terminal operation than a lifecycle status transition — not a
+    // literal SQL DELETE, for the same "financial history never truly
+    // disappears" reasoning as every other soft-deleted table in this schema.
+    deletedAt: timestamp({ withTimezone: true }),
+    createdByUserId: text().notNull().references(() => user.id),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('lease_org_unit_idx').on(t.orgId, t.unitId, t.status),
+    index('lease_chain_idx').on(t.orgId, t.chainId),
+    index('lease_org_status_start_idx').on(t.orgId, t.status, t.startDate),
+
+    // THE MOST VALUABLE CONSTRAINT IN THE SCHEMA (docs/PLAN-PHASE2.md §3.3).
+    // Deliberately NO org_id in this index. unit_id is already the PK of a table
+    // that itself carries org_id, so adding org_id here would WIDEN the key
+    // without changing uniqueness — the one-column form is STRICTER, not a
+    // tenancy miss. Landlord B can only ever reach this index through a lease row
+    // B owns, so B can never learn whether A's unit is occupied (§3.3's last
+    // bullet) — it is not a lateral-movement primitive.
+    //
+    // No `deletedAt IS NULL` either: an `active` lease is never soft-deleted
+    // (deletedAt is reachable only from draft/cancelled).
+    //
+    // The explicit `::lease_status` cast exists because Postgres can reject an
+    // untyped string literal in an index predicate — verify this against the
+    // generated migration before committing it (§3.5).
+    uniqueIndex('lease_unit_active_uq').on(t.unitId).where(sql`${t.status} = 'active'::lease_status`),
+
+    check('lease_dates_ck', sql`${t.endDate} is null or ${t.endDate} >= ${t.startDate}`),
+    check(
+      'lease_ledger_ck',
+      sql`${t.ledgerStartDate} >= ${t.startDate} and (${t.endDate} is null or ${t.ledgerStartDate} <= ${t.endDate})`,
+    ),
+    check('lease_billing_day_ck', sql`${t.billingDay} between 1 and 32`),
+    check(
+      'lease_money_ck',
+      sql`${t.rentCents} >= 0 and ${t.depositCents} >= 0 and ${t.openingBalanceCents} >= 0`,
+    ),
+    // Amendment A: holdover is legal (move-out AFTER start), early exit is legal
+    // (move-out between start and end) — nothing ties this to end_date.
+    check('lease_moveout_ck', sql`${t.moveOutDate} is null or ${t.moveOutDate} >= ${t.startDate}`),
+  ],
+);
+
+export const leaseTenant = pgTable(
+  'lease_tenant',
+  {
+    id: uuid().primaryKey(),
+    orgId: text().notNull().references(() => organization.id, { onDelete: 'cascade' }),
+    // Cascade: only ever runs on the hard-delete of a draft/cancelled lease, which
+    // by precondition (lease_unit_active_uq, the lifecycle) never had charges or
+    // payments written against it.
+    leaseId: uuid().notNull().references(() => lease.id, { onDelete: 'cascade' }),
+    // Restrict: tenants are only ever soft-deleted.
+    tenantId: uuid().notNull().references(() => tenant.id, { onDelete: 'restrict' }),
+
+    isPrimary: boolean().notNull().default(false),
+    addedOn: date().notNull(),
+    // Roommate swap. NULL = still on the lease.
+    removedOn: date(),
+
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('lease_tenant_ck', sql`${t.removedOn} is null or ${t.removedOn} >= ${t.addedOn}`),
+
+    index('lease_tenant_lease_idx').on(t.orgId, t.leaseId),
+    // The portal's driving scan: every tenant-facing lease query starts here.
+    index('lease_tenant_tenant_idx').on(t.orgId, t.tenantId),
+
+    // Partial on removedOn IS NULL, not a plain (lease_id, tenant_id) unique —
+    // the full version would block a roommate who leaves and comes back, which
+    // is exactly the history this table exists to record (PLAN-PHASE2.md §3.4
+    // [CORRECTION] 1).
+    uniqueIndex('lease_tenant_live_uq').on(t.leaseId, t.tenantId).where(sql`${t.removedOn} is null`),
+    // At-most-one primary per lease, enforced by the database. At-least-one
+    // stays an `activate` precondition — no index can express that half
+    // (PLAN-PHASE2.md §3.4 [CORRECTION] 2).
+    uniqueIndex('lease_tenant_primary_uq')
+      .on(t.leaseId)
+      .where(sql`${t.isPrimary} and ${t.removedOn} is null`),
   ],
 );

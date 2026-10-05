@@ -10,12 +10,13 @@ import {
   type PageQuery,
 } from '@rms/contract';
 import { validateBody, validateQuery, parsedBody, parsedQuery } from '../middleware/validate.js';
-import { notFound } from '../lib/errors.js';
+import { conflict, notFound } from '../lib/errors.js';
 import { requireUuidParam } from '../lib/params.js';
 import { encodeCursor } from '../lib/pagination.js';
 import { mapProperty, mapUnit } from '../lib/mappers.js';
 import * as propertyRepo from '../db/repo/property.js';
 import * as unitRepo from '../db/repo/unit.js';
+import * as leaseRepo from '../db/repo/lease.js';
 import type { AppBindings } from '../types.js';
 
 export const properties = new Hono<AppBindings>();
@@ -68,6 +69,13 @@ properties.delete('/v1/properties/:id', async (c) => {
   const orgId = c.get('orgId');
   const db = c.get('db');
   const id = requireUuidParam(c.req.param('id'), 'Property');
+
+  // docs/PLAN-PHASE2.md §3.6: 409 while ANY unit under this property has an
+  // active lease.
+  const activeLeaseCount = await leaseRepo.countActiveLeasesForProperty(orgId, db, id);
+  if (activeLeaseCount > 0) {
+    throw conflict('A unit under this property has an active lease. End the lease before deleting the property.');
+  }
 
   const ok = await propertyRepo.softDeleteProperty(orgId, db, id);
   if (!ok) throw notFound('Property');

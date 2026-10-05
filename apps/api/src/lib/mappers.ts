@@ -1,8 +1,21 @@
-import type { Property, Unit, Tenant, PortalAccess, PortalProfile } from '@rms/contract';
+import type {
+  Property,
+  Unit,
+  Tenant,
+  PortalAccess,
+  PortalProfile,
+  LeaseSummary,
+  LeaseDetail,
+  LeaseTenantSummary,
+  PortalLease,
+  PortalLeaseDetail,
+} from '@rms/contract';
 import type { PropertyRow } from '../db/repo/property.js';
 import type { UnitRow } from '../db/repo/unit.js';
 import type { TenantRow } from '../db/repo/tenant.js';
 import type { PortalProfileRow } from '../db/repo/portal/profile.js';
+import type { LeaseRow, LeaseDetailRow, LeaseTenantRow } from '../db/repo/lease.js';
+import type { PortalLeaseRow, PortalLeaseDetailRow } from '../db/repo/portal/lease.js';
 
 /**
  * Explicit DB row -> contract type mapping. Never spread a row into a response —
@@ -119,5 +132,123 @@ export function mapUnit(row: UnitRow): Unit {
     notes: row.notes,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+export function mapLeaseTenant(row: LeaseTenantRow): LeaseTenantSummary {
+  return {
+    tenantId: row.tenantId,
+    firstName: row.firstName,
+    lastName: row.lastName,
+    isPrimary: row.isPrimary,
+    addedOn: row.addedOn,
+    removedOn: row.removedOn,
+  };
+}
+
+export function mapLeaseSummary(row: LeaseRow): LeaseSummary {
+  return {
+    id: row.id,
+    chainId: row.chainId,
+    status: row.status,
+    unitId: row.unitId,
+    unitLabel: row.unitLabel,
+    propertyId: row.propertyId,
+    propertyName: row.propertyName,
+    propertyTimezone: row.propertyTimezone,
+    calendar: row.calendar,
+    startDate: row.startDate,
+    endDate: row.endDate,
+    moveOutDate: row.moveOutDate,
+    rentCents: row.rentCents,
+    currency: row.currency as LeaseSummary['currency'],
+    rentFrequency: row.rentFrequency,
+    billingDay: row.billingDay,
+    depositCents: row.depositCents,
+    openingBalanceCents: row.openingBalanceCents,
+    ledgerStartDate: row.ledgerStartDate,
+    moveOutBillingPolicy: row.moveOutBillingPolicy,
+    tenantCount: row.tenantCount,
+    primaryTenantName: row.primaryTenantName,
+    renewedFromLeaseId: row.renewedFromLeaseId,
+    endReason: row.endReason as LeaseSummary['endReason'],
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+export function mapLeaseDetail(row: LeaseDetailRow): LeaseDetail {
+  return {
+    ...mapLeaseSummary(row),
+    tenants: row.tenants.map(mapLeaseTenant),
+    notes: row.notes,
+    unitStatus: row.unitStatus,
+    propertyAddress: {
+      line1: row.addressLine1,
+      line2: row.addressLine2 ?? undefined,
+      city: row.city,
+      region: row.region,
+      postalCode: row.postalCode,
+      country: row.country,
+    },
+    chain: row.chain.map((c) => ({
+      id: c.id,
+      status: c.status,
+      startDate: c.startDate,
+      endDate: c.endDate,
+      rentCents: c.rentCents,
+    })),
+  };
+}
+
+/** `yourRole`/`removedOn` derive from the SAME `removed_on` column — pulled out as
+ *  a one-line pure function so the derivation cannot drift between the two fields
+ *  (docs/PLAN-PHASE2.md §5.6). */
+function portalYourRole(removedOn: string | null): 'current' | 'former' {
+  return removedOn === null ? 'current' : 'former';
+}
+
+export function mapPortalLease(row: PortalLeaseRow): PortalLease {
+  return {
+    id: row.id,
+    orgId: row.orgId,
+    landlordName: row.landlordName,
+    status: row.status,
+    unitLabel: row.unitLabel,
+    propertyName: row.propertyName,
+    propertyAddress: {
+      line1: row.addressLine1,
+      line2: row.addressLine2 ?? undefined,
+      city: row.city,
+      region: row.region,
+      postalCode: row.postalCode,
+      country: row.country,
+    },
+    propertyTimezone: row.propertyTimezone,
+    calendar: row.calendar,
+    startDate: row.startDate,
+    endDate: row.endDate,
+    moveOutDate: row.moveOutDate,
+    rentCents: row.rentCents,
+    currency: row.currency as PortalLease['currency'],
+    rentFrequency: row.rentFrequency,
+    billingDay: row.billingDay,
+    depositCents: row.depositCents,
+    moveOutBillingPolicy: row.moveOutBillingPolicy,
+    yourRole: portalYourRole(row.removedOn),
+    removedOn: row.removedOn,
+  };
+}
+
+export function mapPortalLeaseDetail(row: PortalLeaseDetailRow): PortalLeaseDetail {
+  return {
+    ...mapPortalLease(row),
+    coTenants: row.coTenants.map((c) => ({
+      firstName: c.firstName,
+      lastName: c.lastName,
+      isPrimary: c.isPrimary,
+      isCurrent: c.isCurrent,
+    })),
+    ledgerStartDate: row.ledgerStartDate,
   };
 }

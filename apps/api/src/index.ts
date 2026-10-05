@@ -10,6 +10,8 @@ import { properties } from './routes/properties.js';
 import { units } from './routes/units.js';
 import { me } from './routes/me.js';
 import { tenants } from './routes/tenants.js';
+import { leases } from './routes/leases.js';
+import { portalLeases } from './routes/portal-leases.js';
 import { portal } from './routes/portal.js';
 import type { AppBindings } from './types.js';
 
@@ -50,6 +52,12 @@ app.route('/', properties);
 app.route('/', units);
 app.route('/', me);
 app.route('/', tenants);
+app.route('/', leases);
+// portalLeases MUST be mounted before portal: routes.portal.profile is
+// `/v1/portal/:tenantId/profile`, and Hono matches in registration order, so
+// `/v1/portal/leases/:id` has to be tried against this router's literal path
+// first or it would be captured as `tenantId = "leases"` by `portal`'s route.
+app.route('/', portalLeases);
 app.route('/', portal);
 
 app.notFound((c) =>
