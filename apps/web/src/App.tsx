@@ -25,13 +25,19 @@ export function App() {
         <Route element={<GuestOnly />}>
           <Route path="/signin" element={<SignInPage />} />
           <Route path="/signup" element={<SignUpPage />} />
-          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-          <Route path="/reset-password" element={<ResetPasswordPage />} />
         </Route>
 
         {/* Public: reached by a token link, signed in or out. Never behind a
             guard — that's the whole point of an invite. */}
         <Route path="/portal/accept" element={<AcceptInvitePage />} />
+
+        {/* Also deliberately not behind GuestOnly: a signed-in user can land
+            here (e.g. clicked an emailed reset link in the same browser they
+            stayed signed in on) and needs to be told why, not silently
+            bounced to /properties. Each page handles its own session
+            branching — see the components. */}
+        <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+        <Route path="/reset-password" element={<ResetPasswordPage />} />
 
         <Route element={<RequireNoLandlordOrg />}>
           <Route path="/onboarding" element={<OnboardingPage />} />

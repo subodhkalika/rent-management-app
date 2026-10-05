@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { resetPassword } from '@/lib/auth-client';
+import { resetPassword, signOut, useSession } from '@/lib/auth-client';
 import { resetPasswordSchema, type ResetPasswordValues } from './schemas';
 import { mapResetPasswordError } from './auth-errors';
 import { PasswordInput } from './PasswordInput';
@@ -18,11 +18,20 @@ import {
   FormMessage,
 } from '@/components/ui/form';
 
+/**
+ * Works regardless of session state. A valid token is proof enough — it was
+ * emailed to the account's address — so someone who stayed signed in on this
+ * browser and clicks the link must be able to finish the reset without
+ * being bounced. If a session exists it's signed out as part of a
+ * successful reset, since the password just changed underneath it; the
+ * previous session cookie should not continue to work.
+ */
 export function ResetPasswordPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const token = searchParams.get('token');
   const [formError, setFormError] = useState<string | null>(null);
+  const { data: session } = useSession();
 
   const form = useForm<ResetPasswordValues>({
     resolver: zodResolver(resetPasswordSchema),
@@ -58,6 +67,9 @@ export function ResetPasswordPage() {
       setFormError(mapResetPasswordError(error.code));
       return;
     }
+    // The password just changed under whatever session was active — sign it
+    // out rather than leave a now-stale-credentialed session live.
+    if (session) await signOut();
     toast.success('Password updated. Sign in with your new password.');
     navigate('/signin', { replace: true });
   });

@@ -5,6 +5,7 @@ import { BrowserRouter } from 'react-router-dom';
 import { ApiClientError } from '@/lib/api';
 import { publishAuthRedirect } from '@/lib/auth-redirect';
 import { Toaster } from '@/components/ui/sonner';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { App } from '@/App';
 import '@/index.css';
 
@@ -44,11 +45,13 @@ if (!root) throw new Error('Root element missing from index.html');
 
 createRoot(root).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
-      <Toaster />
-    </QueryClientProvider>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+        <Toaster />
+      </QueryClientProvider>
+    </ErrorBoundary>
   </StrictMode>,
 );

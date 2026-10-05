@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Building2, ChevronDown, LogOut, User } from 'lucide-react';
 import type { TenancyContext } from '@rms/contract';
@@ -33,25 +33,47 @@ export function AppShell() {
   const { data: ctx } = useMeContext();
   const isPortalRoute = location.pathname.startsWith('/portal');
 
-  const [selected, setSelected] = useState<TenancyContext | undefined>(ctx?.tenancies[0]);
-  useEffect(() => {
-    if (!ctx) return;
-    // Keep the selection valid if the tenancy list changes under us (e.g. a
-    // landlord revokes this tenant mid-session) and seed it the first time.
-    setSelected((current) => {
-      if (current && ctx.tenancies.some((t) => t.tenantId === current.tenantId)) return current;
-      return ctx.tenancies[0];
-    });
-  }, [ctx]);
+  // Derived every render, not seeded once via an effect: a user's explicit
+  // pick (`manualSelection`) wins as long as it's still a live tenancy,
+  // otherwise it falls back to the first one. This has no "before the
+  // effect has run" window, so there is no tick where a portal route can
+  // render with a stale or missing selection — see the crash this guarded
+  // against in review (AppShell rendering `<Outlet/>` without the provider
+  // whenever `selected` raced ahead of `ctx`).
+  const [manualSelection, setManualSelection] = useState<TenancyContext | undefined>(undefined);
+  const tenancies = ctx?.tenancies ?? [];
+  const selected =
+    manualSelection && tenancies.some((t) => t.tenantId === manualSelection.tenantId)
+      ? manualSelection
+      : tenancies[0];
 
   const handleSignOut = async () => {
     await signOut();
     navigate('/signin', { replace: true });
   };
 
-  const showActorSwitch = !!ctx?.landlord && (ctx?.tenancies.length ?? 0) > 0;
+  const showActorSwitch = !!ctx?.landlord && tenancies.length > 0;
 
-  const body = (
+  // The content area never renders `<Outlet/>` directly on a portal route
+  // unless `PortalTenancyCtx` is provided alongside it, with a real,
+  // non-null `selected` tenancy. There is no code path where a portal
+  // screen can mount and call `useSelectedTenancy()` without a provider
+  // above it — if the tenancy can't be resolved yet (or at all), a fallback
+  // renders in its place instead of `<Outlet/>`.
+  let content: React.ReactNode;
+  if (!isPortalRoute) {
+    content = <Outlet />;
+  } else if (selected) {
+    content = (
+      <PortalTenancyCtx.Provider value={{ selected, tenancies, setSelected: setManualSelection }}>
+        <Outlet />
+      </PortalTenancyCtx.Provider>
+    );
+  } else {
+    content = <PortalShellFallback loading={!ctx} />;
+  }
+
+  return (
     <div className="flex min-h-full flex-col">
       <header className="flex items-center justify-between border-b px-6 py-3">
         <div className="flex items-center gap-3">
@@ -64,15 +86,15 @@ export function AppShell() {
           {!ctx ? (
             <Skeleton className="h-4 w-24" />
           ) : isPortalRoute ? (
-            ctx.tenancies.length > 1 && selected ? (
+            tenancies.length > 1 && selected ? (
               <TenancySwitcher
-                tenancies={ctx.tenancies}
+                tenancies={tenancies}
                 selected={selected}
-                onSelect={setSelected}
+                onSelect={setManualSelection}
               />
             ) : (
               <span className="text-sm text-muted-foreground">
-                {ctx.tenancies[0]?.orgName ?? 'No tenancy'}
+                {selected?.orgName ?? 'No tenancy'}
               </span>
             )
           ) : (
@@ -157,20 +179,30 @@ export function AppShell() {
         </div>
       </header>
 
-      <div className="flex-1">
-        <Outlet />
-      </div>
+      <div className="flex-1">{content}</div>
     </div>
   );
+}
 
-  if (!isPortalRoute || !selected) return body;
-
+/** Rendered on a `/portal/*` route in place of `<Outlet/>` whenever there is
+ *  no live tenancy to select yet — either `/v1/me/context` is still
+ *  resolving, or (defensively; `RequireTenant` should already have routed
+ *  this away) the tenancy list is empty. Either way, this is a real,
+ *  degraded screen, not a crash. */
+function PortalShellFallback({ loading }: { loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="p-6" aria-busy="true" aria-label="Loading">
+        <Skeleton className="h-24 w-full max-w-2xl" />
+      </div>
+    );
+  }
   return (
-    <PortalTenancyCtx.Provider
-      value={{ selected, tenancies: ctx?.tenancies ?? [], setSelected }}
-    >
-      {body}
-    </PortalTenancyCtx.Provider>
+    <div className="p-6">
+      <p className="text-sm text-muted-foreground">
+        You don't have an active tenancy to show right now.
+      </p>
+    </div>
   );
 }
 

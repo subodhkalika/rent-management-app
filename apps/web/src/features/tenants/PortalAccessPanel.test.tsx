@@ -47,7 +47,7 @@ describe('PortalAccessPanel', () => {
     expect(screen.getByText(/add an email address/i)).toBeInTheDocument();
   });
 
-  it('shows the invite link exactly once, with a copy button, and clears it once the dialog closes', async () => {
+  it('shows the invite link, with a copy button, and hides it once the dialog closes', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
@@ -73,9 +73,61 @@ describe('PortalAccessPanel', () => {
 
     await user.click(screen.getByRole('button', { name: /^done$/i }));
 
-    // Closing the dialog must clear the one-time link from memory, not just
-    // visually hide it — see PortalAccessPanel's `onClose` -> `mutation.reset()`.
     await waitFor(() => expect(screen.queryByText(/invite link created/i)).not.toBeInTheDocument());
-    expect(screen.queryByText(/abc123def456/)).not.toBeInTheDocument();
+  });
+
+  it('does not carry the previous invite token into a later one — proving it was actually cleared, not just hidden', async () => {
+    // A buggy implementation could hide the dialog with a flag decoupled
+    // from the mutation's own `data` (e.g. local `isOpen` state) and this
+    // test would still catch it: the first token would still be sitting in
+    // the mutation's `data` and would resurface here, either rendered
+    // directly or dragged along as the "current" value a second request
+    // never overwrote in time. Two distinct tokens, resolved one after the
+    // other, is what actually exercises that `reset()` ran on close.
+    const responses = [
+      {
+        url: 'https://app.example.com/portal/accept?token=firsttoken1111',
+        email: 'dana@example.com',
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      },
+      {
+        url: 'https://app.example.com/portal/accept?token=secondtoken2222',
+        email: 'dana@example.com',
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      },
+    ];
+    let call = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) =>
+            resolve(
+              new Response(JSON.stringify(responses[call++]), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+              }),
+            ),
+          ),
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderPanel(makeTenant());
+
+    await user.click(screen.getByRole('button', { name: /invite to portal/i }));
+    expect(await screen.findByText(/firsttoken1111/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /^done$/i }));
+    await waitFor(() => expect(screen.queryByText(/invite link created/i)).not.toBeInTheDocument());
+
+    // Resend reissues — the button is still "Invite to portal" here because
+    // the tenant prop never changed to `invited` in this isolated render.
+    await user.click(screen.getByRole('button', { name: /invite to portal/i }));
+    expect(await screen.findByText(/secondtoken2222/)).toBeInTheDocument();
+
+    // The first token must not be anywhere in the document any more —
+    // not in a hidden node, not concatenated into other text.
+    expect(document.body.textContent).not.toContain('firsttoken1111');
   });
 });
