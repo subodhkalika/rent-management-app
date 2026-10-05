@@ -41,6 +41,29 @@ export const money = z
   .nonnegative('Amount cannot be negative')
   .max(1_000_000_00, 'Amount is implausibly large');
 
+/**
+ * A signed money amount. Use for BALANCES, not for charge or payment amounts.
+ *
+ * A balance goes negative the moment a tenant overpays — that is a credit, not an
+ * error. Validating a balance with `money` above would reject every credit at the
+ * client boundary, where the typed API client parses responses through the contract.
+ */
+export const moneyDelta = z
+  .number()
+  .int('Amount must be a whole number of cents')
+  .min(-1_000_000_000_00, 'Amount is implausibly large')
+  .max(1_000_000_000_00, 'Amount is implausibly large');
+
+/**
+ * An aggregate across many rows — lifetime income, a year of rent, a CSV total.
+ * `money` caps a single amount at $1M, which a report total legitimately exceeds.
+ */
+export const moneyTotal = z
+  .number()
+  .int('Amount must be a whole number of cents')
+  .min(-1_000_000_000_00, 'Total is implausibly large')
+  .max(1_000_000_000_00, 'Total is implausibly large');
+
 export const currency = z.enum(['USD', 'EUR', 'GBP', 'INR', 'AUD', 'CAD']);
 export type Currency = z.infer<typeof currency>;
 
@@ -93,4 +116,60 @@ export type PageQuery = z.infer<typeof pageQuery>;
 
 export function paged<T extends z.ZodTypeAny>(item: T) {
   return z.object({ items: z.array(item), nextCursor: z.string().nullable() });
+}
+
+/* ---------- dates ---------- */
+
+/**
+ * A calendar date with no time component, `YYYY-MM-DD`.
+ *
+ * Leases, charges and payments are all dated, never timestamped. There is exactly
+ * one timezone-sensitive question in this system — "what is today, where the
+ * property is" — and it is answered by `localToday` below. Everything else is plain
+ * date arithmetic, which is why DST can never produce an off-by-one here.
+ */
+export const isoDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use the format YYYY-MM-DD')
+  // Date.parse does NOT reject 2026-02-30 — it silently rolls over to March 2. Round
+  // -tripping the components is the only way to catch an impossible calendar date,
+  // and this is exactly the class of bug that makes rent due on a day that does not
+  // exist.
+  .refine((v) => {
+    const [y, m, d] = v.split('-').map(Number) as [number, number, number];
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+  }, 'That is not a real date');
+export type IsoDate = z.infer<typeof isoDate>;
+
+/** An IANA timezone name, e.g. "Australia/Perth". Validated against the runtime. */
+export const timezone = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine((v) => {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: v });
+      return true;
+    } catch {
+      return false;
+    }
+  }, 'That is not a recognised timezone');
+export type Timezone = z.infer<typeof timezone>;
+
+/**
+ * Today's calendar date in a given timezone.
+ *
+ * Never use `new Date().toISOString().slice(0, 10)` for this — that is today in UTC,
+ * which is yesterday or tomorrow for most of the world, and would mark rent overdue
+ * at the wrong local midnight.
+ */
+export function localToday(tz: Timezone, now: Date = new Date()): IsoDate {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+  return parts; // en-CA formats as YYYY-MM-DD
 }

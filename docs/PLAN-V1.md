@@ -408,7 +408,7 @@ Indexes: `tenant_invite_token_uq unique (token_hash)` (the only lookup path for 
 | `move_out_date` | `date` NULL | actual, may differ from `end_date` |
 | `rent_cents` | `bigint` NOT NULL | |
 | `currency` | `text` NOT NULL | inherited from unit at creation; immutable |
-| `rent_frequency` | `rent_frequency` enum NOT NULL default `'monthly'` | single-value enum today; reserved so weekly is additive |
+| `rent_frequency` | `rent_frequency` enum NOT NULL default `'monthly'` | **`monthly \| yearly`** per the 2026-10-05 decision. Immutable on an active lease: changing cadence means a new lease in the same `chain_id`, so already-generated charges keep the cadence they were written under. |
 | `billing_day` | `smallint` NOT NULL | 1..31, clamped at use |
 | `deposit_cents` | `bigint` NOT NULL default 0 | |
 | `ledger_start_date` | `date` NOT NULL | generation never produces a period starting before this. Lets a landlord onboard an in-flight tenancy. |
@@ -1185,7 +1185,7 @@ Everything here is decided by default. None of it blocks Phase 1. Flag only if y
 
 | Question | **Default** |
 |---|---|
-| Weekly / fortnightly rent (standard in AU/NZ/UK)? | **Monthly only.** `rent_frequency` enum exists with one value so adding weekly is additive, not a reinterpretation. **Tell me if your first customers are AU/NZ/UK** — this is the one answer most likely to change, and it is cheapest to change before Phase 2. |
+| Rent frequency? | **DECIDED 2026-10-05: `monthly` and `yearly`.** Not weekly, not fortnightly. Periods are therefore *calendar periods*, not calendar months — a yearly lease generates one charge per year. Proration generalises to `amount * daysOccupied / daysInPeriod`, where `daysInPeriod` comes from the period itself rather than `daysInMonth`. Due-day clamping still applies to monthly; a yearly period's due date defaults to its `period_start`. `billing.ts` must be written period-agnostic in Phase 2 — that is the only place this distinction bites. |
 | Automatic late fees? | **No.** Manual `type='late_fee'` charge only. Late-fee rules are jurisdictional and automating them is a legal exposure, not a feature. |
 | Tenant-submitted payment claims ("I paid on the 3rd")? | **No.** The tenant uploads a receipt document against the lease; it surfaces to the landlord as an unreviewed tenant upload. A claim queue is a reconciliation workflow and a v2 feature. |
 | Deposit held in a trust/escrow account with interest? | **No.** The deposit is a `type='deposit'` charge in the ledger, reported as a separate balance line. Regulated deposit schemes (UK TDS, etc.) are out of scope. |
