@@ -1,5 +1,13 @@
 import { z } from 'zod';
 import { uuid, timezone } from './common.js';
+import { moveOutBillingPolicy } from './billing.js';
+
+/**
+ * Re-exported from `billing.ts`, same pattern as `rentFrequency` in `lease.ts` — no
+ * cycle, `billing.ts` still imports only `common.ts`.
+ */
+export { moveOutBillingPolicy };
+export type { MoveOutBillingPolicy } from './billing.js';
 
 export const propertyType = z.enum([
   'single_family',
@@ -50,6 +58,13 @@ export const createPropertyBody = z.object({
    * A Perth property settled in UTC would flip to overdue eight hours early.
    */
   timezone,
+  /**
+   * Whether an early move-out stops the rent. Optional, unlike `timezone`: the
+   * default (`bill_full_term`) is legally conservative and preserves the behaviour
+   * every existing property already has, so asking before the first save would be
+   * friction with no safety benefit. See Amendment A.
+   */
+  moveOutBillingPolicy: moveOutBillingPolicy.default('bill_full_term'),
   notes: z.string().trim().max(2000).optional(),
 });
 export type CreatePropertyBody = z.infer<typeof createPropertyBody>;
@@ -66,6 +81,7 @@ export const property = z.object({
   address,
   notes: z.string().nullable(),
   timezone: z.string(),
+  moveOutBillingPolicy,
   unitCount: z.number().int().nonnegative(),
   occupiedUnitCount: z.number().int().nonnegative(),
   createdAt: z.string().datetime(),

@@ -34,6 +34,14 @@ export const routes = {
     /** Public. Fails with the same uniform 404 as acceptInvite — see invite.ts. */
     invitePreview: (token: string) => `/v1/portal/invites/${token}`,
     profile: (tenantId: string) => `/v1/portal/${tenantId}/profile`,
+    /**
+     * Registered in a separate `routes/portal-leases.ts`, mounted BEFORE `portal`
+     * in `index.ts`, so `/v1/portal/leases/:id` can never be matched by the
+     * `/v1/portal/:tenantId/profile` route (§4.2's routing footgun).
+     */
+    leases: () => '/v1/portal/leases',
+    lease: (id: string) => `/v1/portal/leases/${id}`,
+    leaseSchedule: (id: string) => `/v1/portal/leases/${id}/schedule`,
   },
   units: {
     list: (propertyId: string) => `/v1/properties/${propertyId}/units`,
@@ -41,5 +49,20 @@ export const routes = {
     get: (id: string) => `/v1/units/${id}`,
     update: (id: string) => `/v1/units/${id}`,
     remove: (id: string) => `/v1/units/${id}`,
+  },
+  leases: {
+    list: () => '/v1/leases',
+    create: () => '/v1/leases',
+    get: (id: string) => `/v1/leases/${id}`,
+    update: (id: string) => `/v1/leases/${id}`,
+    remove: (id: string) => `/v1/leases/${id}`,
+    activate: (id: string) => `/v1/leases/${id}/activate`,
+    cancel: (id: string) => `/v1/leases/${id}/cancel`,
+    end: (id: string) => `/v1/leases/${id}/end`,
+    renew: (id: string) => `/v1/leases/${id}/renew`,
+    schedule: (id: string) => `/v1/leases/${id}/schedule`,
+    addTenant: (id: string) => `/v1/leases/${id}/tenants`,
+    removeTenant: (id: string, tenantId: string) => `/v1/leases/${id}/tenants/${tenantId}/remove`,
+    setPrimaryTenant: (id: string, tenantId: string) => `/v1/leases/${id}/tenants/${tenantId}/primary`,
   },
 } as const;
