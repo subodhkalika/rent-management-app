@@ -160,6 +160,7 @@ describe('accept invite — signed out, creating a new account', () => {
     signUpEmailMock.mockResolvedValue(
       new Response(JSON.stringify({ user: { id: 'new_user_1' } }), { status: 200, headers: { 'content-type': 'application/json' } }),
     );
+    tenantRepoMock.bindTenantUser.mockResolvedValue(true);
 
     const res = await post('/v1/portal/invites/accept', {
       token: 'a'.repeat(64),
@@ -182,6 +183,30 @@ describe('accept invite — signed out, creating a new account', () => {
     const res = await acceptAsNewAccount();
     expect(res.status).toBe(409);
     expect(signUpEmailMock).not.toHaveBeenCalled();
+  });
+
+  it('409s, not a false 200, when the bind loses a race after the account was already created', async () => {
+    // Regression test for BLOCKING-2: a concurrent accept (signed-in path, or
+    // another signed-out accept) bound the tenant between the pre-checks above and
+    // here. The account Better Auth just created is real and emailVerified, but it
+    // must never be reported as a success it is not — that is what made the bug a
+    // PERMANENT lockout rather than an ordinary error: a 200 here gives the caller
+    // no reason to do anything differently, while the tenant they wanted is bound
+    // to someone else and the invite is spent.
+    inviteRepoMock.findInviteByTokenHash.mockResolvedValue(liveInvite());
+    getSessionMock.mockResolvedValue(null);
+    inviteRepoMock.findUserByEmail.mockResolvedValue(null);
+    signUpEmailMock.mockResolvedValue(
+      new Response(JSON.stringify({ user: { id: 'new_user_1' } }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+    tenantRepoMock.bindTenantUser.mockResolvedValue(false); // the CAS lost
+
+    const res = await acceptAsNewAccount();
+
+    expect(res.status).toBe(409);
+    expect(tenantRepoMock.markInviteAccepted).not.toHaveBeenCalled();
+    // No session cookie is handed out for a response that reports failure.
+    expect(res.headers.get('set-cookie')).toBeNull();
   });
 });
 

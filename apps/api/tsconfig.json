@@ -5,5 +5,5 @@
     "types": ["@cloudflare/workers-types", "vitest/globals"],
     "lib": ["ES2022"]
   },
-  "include": ["src/**/*.ts", "drizzle.config.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "drizzle.config.ts"]
 }

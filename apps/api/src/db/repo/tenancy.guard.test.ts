@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listSourceFiles, exportedFunctions, readSource, QUERY_VERBS } from '../../lib/repoGuard.js';
+import { listSourceFiles, exportedFunctions, readSource, QUERY_VERBS } from '../../../test/support/repoGuard.js';
 
 /**
  * Static guard for the one rule that cannot be allowed to regress: every query on an
@@ -15,7 +15,7 @@ import { listSourceFiles, exportedFunctions, readSource, QUERY_VERBS } from '../
  *
  * History: this guard used to call a non-recursive `readdirSync`, so anything under
  * a subdirectory (e.g. `db/repo/portal/`) was invisible to it — see
- * docs/PLAN-V1.md §0.2.A. `listSourceFiles` (lib/repoGuard.ts) now recurses. The
+ * docs/PLAN-V1.md §0.2.A. `listSourceFiles` (test/support/repoGuard.ts) now recurses. The
  * "recursion proof" suite at the bottom of this file demonstrates, against a throwaway
  * fixture directory, that a violation placed in a nested subdirectory is still caught.
  */
@@ -27,9 +27,11 @@ const REPO_DIR = dirname(fileURLToPath(import.meta.url));
 // all) and are covered by their own dedicated guards — see
 // `db/repo/portal/portal-tenancy.guard.test.ts`. `db/repo/public/**` takes no scope at
 // all by design (there is none yet — see its module comment) and is covered by
-// `db/repo/public/invite-lookup.guard.test.ts`. Excluding them here is not a loophole:
+// `db/repo/public/invite-lookup.guard.test.ts`. `db/repo/auth/**` touches Better
+// Auth's own (non-org-owned) tables and is covered by
+// `db/repo/auth/auth-tables.guard.test.ts`. Excluding them here is not a loophole:
 // every file in the repo tree is claimed by exactly one guard, never by zero.
-const EXEMPT_PREFIXES = ['portal/', 'system/', 'public/'];
+const EXEMPT_PREFIXES = ['portal/', 'system/', 'public/', 'auth/'];
 
 function landlordRepoFiles(): string[] {
   return listSourceFiles(REPO_DIR).filter((f) => !EXEMPT_PREFIXES.some((p) => f.startsWith(p)));

@@ -181,12 +181,28 @@ export function updateTenantQuery(orgId: string, db: Database, id: string, data:
     .returning({ id: tenant.id });
 }
 
+/**
+ * True when an update patch's `email` would actually change the stored address.
+ * Pulled out as a small, pure, directly-testable function — this one boolean is the
+ * entire correctness of "an email edit revokes the invite it would otherwise orphan"
+ * below, and it needs to be provable without a live database the way the rest of
+ * `updateTenant`'s orchestration (a real UPDATE, a real invite revoke) cannot be.
+ */
+export function emailChanged(previousEmail: string | null, patchEmail: string | undefined): boolean {
+  return patchEmail !== undefined && patchEmail !== previousEmail;
+}
+
 export async function updateTenant(
   orgId: string,
   db: Database,
   id: string,
   data: UpdateTenantBody,
 ): Promise<TenantRow | null> {
+  // Read the OLD email before it is overwritten — needed below to detect a change.
+  // `.returning()` on the UPDATE itself only ever gives back the NEW row, so there
+  // is no way to recover this after the fact.
+  const before = data.email !== undefined ? await getTenant(orgId, db, id) : null;
+
   let result: { id: string }[];
   try {
     result = await updateTenantQuery(orgId, db, id, data);
@@ -198,6 +214,15 @@ export async function updateTenant(
   }
 
   if (result.length === 0) return null;
+
+  // An outstanding invite was emailed to the OLD address — docs/PLAN-V1.md §1.3's
+  // stated mitigation ("the link is only ever emailed to tenant.email") stops being
+  // true the instant this column changes. Revoke it so a landlord's typo-then-fix
+  // does not leave a 14-day-valid token addressed to a stranger.
+  if (before && emailChanged(before.email, data.email)) {
+    await revokeLiveInvites(orgId, db, id);
+  }
+
   return getTenant(orgId, db, id);
 }
 

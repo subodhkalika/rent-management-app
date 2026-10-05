@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { eq } from 'drizzle-orm';
 import {
   acceptInviteBody,
   updatePortalProfileBody,
@@ -14,7 +13,7 @@ import { requireUuidParam } from '../lib/params.js';
 import { sha256Hex } from '../lib/tokens.js';
 import { mapPortalProfile } from '../lib/mappers.js';
 import { getSession, createAuth } from '../lib/auth.js';
-import { user as userTable } from '../db/schema.js';
+import { markEmailVerified } from '../db/repo/auth/user.js';
 import { findInviteByTokenHash, findUserByEmail } from '../db/repo/public/invite.js';
 import * as tenantRepo from '../db/repo/tenant.js';
 import * as profileRepo from '../db/repo/portal/profile.js';
@@ -26,6 +25,13 @@ export const portal = new Hono<AppBindings>();
  * Accepting an invite is reachable by anyone — no `requireAuth`/`requireTenant` on
  * this route. The token itself, hashed and matched against `tenant_invite.token_hash`,
  * is the only authorization check. See db/repo/public/invite.ts.
+ *
+ * Registered BEFORE `portal.use('/v1/portal/*', requireTenant)` below, on purpose:
+ * Hono composes matched handlers in registration order, and this route's own handler
+ * never calls `next()`, so a request that matches it is answered without the
+ * wildcard middleware ever running. Moving this registration below the `.use()`
+ * would make it 401 for a user with no session — which must never happen for the
+ * one route every unauthenticated tenant has to be able to reach.
  */
 portal.post('/v1/portal/invites/accept', validateBody(acceptInviteBody), async (c) => {
   const db = c.get('db');
@@ -107,9 +113,17 @@ portal.post('/v1/portal/invites/accept', validateBody(acceptInviteBody), async (
   // Possession of the emailed token proves the address — mark it verified rather
   // than making the tenant click a second email just to confirm what the invite
   // flow already confirmed.
-  await db.update(userTable).set({ emailVerified: true }).where(eq(userTable.id, newUserId));
+  await markEmailVerified(db, newUserId);
 
-  await tenantRepo.bindTenantUser(invite.orgId, db, invite.tenantId, newUserId);
+  // Same CAS check as the signed-in branch above: if this loses — a concurrent
+  // accept already bound the tenant between the pre-check above and here — a
+  // freshly created, emailVerified account must NOT be left orphaned at 200 with a
+  // tenant it is not attached to. That account is otherwise unrecoverable: the
+  // invite is gone (reusing the link 404s) and signing in and retrying 409s on the
+  // tenantUserId check, with no path back to the tenant it was created for.
+  const bound = await tenantRepo.bindTenantUser(invite.orgId, db, invite.tenantId, newUserId);
+  if (!bound) throw conflict('This tenant already has portal access.');
+
   await tenantRepo.markInviteAccepted(invite.orgId, db, invite.inviteId, newUserId);
 
   const response: InviteAccepted = {
@@ -126,7 +140,15 @@ portal.post('/v1/portal/invites/accept', validateBody(acceptInviteBody), async (
   return res;
 });
 
-portal.use('/v1/portal/:tenantId/profile', requireTenant);
+// Closed by default: every OTHER path under /v1/portal/* requires a resolved tenant
+// scope, including ones that do not exist yet. This is the fix for the fail-open
+// bug a path-specific `.use()` had: that matched exactly one route and nothing
+// else, so every portal route added from here on (leases, charges, documents, …)
+// would have been unauthenticated until someone remembered to list it too — the
+// exact failure mode docs/PLAN-V1.md §1.1 rejects the tenant-as-org-member model
+// for. Registered AFTER the public accept route above, so that one route is still
+// reachable before this applies (see its own comment).
+portal.use('/v1/portal/*', requireTenant);
 
 portal.get('/v1/portal/:tenantId/profile', async (c) => {
   const scope = c.get('tenantScope');

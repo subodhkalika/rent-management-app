@@ -36,12 +36,15 @@ const tenantRepoMock = {
 };
 vi.mock('../db/repo/tenant.js', () => tenantRepoMock);
 
+const authOrgRepoMock = { getOrganizationName: vi.fn() };
+vi.mock('../db/repo/auth/organization.js', () => authOrgRepoMock);
+
 const { tenants } = await import('./tenants.js');
 
 function buildApp() {
   const app = new Hono<AppBindings>();
   app.use('*', async (c, next) => {
-    c.set('db', { query: { organization: { findFirst: vi.fn().mockResolvedValue({ name: 'Alice Lettings' }) } } } as never);
+    c.set('db', {} as never);
     await next();
   });
   app.route('/', tenants);
@@ -85,6 +88,7 @@ beforeEach(() => {
   currentOrgId = 'org_A';
   currentUserId = 'user_1';
   vi.clearAllMocks();
+  authOrgRepoMock.getOrganizationName.mockResolvedValue('Alice Lettings');
 });
 
 describe('landlord B holding landlord A tenant UUID (docs/PLAN-V1.md §1.6)', () => {

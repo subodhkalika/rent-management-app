@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listSourceFiles, exportedFunctions, readSource, QUERY_VERBS } from '../../../lib/repoGuard.js';
+import { listSourceFiles, exportedFunctions, readSource, QUERY_VERBS } from '../../../../test/support/repoGuard.js';
 
 /**
  * Static guard for `db/repo/portal/` — the tenant side of tenancy isolation.
@@ -23,7 +23,9 @@ const PORTAL_DIR = dirname(fileURLToPath(import.meta.url));
  *  tenancy.guard.test.ts for why a floor exists at all. */
 const MIN_PORTAL_REPO_FILES = 2; // scope.ts, profile.ts
 
-const PRODUCES_SCOPE = new Set(['resolveScope']);
+// `resolveScopeQuery` is `resolveScope`'s split-out query builder (same pattern as
+// property.ts/unit.ts/tenant.ts), so it is exempt for the identical reason.
+const PRODUCES_SCOPE = new Set(['resolveScope', 'resolveScopeQuery']);
 
 describe('portal tenancy guard', () => {
   const files = listSourceFiles(PORTAL_DIR);

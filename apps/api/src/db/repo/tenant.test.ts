@@ -12,6 +12,7 @@ import {
   bindTenantUserQuery,
   markInviteAcceptedQuery,
   revokePortalAccessQuery,
+  emailChanged,
 } from './tenant.js';
 
 /**
@@ -180,5 +181,33 @@ describe('revokePortalAccessQuery', () => {
     expect(sql).toContain('"tenant"."org_id" =');
     expect(sql).toContain('"tenant"."id" =');
     expect(params).toEqual(expect.arrayContaining(['org_B', 'tenant_from_org_A']));
+  });
+});
+
+describe('emailChanged', () => {
+  // This boolean is the entire correctness of `updateTenant`'s invite-revoke-on-
+  // edit fix: a live invite is emailed to the OLD address, so leaving it live after
+  // the address changes means a 14-day-valid token sits in a stranger's inbox
+  // (docs/PLAN-V1.md §1.3's stated mitigation — "the link is only ever emailed to
+  // tenant.email" — silently stops being true). `updateTenant` itself (a real
+  // UPDATE plus a real invite revoke) isn't independently re-tested here; this is
+  // the one decision that drives it, and it's provable without a database.
+
+  it('is false when the patch does not touch email at all', () => {
+    expect(emailChanged('dana@example.com', undefined)).toBe(false);
+  });
+
+  it('is false when the patch sets the SAME email', () => {
+    expect(emailChanged('dana@example.com', 'dana@example.com')).toBe(false);
+  });
+
+  it('is true when the patch changes the email to a different address', () => {
+    expect(emailChanged('dana@gnail.com', 'dana@gmail.com')).toBe(true);
+  });
+
+  it('is true when an email is added where there was none before', () => {
+    // Harmless either way (no invite can exist with no email on file to have sent
+    // it to), but still correctly "changed" rather than a false negative.
+    expect(emailChanged(null, 'dana@example.com')).toBe(true);
   });
 });

@@ -16,6 +16,7 @@ import { encodeCursor } from '../lib/pagination.js';
 import { mapTenant } from '../lib/mappers.js';
 import { generateInviteToken, sha256Hex } from '../lib/tokens.js';
 import { sendEmail, renderInviteEmail } from '../lib/email.js';
+import { getOrganizationName } from '../db/repo/auth/organization.js';
 import * as tenantRepo from '../db/repo/tenant.js';
 import type { AppBindings } from '../types.js';
 
@@ -112,9 +113,9 @@ tenants.post('/v1/tenants/:id/invite', async (c) => {
   const url = new URL('/portal/accept', c.env.WEB_ORIGIN);
   url.searchParams.set('token', token);
 
-  const orgRow = await db.query.organization.findFirst({ where: (org, { eq }) => eq(org.id, orgId) });
+  const orgName = await getOrganizationName(db, orgId);
   const email = renderInviteEmail({
-    orgName: orgRow?.name ?? 'Your landlord',
+    orgName: orgName ?? 'Your landlord',
     tenantFirstName: tenantRow.firstName,
     url: url.toString(),
   });

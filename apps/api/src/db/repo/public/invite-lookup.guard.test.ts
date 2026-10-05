@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listSourceFiles, exportedFunctions, readSource } from '../../../lib/repoGuard.js';
+import { listSourceFiles, exportedFunctions, readSource } from '../../../../test/support/repoGuard.js';
 
 /**
  * `db/repo/public/` is the one directory where a function legitimately does NOT take
