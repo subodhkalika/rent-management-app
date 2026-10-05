@@ -43,6 +43,29 @@ export function mapSignUpError(code: string | undefined): string {
   }
 }
 
+/**
+ * Requesting a reset email never reveals whether the address has an account
+ * — Better Auth returns `{ status: true }` either way, by design. This only
+ * covers genuine failures (rate limiting, a malformed request).
+ */
+export function mapForgotPasswordError(_code: string | undefined): string {
+  return GENERIC_MESSAGE;
+}
+
+/** Submitting a new password with the emailed token. */
+export function mapResetPasswordError(code: string | undefined): string {
+  switch (code) {
+    case 'INVALID_TOKEN':
+      return 'This reset link is no longer valid. Request a new one.';
+    case 'PASSWORD_TOO_SHORT':
+      return 'Password must be at least 8 characters.';
+    case 'PASSWORD_TOO_LONG':
+      return 'Password is too long.';
+    default:
+      return GENERIC_MESSAGE;
+  }
+}
+
 /** Organization-creation errors, shown on the onboarding form. */
 export function mapOnboardingError(code: string | undefined): string {
   switch (code) {

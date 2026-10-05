@@ -1,12 +1,18 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { PropertiesListPage } from '@/features/properties/PropertiesListPage';
 import { PropertyDetailPage } from '@/features/properties/PropertyDetailPage';
+import { TenantsListPage } from '@/features/tenants/TenantsListPage';
+import { TenantDetailPage } from '@/features/tenants/TenantDetailPage';
 import { SignInPage } from '@/features/auth/SignInPage';
 import { SignUpPage } from '@/features/auth/SignUpPage';
+import { ForgotPasswordPage } from '@/features/auth/ForgotPasswordPage';
+import { ResetPasswordPage } from '@/features/auth/ResetPasswordPage';
 import { OnboardingPage } from '@/features/auth/OnboardingPage';
-import { RequireAuth, GuestOnly, RequireNoOrganization } from '@/features/auth/guards';
+import { RequireLandlord, RequireTenant, GuestOnly, RequireNoLandlordOrg } from '@/features/auth/guards';
 import { AuthRedirectListener } from '@/features/auth/AuthRedirectListener';
 import { AppShell } from '@/components/layout/AppShell';
+import { AcceptInvitePage } from '@/features/portal/AcceptInvitePage';
+import { PortalProfilePage } from '@/features/portal/PortalProfilePage';
 
 /**
  * Route table. Feature routes mount here as they land — see docs/TASKS/.
@@ -19,17 +25,32 @@ export function App() {
         <Route element={<GuestOnly />}>
           <Route path="/signin" element={<SignInPage />} />
           <Route path="/signup" element={<SignUpPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
         </Route>
 
-        <Route element={<RequireNoOrganization />}>
+        {/* Public: reached by a token link, signed in or out. Never behind a
+            guard — that's the whole point of an invite. */}
+        <Route path="/portal/accept" element={<AcceptInvitePage />} />
+
+        <Route element={<RequireNoLandlordOrg />}>
           <Route path="/onboarding" element={<OnboardingPage />} />
         </Route>
 
-        <Route element={<RequireAuth />}>
+        <Route element={<RequireLandlord />}>
           <Route element={<AppShell />}>
             <Route path="/" element={<Navigate to="/properties" replace />} />
             <Route path="/properties" element={<PropertiesListPage />} />
             <Route path="/properties/:id" element={<PropertyDetailPage />} />
+            <Route path="/tenants" element={<TenantsListPage />} />
+            <Route path="/tenants/:id" element={<TenantDetailPage />} />
+          </Route>
+        </Route>
+
+        <Route element={<RequireTenant />}>
+          <Route element={<AppShell />}>
+            <Route path="/portal" element={<Navigate to="/portal/profile" replace />} />
+            <Route path="/portal/profile" element={<PortalProfilePage />} />
           </Route>
         </Route>
 
