@@ -75,6 +75,19 @@ export const MAX_BILLING_DAY: Record<CalendarSystem, number> = {
   bikram_sambat: 32,
 };
 
+/**
+ * The widest billingDay any supported calendar allows.
+ *
+ * Request schemas accept up to this, because a schema cannot know which property —
+ * and therefore which calendar — a lease belongs to. `validateBillingTerms` then
+ * rejects a day that exceeds the lease's OWN calendar, so 32 is accepted on a Bikram
+ * Sambat lease and refused on a Gregorian one.
+ *
+ * Derived, not written: adding a calendar with longer months widens this
+ * automatically rather than leaving a stale literal behind.
+ */
+export const MAX_BILLING_DAY_ANY = Math.max(...Object.values(MAX_BILLING_DAY));
+
 export { gregorian } from './gregorian.js';
 export { bikramSambat, BsDateOutOfRangeError } from './bikram-sambat.js';
 export {

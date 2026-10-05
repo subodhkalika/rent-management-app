@@ -10,6 +10,11 @@ import {
   type RentFrequency,
   type LeaseBillingTerms,
 } from './billing.js';
+import {
+  calendarSystem,
+  MAX_BILLING_DAY_ANY,
+  type CalendarSystem,
+} from './calendar/index.js';
 import type { IsoDate } from './common.js';
 
 /**
@@ -79,7 +84,7 @@ const createLeaseBodyShape = z.object({
   endDate: isoDate.nullable().optional(),
   rentCents: money,
   rentFrequency,
-  billingDay: z.number().int().min(1).max(31).default(1),
+  billingDay: z.number().int().min(1).max(MAX_BILLING_DAY_ANY).default(1),
   depositCents: money.default(0),
   /** Server defaults to `startDate` when omitted. */
   ledgerStartDate: isoDate.optional(),
@@ -88,14 +93,19 @@ const createLeaseBodyShape = z.object({
   notes: z.string().trim().max(2000).optional(),
 });
 
-function billingTermsFromCreateBody(data: {
-  rentFrequency: RentFrequency;
-  rentCents: number;
-  billingDay: number;
-  startDate: IsoDate;
-  endDate?: IsoDate | null | undefined;
-  ledgerStartDate?: IsoDate | undefined;
-}): LeaseBillingTerms {
+function billingTermsFromCreateBody(
+  data: {
+    rentFrequency: RentFrequency;
+    rentCents: number;
+    billingDay: number;
+    startDate: IsoDate;
+    endDate?: IsoDate | null | undefined;
+    ledgerStartDate?: IsoDate | undefined;
+  },
+  /** From the property the unit belongs to. Never from the request body — a client
+   *  choosing its own calendar would change what a billing period means. */
+  calendar: CalendarSystem = 'gregorian',
+): LeaseBillingTerms {
   return {
     frequency: data.rentFrequency,
     rentCents: data.rentCents,
@@ -106,10 +116,7 @@ function billingTermsFromCreateBody(data: {
     // No move-out exists yet at creation; irrelevant to validateBillingTerms's checks.
     moveOutDate: null,
     moveOutBillingPolicy: 'bill_full_term',
-    // No per-property (or per-lease) calendar setting exists yet — every lease is
-    // Gregorian until one is added. See docs/DATES.md: "a calendar setting, almost
-    // certainly on property" is still undecided/unbuilt.
-    calendar: 'gregorian',
+    calendar,
   };
 }
 
@@ -166,7 +173,7 @@ export const renewLeaseBody = z.object({
   /** Defaults to the predecessor's. Supplying a different one is the supported way
    *  to change cadence — `rentFrequency` is otherwise immutable on an active lease. */
   rentFrequency: rentFrequency.optional(),
-  billingDay: z.number().int().min(1).max(31).optional(),
+  billingDay: z.number().int().min(1).max(MAX_BILLING_DAY_ANY).optional(),
   depositCents: money.optional(),
   /** Defaults to the predecessor's live roster (`removed_on IS NULL`). */
   carryTenantIds: z.array(uuid).optional(),
@@ -238,13 +245,16 @@ export const leaseSummary = z.object({
   propertyName: z.string(),
   /** §1.8 — the client cannot be correct about "today" without this. */
   propertyTimezone: timezone,
+  /** The property's calendar. Decides what a billing period is, so the client
+   *  needs it to preview a schedule that matches what the server will bill. */
+  calendar: calendarSystem,
   startDate: isoDate,
   endDate: isoDate.nullable(),
   moveOutDate: isoDate.nullable(),
   rentCents: z.number().int(),
   currency,
   rentFrequency,
-  billingDay: z.number().int().min(1).max(31),
+  billingDay: z.number().int().min(1).max(MAX_BILLING_DAY_ANY),
   depositCents: z.number().int(),
   openingBalanceCents: z.number().int(),
   ledgerStartDate: isoDate,
@@ -316,6 +326,7 @@ export function billingTermsFor(
     | 'ledgerStartDate'
     | 'moveOutDate'
     | 'moveOutBillingPolicy'
+    | 'calendar'
   >,
 ): LeaseBillingTerms {
   return {
@@ -327,7 +338,6 @@ export function billingTermsFor(
     ledgerStartDate: lease.ledgerStartDate,
     moveOutDate: lease.moveOutDate,
     moveOutBillingPolicy: lease.moveOutBillingPolicy,
-    // Same gap as `billingTermsFromCreateBody` — no calendar setting exists yet.
-    calendar: 'gregorian',
+    calendar: lease.calendar,
   };
 }

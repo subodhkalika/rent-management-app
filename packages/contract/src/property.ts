@@ -1,12 +1,13 @@
 import { z } from 'zod';
 import { uuid, timezone } from './common.js';
 import { moveOutBillingPolicy } from './billing.js';
+import { calendarSystem } from './calendar/index.js';
 
 /**
  * Re-exported from `billing.ts`, same pattern as `rentFrequency` in `lease.ts` — no
  * cycle, `billing.ts` still imports only `common.ts`.
  */
-export { moveOutBillingPolicy };
+export { moveOutBillingPolicy, calendarSystem };
 export type { MoveOutBillingPolicy } from './billing.js';
 
 export const propertyType = z.enum([
@@ -65,6 +66,18 @@ export const createPropertyBody = z.object({
    * friction with no safety benefit. See Amendment A.
    */
   moveOutBillingPolicy: moveOutBillingPolicy.default('bill_full_term'),
+  /**
+   * Which calendar defines this property's billing periods.
+   *
+   * A monthly lease in Bikram Sambat bills Baisakh to Jestha, not January to
+   * February — so this changes what a period IS, not merely how dates are shown.
+   * Per-property for the same reason timezone and the move-out policy are: it
+   * follows the building and its market, not the account or the tenant.
+   *
+   * Dates are stored as Gregorian ISO under either setting. The calendar decides
+   * where periods begin and end, never the storage format.
+   */
+  calendar: calendarSystem.default('gregorian'),
   notes: z.string().trim().max(2000).optional(),
 });
 export type CreatePropertyBody = z.infer<typeof createPropertyBody>;
@@ -82,6 +95,7 @@ export const property = z.object({
   notes: z.string().nullable(),
   timezone: z.string(),
   moveOutBillingPolicy,
+  calendar: calendarSystem,
   unitCount: z.number().int().nonnegative(),
   occupiedUnitCount: z.number().int().nonnegative(),
   createdAt: z.string().datetime(),

@@ -3,6 +3,7 @@ import { uuid, isoDate, currency, timezone } from './common.js';
 import { address } from './property.js';
 import { leaseStatus } from './lease.js';
 import { rentFrequency, moveOutBillingPolicy, plannedCharge } from './billing.js';
+import { calendarSystem } from './calendar/index.js';
 
 /**
  * Tenant-facing responses.
@@ -70,6 +71,7 @@ export const portalLease = z.object({
   propertyAddress: address,
   /** §1.8 — the client cannot be correct about "today" without this. */
   propertyTimezone: timezone,
+  calendar: calendarSystem,
   startDate: isoDate,
   endDate: isoDate.nullable(),
   moveOutDate: isoDate.nullable(),
