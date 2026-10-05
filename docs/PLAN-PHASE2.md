@@ -20,7 +20,7 @@
 | 3 | Monthly due date = `min(billingDay, daysInMonth)`; **yearly due date = the period's first day**, `billing_day` ignored. | "Day 31 of a year" is meaningless, and a year's rent paid in advance is owed the day the year begins. |
 | 4 | Due date is then **clamped into the occupied span**: `clamp(raw, occupiedStart, occupiedEnd)`. | One formula replaces PLAN-V1 §4.3's three special cases, and it honours the landlord's billing day whenever that day still falls inside a part-period. **[CORRECTION]** |
 | 5 | `rent_frequency` is **immutable once a lease has ever been active**. A cadence change is a renewal in the same `chain_id`. | The predecessor's charges were written under its own cadence and stay valid; nothing is ever retro-recadenced. |
-| 6 | **`move_out_date` does not affect billing. `end_date` alone clips the schedule.** | PLAN-V1 §4.5's `min(end_date, move_out_date)` silently refunds rent a fixed term still owes. **[CORRECTION]** — the one decision I would want confirmed (§6.2). |
+| 6 | **Whether an early move-out stops the rent is a PROPERTY-level setting**, `property.move_out_billing_policy`, defaulting to `bill_full_term`. `buildSchedule` applies it internally. | The policy follows the building and the local market, not the individual tenant — per-lease means answering it correctly on every lease forever. **[CORRECTION]** to PLAN-V1 §4.5 and to this plan's own first draft. **RESOLVED — see Amendment A.** |
 | 7 | Generation horizon is **one rule for both cadences**: a period is wanted once `today >= periodStart − 31 days`. | PLAN-V1's "end of next calendar month" cannot be expressed for a yearly cadence; 31 days reproduces monthly behaviour exactly and gives a yearly charge a sane month of notice. **[CORRECTION]** |
 | 8 | `ledger_start_date` must equal `start_date` **or** be a period start. | Otherwise a landlord onboarding an in-flight tenancy silently prorates a month the tenant owes in full. |
 | 9 | `opening_balance_cents` is a **column on `lease` written in Phase 2**, materialised as a charge by Phase 3. | Phase 2's job is to produce billing primitives; the lease form is the only place this can be captured. |
@@ -459,7 +459,7 @@ export const rentFrequencyEnum = pgEnum('rent_frequency', ['monthly','yearly']);
 | `renewed_from_lease_id` | `uuid` NULL FK → lease, `on delete set null` | |
 | `start_date` | `date` NOT NULL | |
 | `end_date` | `date` NULL | NULL = rolling. **Inclusive.** The only thing that clips the schedule. |
-| `move_out_date` | `date` NULL | Actual hand-back. **Does not affect billing.** May be before (early exit, still owes the term) or after (holdover) `end_date`. **[CORRECTION]** to PLAN-V1 §4.5. |
+| `move_out_date` | `date` NULL | Actual hand-back. **Affects billing only when the property's `move_out_billing_policy` is `stop_at_move_out`, and then only by SHORTENING** — never by extending past `end_date`. May be before (early exit) or after (holdover) `end_date`. See Amendment A. |
 | `rent_cents` | `bigint` NOT NULL | |
 | `currency` | `text` NOT NULL | Copied from the unit at create. Immutable. Not in `createLeaseBody`. |
 | `rent_frequency` | `rent_frequency` NOT NULL default `'monthly'` | Immutable once the lease has ever been active. |
@@ -485,7 +485,8 @@ lease_billing_day_ck CHECK (billing_day BETWEEN 1 AND 31)
 lease_money_ck       CHECK (rent_cents >= 0 AND deposit_cents >= 0 AND opening_balance_cents >= 0)
 ```
 
-No CHECK ties `move_out_date` to `end_date` — holdover is legal in both directions.
+No CHECK ties `move_out_date` to `end_date` — holdover is legal in both directions. One CHECK is
+added by Amendment A: `lease_moveout_ck CHECK (move_out_date IS NULL OR move_out_date >= start_date)`.
 
 **Indexes**
 
@@ -1058,19 +1059,12 @@ Neither agent edits `packages/contract`. If the contract is wrong, stop and repo
 | The portal route `/v1/portal/leases/:id` colliding with `/v1/portal/:tenantId/profile`. | Separate router mounted first + `requireUuidParam`. |
 | `GET /v1/leases` ordered by `asc(id)` rather than by `start_date desc`, which is what a landlord expects. | Deliberate: keyset pagination on UUIDv7 is the established convention and a landlord has tens of leases. Noted so the reviewer does not flag it. Revisit only if a real landlord complains. |
 
-### 9.2 The one decision I want confirmed
+### 9.2 RESOLVED — does `move_out_date` stop the rent?
 
-**Does `move_out_date` stop the rent?**
-
-- **My recommendation, and the default this plan is written to:** **no.** `end_date` alone
-  clips the schedule. A tenant who leaves on the 10th of a term running to the 30th still
-  owes to the 30th — that is what a fixed term is. A landlord who agrees to release them
-  early does so by calling `/end` with an earlier `endDate`, which is an explicit act.
-- **What PLAN-V1 §4.5 said:** `min(end_date, move_out_date)`. That silently writes off
-  rent the landlord is owed, with no record that a concession was ever made.
-- **Cost of being wrong:** one line in `buildSchedule`'s caller, plus re-deriving `F4` and
-  `F7`. Cheap to reverse, but it must be decided **before** Phase 3 writes charge rows
-  against it.
+**Answered by the user, 2026-10-05: it is a property-level setting.** Not global, not
+per-lease. `property.move_out_billing_policy`, default `bill_full_term`, read live and
+applied *inside* `buildSchedule`. Full specification in **Amendment A** below, which is
+normative and overrides anything above it that it contradicts.
 
 ### 9.3 Assumptions I made without being told
 
@@ -1086,3 +1080,351 @@ Neither agent edits `packages/contract`. If the contract is wrong, stop and repo
    on both actors' routes.
 6. `GET /schedule` has no status restriction — it works on a `draft` (that is the preview),
    on an `active` lease, and on an `ended` one (that is the record).
+
+---
+
+# Amendment A — move-out billing policy is a property setting
+
+> Resolves §9.2. **Normative**: where this amendment and anything above it disagree, this
+> wins. Everything else in the plan stands unchanged.
+>
+> User decision, 2026-10-05: *"this needs to be a flag on the property level settings so
+> that people can change per property not on the lease."* The policy follows the building
+> and the local market, not the individual tenant — making it per-lease means answering it
+> correctly on every single lease forever.
+
+## A.1 The property column
+
+| | |
+|---|---|
+| Column | `move_out_billing_policy` |
+| Type | `pgEnum('move_out_billing_policy', ['bill_full_term', 'stop_at_move_out'])` |
+| Nullability | **NOT NULL** |
+| Default | **`'bill_full_term'`** |
+| Table | `property` |
+
+```ts
+export const moveOutBillingPolicyEnum = pgEnum('move_out_billing_policy', [
+  'bill_full_term', 'stop_at_move_out',
+]);
+// property:
+moveOutBillingPolicy: moveOutBillingPolicyEnum().notNull().default('bill_full_term'),
+```
+
+**Enum, not a boolean.** A boolean forces a schema-and-contract break the first time a
+landlord asks for the third real-world policy ("bill through the end of the period
+containing the move-out" — the notice-period convention in month-to-month markets). The
+enum costs nothing now and absorbs that later. We are **not** adding the third value today.
+
+**Why `bill_full_term` is the default.** Three reasons, in order of weight:
+
+1. **It makes the migration semantically a no-op.** Every existing property keeps exactly
+   the behaviour the plan already specified (`end_date` alone clips the schedule). Nothing
+   a landlord has already set up changes meaning underneath them.
+2. **The failure modes are asymmetric.** A default that over-bills is *visible* — the
+   tenant disputes the charge, the landlord voids it. A default that under-bills is
+   *invisible*: nobody ever notices rent that was never charged. Default to the error you
+   can see.
+3. It is the legally conservative reading. The signed term is the obligation; releasing a
+   tenant early is a concession, and a concession should be opted into.
+
+**This is the opposite situation to `property.timezone`** and the contrast is worth stating
+for the reviewer: `'UTC'` was a default that is *wrong* for most real landlords, which is
+why it needed a one-time confirm banner (PLAN-V1 §2.3). `'bill_full_term'` is *right* by
+default and preserves existing behaviour, so **no banner, no prompt, no backfill.**
+
+**Contract — `packages/contract/src/property.ts`** (second field in the same place
+`timezone` already lives):
+
+```ts
+import { moveOutBillingPolicy } from './billing.js';   // defined in billing.ts, re-exported here
+
+createPropertyBody = z.object({
+  name, type, address,
+  timezone,                                              // required, unchanged
+  moveOutBillingPolicy: moveOutBillingPolicy.default('bill_full_term'),   // OPTIONAL
+  notes,
+});
+updatePropertyBody = createPropertyBody.partial();       // unchanged mechanism
+property = z.object({ ..., timezone, moveOutBillingPolicy, ... });
+```
+
+**Optional on create, unlike `timezone`.** `timezone` is required because no default is
+defensible. This one has a defensible default, and making a landlord answer a legal-policy
+question before they can save their first property is friction on the app's first screen.
+It belongs in a "Billing" section of the property form with the default preselected.
+
+## A.2 How it reaches `billing.ts` — inside the pure function, never at the call site
+
+**The rule is applied by `buildSchedule`. No caller ever computes an effective end date.**
+This is the whole point: if the API and the browser each derived it, a divergence there is
+precisely the "tenant sees one number, gets billed another" failure the design exists to
+prevent.
+
+`LeaseBillingTerms` gains **two** fields — the raw move-out date and the policy. It is
+never given a pre-chewed end date.
+
+```ts
+/* ---------- new in billing.ts ---------- */
+export const moveOutBillingPolicy: z.ZodEnum<['bill_full_term','stop_at_move_out']>;
+export type MoveOutBillingPolicy = z.infer<typeof moveOutBillingPolicy>;
+export const moveOutBillingPolicyLabels: Record<MoveOutBillingPolicy, string>;
+//   bill_full_term    -> 'Bill the full term'
+//   stop_at_move_out  -> 'Stop rent at move-out'
+
+export const leaseBillingTerms: z.ZodObject<{
+  frequency:            RentFrequency;
+  rentCents:            number;
+  billingDay:           number;
+  startDate:            IsoDate;
+  endDate:              IsoDate | null;
+  ledgerStartDate:      IsoDate;
+  moveOutDate:          IsoDate | null;            // NEW — raw, never pre-applied
+  moveOutBillingPolicy: MoveOutBillingPolicy;      // NEW — resolved from the property
+}>;
+
+/**
+ * The last day this lease bills for. The ONLY place the policy is interpreted.
+ * Exported so it is independently testable and nameable — NOT so callers can call it
+ * before buildSchedule. buildSchedule calls it internally; callers pass raw terms.
+ */
+export function effectiveBillingEnd(terms: LeaseBillingTerms): IsoDate | null;
+```
+
+Derivation, in full:
+
+```
+effectiveBillingEnd(t):
+  if t.moveOutBillingPolicy === 'bill_full_term'  -> return t.endDate        // moveOutDate ignored entirely
+  if t.moveOutDate === null                       -> return t.endDate
+  if t.endDate === null                           -> return t.moveOutDate    // rolling lease, tenant left
+  return minIsoDate(t.moveOutDate, t.endDate)                                // SHORTEN ONLY
+```
+
+**Signature changes:** none. `buildSchedule(terms, through)`,
+`chargesDueForGeneration(terms, today)` and `validateBillingTerms(terms)` keep their exact
+signatures — only `LeaseBillingTerms` grows. §1.6's algorithm changes on one line:
+
+```diff
+- windowEnd = endDate ?? +infinity
++ windowEnd = effectiveBillingEnd(terms) ?? +infinity
+```
+
+`validateBillingTerms` gains one rule: `moveOutDate === null || moveOutDate >= startDate`.
+
+**The construction adapter, so neither side hand-assembles the terms object.**
+Added to `packages/contract/src/lease.ts`:
+
+```ts
+export function billingTermsFor(
+  lease: Pick<LeaseSummary,
+    'rentFrequency' | 'rentCents' | 'billingDay' | 'startDate' | 'endDate'
+    | 'ledgerStartDate' | 'moveOutDate' | 'moveOutBillingPolicy'>,
+): LeaseBillingTerms;
+```
+
+The API's two schedule routes and the browser's preview both call `billingTermsFor(lease)`
+and pass the result straight to `buildSchedule`. **One adapter, one derivation, zero
+call-site logic.** `billingTermsFor` also works on a `PortalLease`, because A.5 puts the
+same fields on it.
+
+**Guard, extending §8.1 item 7.** The source-grep test that bans local date arithmetic in
+`apps/api/src` is extended to both trees and gains two rules:
+
+- `effectiveBillingEnd` may not be called outside `packages/contract`;
+- `moveOutDate` may not appear as an argument to `minIsoDate`, `maxIsoDate` or
+  `compareIsoDate` anywhere in `apps/api/src` or `apps/web/src`.
+
+Reading `moveOutDate` to render it is fine; reasoning about it is not.
+
+## A.3 Live read, not a snapshot
+
+**Decision: read the property's current value on every read of the lease.** No
+`move_out_billing_policy` column on `lease`.
+
+Mechanically free: `repo/lease.ts` already joins `unit → property` to put
+`property.timezone` on `leaseSummary` (§1.8). The policy rides the **same select**. Zero
+extra queries, zero extra joins.
+
+Why not snapshot at activation:
+
+- Phase 3 materialises charges as rows, so **nothing already billed can move.** Only future
+  generation shifts — which is exactly how a settings toggle should behave.
+- A `lease.move_out_billing_policy` column is one PATCH away from being a per-lease
+  override, which is the thing the user just rejected. Not having the column is the
+  enforcement.
+- The fairness objection (the tenant signed under one policy) is real but narrow: it only
+  bites at the moment of move-out, and a landlord flipping the setting days before a
+  move-out is making a deliberate, visible choice.
+
+**What the landlord observes**
+
+| Action | Observed |
+|---|---|
+| Flip to `stop_at_move_out`, no lease has a `move_out_date` yet | Nothing changes. The policy is inert until a move-out is recorded. |
+| Flip to `stop_at_move_out`, a lease has an early `move_out_date` and is **not yet billed** (Phase 2, or a future period in Phase 3) | `GET /leases/:id/schedule` immediately shows a shorter final period. The lease detail's schedule table updates on the next fetch. |
+| Flip to `stop_at_move_out` **after** Phase 3 has already written the charge for that period | The preview shortens; **the already-written charge does not.** Phase 3's generator never voids or shortens a charge it has written (PLAN-V1 §4.5: a voided charge is never regenerated, and the same one-way principle applies here). The landlord corrects it with `POST /charges/:id/correct` — the same void-and-supersede affordance as any other after-the-fact amount change. **Write this into the Phase 3 task file now.** |
+| Flip to `bill_full_term` | A previously-stopped schedule grows back. Phase 3's next run generates the missing periods, because generation is self-healing by construction. |
+
+**This does not violate I8.** I8 is monotonicity in `through` at *fixed terms*. A policy
+flip changes the terms object, so it is a different input, not a broken invariant. Stated
+explicitly so nobody reads the new behaviour as a regression.
+
+## A.4 Fixtures — which change, which are new
+
+Fixture names now carry the policy, so a diff on the fixture file reads as a policy change.
+The policy fields are added to **every** existing schedule fixture
+(`moveOutDate: null, moveOutBillingPolicy: 'bill_full_term'`), which leaves F1, F2, F3,
+F3b, F5, F6, F8, F9, F10, F11, F12 numerically **unchanged**.
+
+### F4 splits into five — the 2×2 of policy × (early exit / holdover), plus the baseline
+
+Base lease for all five: monthly, rent `100000`, start `2026-01-01`, end `2026-06-10`,
+billingDay `5`, ledgerStart `2026-01-01`, through `2026-12-01`.
+
+| Fixture | `moveOutDate` | policy | billingEnd | Result |
+|---|---|---|---|---|
+| **F4a** `ends mid-period, bill_full_term` | `null` | `bill_full_term` | `2026-06-10` | **The original F4.** 6 entries; June `10/30` days, due `2026-06-05`, **`33333`**, prorated. |
+| **F4b** `early move-out, bill_full_term` | `2026-05-12` | `bill_full_term` | `2026-06-10` | **Byte-identical to F4a.** Proves the move-out is ignored. |
+| **F4c** `early move-out, stop_at_move_out` | `2026-05-12` | `stop_at_move_out` | `2026-05-12` | **5 entries.** Jan–Apr full (`100000`, due the 5th). May: period `05-01..05-31`, occupied `05-01..05-12`, **`12/31`** days, due **`2026-05-05`**, amount **`38710`**, prorated. **No June entry at all.** |
+| **F4d** `holdover, stop_at_move_out` | `2026-07-20` | `stop_at_move_out` | `2026-06-10` | **Byte-identical to F4a.** **This is the asymmetry fixture:** the policy can only ever shorten. A move-out *after* `end_date` must not extend billing by a single day. |
+| **F4e** `holdover, bill_full_term` | `2026-07-20` | `bill_full_term` | `2026-06-10` | Byte-identical to F4a. Completes the 2×2. |
+
+`round(100000 × 12 / 31) = round(38709.6774) = 38710`.
+
+### F7 splits into two
+
+Base: yearly, rent `2400000`, start `2026-04-01`, end `2026-09-30`, through `2027-04-01`.
+
+| Fixture | `moveOutDate` | policy | Result |
+|---|---|---|---|
+| **F7a** `yearly terminated mid-year, bill_full_term` | `null` | `bill_full_term` | **The original F7.** 1 entry, `183/365` days, due `2026-04-01`, **`1203288`**, prorated. |
+| **F7b** `yearly early move-out, stop_at_move_out` | `2026-08-15` | `stop_at_move_out` | 1 entry. Period `2026-04-01..2027-03-31` (365 days), occupied `2026-04-01..2026-08-15`, **`137/365`** days, due `2026-04-01`, amount **`900822`**, prorated. |
+
+`round(2400000 × 137 / 365) = round(900821.9178) = 900822`. Days: Apr 30 + May 31 + Jun 30
++ Jul 31 + Aug 15 = 137.
+
+### Two new schedule fixtures — the rolling-lease case
+
+Base: monthly, rent `100000`, start `2026-01-01`, **`endDate: null`**, billingDay `1`,
+ledgerStart `2026-01-01`, `moveOutDate: 2026-03-18`, through `2026-12-01`.
+
+| Fixture | policy | billingEnd | Result |
+|---|---|---|---|
+| **F13** `rolling lease, move-out, stop_at_move_out` | `stop_at_move_out` | `2026-03-18` | **3 entries.** Jan and Feb full. March: `18/31` days, due `2026-03-01`, amount **`58065`**, prorated. The far `through` produces nothing from April on — **the policy is what terminates an open-ended schedule.** |
+| **F14** `rolling lease, move-out, bill_full_term` | `bill_full_term` | `null` | **12 full entries through December.** **The trap, pinned deliberately:** under `bill_full_term` a rolling lease with a recorded move-out and no `end_date` keeps billing forever. The mitigation is that `endLeaseBody.endDate` is **required**, so an ended lease always has one — nobody should "fix" F14 later by quietly special-casing `moveOutDate`. |
+
+`round(100000 × 18 / 31) = round(58064.5161) = 58065`.
+
+### New fixture set: `effectiveBillingEnd` directly
+
+Cheapest place to pin the asymmetry. `export const billingEndFixtures: readonly BillingEndFixture[]`:
+
+| endDate | moveOutDate | policy | expected |
+|---|---|---|---|
+| `2026-06-10` | `null` | `bill_full_term` | `2026-06-10` |
+| `2026-06-10` | `null` | `stop_at_move_out` | `2026-06-10` |
+| `2026-06-10` | `2026-05-12` | `bill_full_term` | `2026-06-10` |
+| `2026-06-10` | `2026-05-12` | `stop_at_move_out` | `2026-05-12` |
+| `2026-06-10` | `2026-07-20` | `bill_full_term` | `2026-06-10` |
+| `2026-06-10` | `2026-07-20` | `stop_at_move_out` | **`2026-06-10`** — shorten only |
+| `2026-06-10` | `2026-06-10` | `stop_at_move_out` | `2026-06-10` — same-day, no off-by-one |
+| `null` | `null` | `bill_full_term` | `null` |
+| `null` | `null` | `stop_at_move_out` | `null` |
+| `null` | `2026-03-18` | `bill_full_term` | `null` |
+| `null` | `2026-03-18` | `stop_at_move_out` | `2026-03-18` |
+
+### Two new invariants
+
+| # | Invariant | Asserted by |
+|---|---|---|
+| **I13** | **`effectiveBillingEnd` can only shorten.** When `endDate !== null`, `effectiveBillingEnd(t) <= t.endDate`, for **both** policies. | `billingEndFixtures` + a property test over every schedule fixture. |
+| **I14** | **Under `bill_full_term`, `buildSchedule` output is independent of `moveOutDate`.** | Run every schedule fixture a second time with `moveOutDate` set to an arbitrary date and the policy forced to `bill_full_term`; expect byte-identical output. Cheap, and it is what makes F4b/F4e/F14 generalise. |
+
+## A.5 Knock-on changes to §3, §4, §5, §6, §8, §9
+
+**§3.1 enums** — add `moveOutBillingPolicyEnum` (A.1).
+
+**§3.2 `lease`** — no new column. One new CHECK:
+`lease_moveout_ck CHECK (move_out_date IS NULL OR move_out_date >= start_date)`.
+The `move_out_date` row's note is corrected in place.
+
+**§3.5 migration** — now touches an **existing** table. Still one safe statement
+(`ALTER TABLE property ADD COLUMN move_out_billing_policy move_out_billing_policy NOT NULL DEFAULT 'bill_full_term'`),
+still no backfill, still no multi-step. **And, by choice of default, semantically a no-op.**
+
+**§4.1 `PATCH` mutability** — `moveOutDate` stays mutable in every status, including
+`ended`/`terminated`: correcting a typo'd move-out date is a real need. Under
+`stop_at_move_out` that retroactively changes the schedule. **Phase 3 rule, write it into
+that task file:** an edit to `moveOutDate` on a lease with already-written charges is a
+*correction trigger*, surfaced to the landlord as "this changes the final charge — review
+it", never a silent re-bill.
+
+**§4.1 `/end`** — `endLeaseBody` is unchanged (`endDate` required, `moveOutDate?` optional).
+Phase 3's `generateFinalCharge` uses `effectiveBillingEnd`, not `endDate`.
+
+**§4.3 errors** — `422` gains `moveOutDate < startDate`.
+
+**§5.1 transitions** — unchanged. The policy affects amounts, never states. `unit.status`
+coupling is driven by `end`, never by `move_out_date`, under either policy.
+
+**§6.3 `lease.ts`** — `leaseSummary` gains `moveOutBillingPolicy` (resolved live from the
+property, alongside `propertyTimezone`). Add the `billingTermsFor(...)` adapter (A.2).
+
+**§6.4 `portal.ts`** — `portalLease` gains `moveOutBillingPolicy`. **The tenant sees it.**
+It is a term of their tenancy — whether leaving early stops their rent is exactly the thing
+they most need to know before giving notice, and withholding it would be worse than showing
+it. It also lets the portal schedule be previewed client-side via the same
+`billingTermsFor`.
+
+**§6.5 `property.ts`** — `createPropertyBody` (optional, defaulted), `updatePropertyBody`
+(via `.partial()`), `property` response. Enum defined in `billing.ts`, re-exported from
+`property.ts` — same pattern as `rentFrequency` in `lease.ts`, and no cycle because
+`billing.ts` still imports only `common.ts`.
+
+**§8.1 backend-dev** — adds:
+- the `property` column, the enum, the migration;
+- `repo/property.ts`: create / update / select the new column, plus `mapProperty`;
+- `repo/lease.ts`: add `property.moveOutBillingPolicy` to the **existing** unit→property
+  join — no new query;
+- both schedule routes construct terms with `billingTermsFor`, never by hand;
+- the extended source-grep guard (A.2);
+- tests: `billingEndFixtures` and the F4a–e / F7a–b / F13 / F14 set asserted **through the
+  HTTP route**; a route test that flipping `PATCH /v1/properties/:id
+  { moveOutBillingPolicy }` changes `GET /v1/leases/:id/schedule` on the next call
+  (the live-read proof); I14 asserted as a loop.
+
+**§8.2 frontend-dev** — adds:
+- the property form's "Billing" section with the policy select, default preselected, and
+  helper text naming what each value does to a departing tenant;
+- **move-out copy on the lease form and the End-lease dialog**, driven by the lease's own
+  `moveOutBillingPolicy` so the landlord is never surprised:
+  - `bill_full_term` — *"Rent is billed to the end of the term (10 Jun 2026) whatever date
+    they move out. Change this on the property if your policy differs."*
+  - `stop_at_move_out` — *"Rent stops on the move-out date. The final charge will be
+    prorated."*
+- **the End-lease dialog recomputes the schedule preview live as the landlord types a
+  move-out date**, so the final charge is on screen before they commit. This is the
+  "not surprised" requirement, and it is free — it is the same `buildSchedule` call the
+  create wizard already makes;
+- a test that the two helper strings are driven by the policy field and not hardcoded.
+
+**§8.3 what they share** — unchanged in substance: `packages/contract/**`. The shared
+executable surface is now `buildSchedule` **and** `effectiveBillingEnd` **and**
+`billingTermsFor`. The verbatim paragraph in both task files gains one sentence:
+
+> *The move-out policy is applied inside `buildSchedule`. If you are computing an effective
+> end date before calling it, you are writing the second implementation this design exists
+> to prevent.*
+
+**§9.1 risks** — two new entries:
+
+| Risk | Mitigation |
+|---|---|
+| **A caller pre-applies the policy** and derives an effective end date before calling `buildSchedule`, reintroducing the two-implementations bug through the back door. | The policy lives in `LeaseBillingTerms` as raw data; `effectiveBillingEnd` is banned outside `packages/contract` by the extended grep guard; `billingTermsFor` is the only sanctioned way to build the terms object. |
+| **Flipping the policy after Phase 3 has billed** makes the preview and the ledger disagree for an already-written period. | The generator never un-writes. The landlord resolves it with `POST /charges/:id/correct` — the same void-and-supersede affordance as any other amount change. Written into the Phase 3 task file now, not discovered then. |
+| **Rolling lease + `bill_full_term` + a recorded move-out bills forever** (F14). | `endLeaseBody.endDate` is required, so an ended lease always has one. Pinned as a fixture so nobody special-cases it later. |
+
+**§9.3 assumptions** — add: the policy is read live from the property on every lease read,
+and there is deliberately no per-lease column, because the absence of the column is what
+enforces the user's "not on the lease" decision.
