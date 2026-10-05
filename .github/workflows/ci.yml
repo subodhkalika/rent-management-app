@@ -79,10 +79,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         # No `version:` here on purpose. action-setup v4 errors out if a version is
         # given AND package.json has `packageManager`, which ours does. Letting it
         # read packageManager keeps one source of truth and pins the exact version
@@ -91,7 +91,7 @@ jobs:
       # cache: pnpm caches the pnpm content-addressable store, keyed on pnpm-lock.yaml.
       # Must come after pnpm/action-setup so the `pnpm` binary is on PATH already.
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
