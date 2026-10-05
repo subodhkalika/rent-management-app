@@ -410,14 +410,22 @@ describe('GET /v1/leases/:id/schedule — the Bikram Sambat 500 a live run caugh
 
   it('a BS lease genuinely extending past the data table returns a clear 422, never a 500', async () => {
     leaseRepoMock.getLease.mockResolvedValue(
-      leaseRow({ calendar: 'bikram_sambat', startDate: '1950-01-01', ledgerStartDate: '1950-01-01' }),
+      leaseRow({ calendar: 'bikram_sambat', startDate: '2026-01-01', ledgerStartDate: '2026-01-01' }),
     );
-    // Within the 10-year sanity bound from 1950, but — requested directly, past
-    // the real BS table (~2034) — buildSchedule itself throws BsDateOutOfRangeError.
-    const res = await get(`/v1/leases/${LEASE_ID}/schedule?through=2040-01-01`);
+    // `through` must stay INSIDE the 10-year sanity bound from 2026 (~2036) so
+    // this exercises buildSchedule's OWN BsDateOutOfRangeError, not the generic
+    // sanity-bound rejection every through-too-far-out request gets regardless of
+    // calendar — those are two different code paths with two different messages,
+    // and asserting only the generic wrapper message ("Some fields are invalid")
+    // cannot tell them apart. A prior version of this test used `through:
+    // 2040-01-01` from a 1950 startDate — 90 years out, past the 10-year sanity
+    // bound — so it passed by hitting the WRONG branch; schedule.test.ts's
+    // `buildScheduleOrThrow` tests are what actually exercise this one directly.
+    const res = await get(`/v1/leases/${LEASE_ID}/schedule?through=2034-06-01`);
     expect(res.status).toBe(422);
-    const body = (await res.json()) as { error: { message: string } };
-    expect(body.error.message).toBe('Some fields are invalid');
+    const body = (await res.json()) as { error: { details?: { through?: string[] } } };
+    expect(body.error.details?.through?.[0]).toMatch(/Bikram Sambat/);
+    expect(body.error.details?.through?.[0]).not.toMatch(/within 10 years/);
   });
 
   it('the Gregorian path is unaffected by any of the BS fix', async () => {

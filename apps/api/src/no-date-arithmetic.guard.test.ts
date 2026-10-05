@@ -47,6 +47,28 @@ import { listSourceFiles, readSource } from '../test/support/repoGuard.js';
  * Scans every non-test `.ts` file under `apps/api/src` via the same recursive,
  * comment/string-stripped source reading the tenancy guards use, so a violation
  * nested in a new subdirectory is caught the same way a missing `orgId` filter is.
+ *
+ * Two more rules, from Amendment A.2 of docs/PLAN-PHASE2.md (the move-out billing
+ * policy): the policy is applied ONLY inside `buildSchedule`, so a caller that
+ * pre-applies it — deriving an effective end date before calling `buildSchedule`,
+ * or reasoning about `moveOutDate` directly — reintroduces the "two
+ * implementations of the same date math" bug through the back door.
+ *
+ * 4. `effectiveBillingEnd` called anywhere in `apps/api/src`. It is exported from
+ *    `@rms/contract` (so it is independently testable and so `buildSchedule` can
+ *    call it internally) — NOT so a route or repo function can call it before
+ *    `buildSchedule`. `billingTermsFor` is the only sanctioned way to build the
+ *    terms object; nothing in this app ever needs to call `effectiveBillingEnd`
+ *    directly.
+ *
+ * 5. `moveOutDate` passed as an argument to `minIsoDate`, `maxIsoDate` or
+ *    `compareIsoDate`. Reading `moveOutDate` to render it is fine; REASONING about
+ *    it — comparing it, clamping something to it — is `effectiveBillingEnd`'s job
+ *    alone.
+ *
+ * Neither rule has a violation to catch today (confirmed before writing this) —
+ * they exist so one introduced later fails loudly instead of shipping. The
+ * apps/web half of this same amendment is frontend-dev's guard, in its own tree.
  */
 
 const DIR = dirname(fileURLToPath(import.meta.url));
@@ -100,6 +122,50 @@ function isAllowedNewDateCall(argsRaw: string): boolean {
   return /^Date\.now\(\)\s*[+-]\s*[^,]+$/.test(args); // new Date(Date.now() +/- <duration>)
 }
 
+/**
+ * Every `fnName(ARGS)` call in `src`, with `ARGS` as raw (stripped) text — same
+ * paren-depth-walking technique as `newDateArgLists`, generalised to an arbitrary
+ * function name, so a nested call inside the argument list doesn't truncate the
+ * capture at its own closing paren.
+ */
+function callArgLists(src: string, fnName: string): string[] {
+  const out: string[] = [];
+  const marker = new RegExp(`\\b${fnName}\\s*\\(`, 'g');
+  for (let m = marker.exec(src); m; m = marker.exec(src)) {
+    let i = m.index + m[0].length;
+    let depth = 1;
+    const start = i;
+    while (i < src.length && depth > 0) {
+      if (src[i] === '(') depth++;
+      else if (src[i] === ')') depth--;
+      i++;
+    }
+    out.push(src.slice(start, i - 1));
+    marker.lastIndex = i;
+  }
+  return out;
+}
+
+/** Amendment A.2, rule 4: `effectiveBillingEnd` is for `buildSchedule`'s internal
+ *  use only — `apps/api` must never call it directly. */
+function callsEffectiveBillingEnd(src: string): boolean {
+  return callArgLists(src, 'effectiveBillingEnd').length > 0;
+}
+
+/** Amendment A.2, rule 5: `moveOutDate` must never be an argument to one of the
+ *  three calendar-independent comparison helpers — reasoning about it belongs to
+ *  `effectiveBillingEnd` alone, inside the contract. */
+const DATE_COMPARISON_HELPERS = ['minIsoDate', 'maxIsoDate', 'compareIsoDate'];
+
+function passesMoveOutDateToComparisonHelper(src: string): string | null {
+  for (const fn of DATE_COMPARISON_HELPERS) {
+    for (const args of callArgLists(src, fn)) {
+      if (/\bmoveOutDate\b/.test(args)) return fn;
+    }
+  }
+  return null;
+}
+
 describe('no-date-arithmetic guard (docs/DATES.md)', () => {
   const files = listSourceFiles(DIR);
 
@@ -147,6 +213,26 @@ describe('no-date-arithmetic guard (docs/DATES.md)', () => {
             'form — is calendar arithmetic and belongs in @rms/contract, not apps/api. ' +
             'See docs/DATES.md.',
         ).toEqual([]);
+      });
+
+      it('never calls effectiveBillingEnd (Amendment A.2) — buildSchedule applies it internally', () => {
+        expect(
+          callsEffectiveBillingEnd(src),
+          `${file} calls \`effectiveBillingEnd\` directly. It exists so BUILDSCHEDULE can apply the ` +
+            'move-out policy internally — a caller pre-applying it is the "second implementation" ' +
+            'bug the whole design exists to prevent. Build terms with `billingTermsFor` and pass ' +
+            'them straight to `buildSchedule` instead.',
+        ).toBe(false);
+      });
+
+      it('never passes moveOutDate to minIsoDate/maxIsoDate/compareIsoDate (Amendment A.2)', () => {
+        const offendingFn = passesMoveOutDateToComparisonHelper(src);
+        expect(
+          offendingFn,
+          `${file} passes \`moveOutDate\` to \`${offendingFn}\`. Reading moveOutDate to render it is ` +
+            'fine; reasoning about it — comparing it, clamping to it — is effectiveBillingEnd\'s job ' +
+            'alone, inside the contract.',
+        ).toBeNull();
       });
     });
   }
@@ -274,5 +360,60 @@ describe('no-date-arithmetic guard — detectors proven against deliberate viola
     expect(MAGIC_DIVISOR.test(src)).toBe(false);
     const calls = newDateArgLists(src);
     expect(calls.every((args) => isAllowedNewDateCall(args))).toBe(true);
+  });
+
+  it('flags a direct call to effectiveBillingEnd', () => {
+    const src = [
+      "import { effectiveBillingEnd } from '@rms/contract';",
+      'const end = effectiveBillingEnd(terms);',
+      '',
+    ].join('\n');
+    expect(callsEffectiveBillingEnd(src)).toBe(true);
+  });
+
+  it('does not flag merely importing effectiveBillingEnd without calling it', () => {
+    const src = "import type { LeaseBillingTerms } from '@rms/contract';\n";
+    expect(callsEffectiveBillingEnd(src)).toBe(false);
+  });
+
+  it('does not flag buildSchedule or billingTermsFor, which are the sanctioned calls', () => {
+    const src = [
+      "import { buildSchedule, billingTermsFor } from '@rms/contract';",
+      'const terms = billingTermsFor(lease);',
+      'const periods = buildSchedule(terms, through);',
+      '',
+    ].join('\n');
+    expect(callsEffectiveBillingEnd(src)).toBe(false);
+  });
+
+  it('flags moveOutDate passed to compareIsoDate, minIsoDate or maxIsoDate', () => {
+    expect(passesMoveOutDateToComparisonHelper('compareIsoDate(lease.moveOutDate, today)')).toBe('compareIsoDate');
+    expect(passesMoveOutDateToComparisonHelper('minIsoDate(a, moveOutDate, b)')).toBe('minIsoDate');
+    expect(passesMoveOutDateToComparisonHelper('maxIsoDate(terms.moveOutDate)')).toBe('maxIsoDate');
+  });
+
+  it('does not flag moveOutDate passed to an unrelated function, or compareIsoDate called without it', () => {
+    expect(passesMoveOutDateToComparisonHelper('render(lease.moveOutDate)')).toBeNull();
+    expect(passesMoveOutDateToComparisonHelper('compareIsoDate(a.startDate, b.endDate)')).toBeNull();
+  });
+
+  it('a deliberate Amendment A.2 violation, written to disk, is caught end to end', () => {
+    const badFile = join(fixtureRoot, 'bad-effective-billing-end.ts');
+    writeFileSync(
+      badFile,
+      [
+        "import { effectiveBillingEnd, compareIsoDate } from '@rms/contract';",
+        'export function isPastMoveOut(terms, today) {',
+        '  const end = effectiveBillingEnd(terms);',
+        '  return compareIsoDate(terms.moveOutDate, today) < 0;',
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const src = readSource(fixtureRoot, 'bad-effective-billing-end.ts');
+    expect(callsEffectiveBillingEnd(src)).toBe(true);
+    expect(passesMoveOutDateToComparisonHelper(src)).toBe('compareIsoDate');
   });
 });

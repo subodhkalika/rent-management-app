@@ -10,6 +10,7 @@ import {
   countActiveLeasesForUnitQuery,
   countActiveLeasesForTenantQuery,
   countActiveLeasesForPropertyQuery,
+  countNonDraftLeasesForPropertyQuery,
   createLeaseQuery,
   insertLeaseTenantsQuery,
   updateLeaseQuery,
@@ -200,6 +201,26 @@ describe('countActiveLeasesForPropertyQuery', () => {
     expect(sql).toContain('"lease"."org_id" =');
     expect(sql).toContain('"unit"."property_id" =');
     expect(params).toEqual(expect.arrayContaining(['org_A', 'prop_1']));
+  });
+});
+
+describe('countNonDraftLeasesForPropertyQuery — BLOCKING 3 (calendar-change guard)', () => {
+  it('filters by lease.org_id, unit.property_id, excludes soft-deleted, and status NOT IN (draft, cancelled)', () => {
+    const { sql, params } = countNonDraftLeasesForPropertyQuery('org_A', db, 'prop_1').toSQL();
+    expect(sql).toContain('"lease"."org_id" =');
+    expect(sql).toContain('"unit"."property_id" =');
+    expect(sql).toContain('"lease"."deleted_at" is null');
+    expect(sql).toContain('"lease"."status" not in');
+    expect(params).toEqual(expect.arrayContaining(['org_A', 'prop_1', 'draft', 'cancelled']));
+  });
+
+  it('is broader than countActiveLeasesForPropertyQuery — it also counts ended/terminated leases', () => {
+    const { sql: activeSql, params: activeParams } = countActiveLeasesForPropertyQuery('org_A', db, 'prop_1').toSQL();
+    const { sql: nonDraftSql, params: nonDraftParams } = countNonDraftLeasesForPropertyQuery('org_A', db, 'prop_1').toSQL();
+    expect(activeSql).toContain('"lease"."status" =');
+    expect(activeParams).toContain('active');
+    expect(nonDraftSql).toContain('"lease"."status" not in');
+    expect(nonDraftParams).not.toContain('active');
   });
 });
 

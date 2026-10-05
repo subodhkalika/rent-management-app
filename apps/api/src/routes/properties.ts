@@ -60,6 +60,26 @@ properties.patch('/v1/properties/:id', validateBody(updatePropertyBody), async (
   const id = requireUuidParam(c.req.param('id'), 'Property');
   const body = parsedBody<UpdatePropertyBody>(c);
 
+  // A calendar change silently redefines every lease's billing periods under this
+  // property (generationKey is derived from periodStart, which the calendar
+  // decides) — not merely an amount, the way move_out_billing_policy is. 409 while
+  // any lease is not draft/cancelled, same shape as the §3.6 delete guards, fired
+  // only on an ACTUAL change (not a PATCH that merely repeats the current value).
+  if (body.calendar !== undefined) {
+    const current = await propertyRepo.getProperty(orgId, db, id);
+    if (!current) throw notFound('Property');
+    if (body.calendar !== current.calendar) {
+      const blockingLeases = await leaseRepo.countNonDraftLeasesForProperty(orgId, db, id);
+      if (blockingLeases > 0) {
+        throw conflict(
+          'This property has a lease that is not draft or cancelled. Its calendar cannot be changed ' +
+            'while that lease exists — the billing periods already generated under it would no ' +
+            'longer match.',
+        );
+      }
+    }
+  }
+
   const updated = await propertyRepo.updateProperty(orgId, db, id, body);
   if (!updated) throw notFound('Property');
   return c.json(mapProperty(updated));

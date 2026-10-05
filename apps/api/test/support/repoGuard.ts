@@ -11,7 +11,17 @@ import { join, relative, sep } from 'node:path';
  * between the landlord guard and the portal guard.
  */
 
-export const QUERY_VERBS = /\bdb\s*\.\s*(select|insert|update|delete|query)\b/;
+// `selectDistinctOn` listed BEFORE `select`: regex alternation tries branches in
+// order at a given position, and does not backtrack a shorter match into a longer
+// one — `db.selectDistinctOn(` would silently fail to match (and the tenancy
+// guards would silently stop checking the function that called it) if `select`
+// were tried first, matched, and then failed its own `\b` boundary check (`t`
+// immediately followed by `D` is not a word boundary) — the engine backtracks to
+// the next ALTERNATIVE at that same position, never to a longer alternative
+// starting at the same point. Caught when `db/repo/portal/lease.ts`'s
+// `listLeasesQuery` switched to `selectDistinctOn` for HIGH 7's dedup fix and the
+// portal tenancy guard's test count silently dropped.
+export const QUERY_VERBS = /\bdb\s*\.\s*(selectDistinctOn|select|insert|update|delete|query)\b/;
 
 /**
  * Every `.ts` source file under `dir`, at any depth, excluding tests and declaration

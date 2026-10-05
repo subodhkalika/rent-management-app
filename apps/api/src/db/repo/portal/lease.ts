@@ -81,20 +81,36 @@ function portalLeaseColumns() {
 
 /**
  * All orgs the caller is a tenant in (§4.2 — unpaginated by design). One row per
- * (lease, caller's own tenant identity on it).
+ * LEASE — never two.
+ *
+ * `lease_tenant_live_uq` is deliberately partial on `removed_on IS NULL` (§3.4),
+ * so a tenant who left and came back has TWO `lease_tenant` rows for the same
+ * (lease, tenant): one historical (`removed_on` set) and one live. Both satisfy
+ * the pair filter below (it matches on `tenantId` alone, not on `removed_on`), so
+ * an unscoped `INNER JOIN` returns the SAME lease twice — one "former", one
+ * "current". `selectDistinctOn` collapses that to one row per `lease.id`,
+ * ordered so the row with `removed_on IS NULL` (current) wins whenever one
+ * exists — a current tenant must never be shown as former just because Postgres
+ * happened to return the other row. Same reasoning `countActiveLeasesForTenantQuery`
+ * uses `count(distinct lease.id)` for.
+ *
+ * Ordered by `lease.id` (not `startDate`) as a consequence: Postgres requires
+ * `DISTINCT ON`'s leading `ORDER BY` columns to match its own column list, so the
+ * tiebreak above has to come second. `lease.id` is UUIDv7 — time-ordered by
+ * creation — which is a perfectly reasonable order for a short, unpaginated list.
  */
 export function listLeasesQuery(scope: TenantScope, db: Database) {
   const pairClauses = scope.pairs.map((p) => and(eq(lease.orgId, p.orgId), eq(leaseTenant.tenantId, p.tenantId)));
 
   return db
-    .select(portalLeaseColumns())
+    .selectDistinctOn([lease.id], portalLeaseColumns())
     .from(lease)
     .innerJoin(leaseTenant, eq(leaseTenant.leaseId, lease.id))
     .innerJoin(unit, eq(unit.id, lease.unitId))
     .innerJoin(property, eq(property.id, unit.propertyId))
     .innerJoin(organization, eq(organization.id, lease.orgId))
     .where(and(isNull(lease.deletedAt), pairClauses.length > 0 ? or(...pairClauses) : sql`false`))
-    .orderBy(asc(lease.startDate));
+    .orderBy(asc(lease.id), sql`${leaseTenant.removedOn} asc nulls first`);
 }
 
 export async function listLeases(scope: TenantScope, db: Database): Promise<PortalLeaseRow[]> {
@@ -161,6 +177,13 @@ export interface PortalLeaseDetailRow extends PortalLeaseRow {
  * belonging to another org, OR the caller's own org but someone else's tenancy on
  * it (the next-door-neighbour case) — both read identically as "zero rows", which
  * the route turns into 404, never 403.
+ *
+ * Same left-and-came-back duplicate as `listLeasesQuery` above can produce TWO
+ * matching rows here too (former + current). `.limit(1)` with no `ORDER BY` would
+ * then return whichever Postgres happens to pick — `removedOn`, and therefore
+ * `yourRole` and the "you were removed on" banner, would be nondeterministic, and
+ * a CURRENT tenant could be shown as former. Ordered so `removed_on IS NULL`
+ * (current) wins whenever one exists.
  */
 export function resolveLeaseQuery(scope: TenantScope, db: Database, leaseId: string) {
   const pairClauses = scope.pairs.map((p) => and(eq(lease.orgId, p.orgId), eq(leaseTenant.tenantId, p.tenantId)));
@@ -179,6 +202,7 @@ export function resolveLeaseQuery(scope: TenantScope, db: Database, leaseId: str
     .where(
       and(eq(lease.id, leaseId), isNull(lease.deletedAt), pairClauses.length > 0 ? or(...pairClauses) : sql`false`),
     )
+    .orderBy(sql`${leaseTenant.removedOn} asc nulls first`)
     .limit(1);
 }
 

@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNull, ne, notInArray, sql } from 'drizzle-orm';
 import {
   uuidv7,
   addDays,
@@ -404,6 +404,38 @@ export async function countActiveLeasesForProperty(orgId: string, db: Database, 
   return row?.count ?? 0;
 }
 
+/**
+ * Leases under this property that are NOT `draft`/`cancelled` — the guard for
+ * `PATCH /v1/properties/:id { calendar }` (not a §3.6 delete guard, but the same
+ * shape). Broader than `countActiveLeasesForProperty`: an `ended`/`terminated`
+ * lease still blocks a calendar change, because its chain's charge key-space
+ * (`generationKey`, derived from `periodStart`) was already written under the old
+ * calendar — flipping the property's calendar would make Phase 3's generator see
+ * an entirely new key set for that lease and write a second parallel set of
+ * charges alongside the ones already billed, not merely change an amount the way
+ * `move_out_billing_policy` does (Amendment A.3's live-read argument does not
+ * extend to the calendar).
+ */
+export function countNonDraftLeasesForPropertyQuery(orgId: string, db: Database, propertyId: string) {
+  return db
+    .select({ count: sql<number>`count(*)`.mapWith(Number) })
+    .from(lease)
+    .innerJoin(unit, and(eq(unit.id, lease.unitId), eq(unit.orgId, orgId)))
+    .where(
+      and(
+        eq(lease.orgId, orgId),
+        eq(unit.propertyId, propertyId),
+        isNull(lease.deletedAt),
+        notInArray(lease.status, ['draft', 'cancelled']),
+      ),
+    );
+}
+
+export async function countNonDraftLeasesForProperty(orgId: string, db: Database, propertyId: string): Promise<number> {
+  const [row] = await countNonDraftLeasesForPropertyQuery(orgId, db, propertyId);
+  return row?.count ?? 0;
+}
+
 /* ======================================================================== *
  * create — always draft (Decision #10)
  * ======================================================================== */
@@ -605,7 +637,28 @@ export async function updateLease(
   const illegal = illegalUpdateField(current.status, data, { endDate: current.endDate });
   if (illegal) throw conflict(illegal);
 
-  const BILLING_FIELDS = ['startDate', 'endDate', 'rentFrequency', 'billingDay', 'ledgerStartDate', 'moveOutDate', 'rentCents'] as const;
+  // Resolve the NEW unit (and its property) FIRST, when unitId is changing —
+  // illegalUpdateField only lets unitId through on a draft lease (it's one of
+  // RENEW_FIELDS on anything else), so this only ever runs pre-activation. Moving
+  // a draft to a unit under a different property must revalidate against THAT
+  // property's calendar and move-out policy, never the old one — otherwise a
+  // billingDay valid only under the old calendar (or an endDate the new
+  // calendar's table can't represent) would be written unchecked.
+  let currency: string | undefined;
+  let calendarForValidation = current.calendar;
+  let policyForValidation = current.moveOutBillingPolicy;
+  if (data.unitId !== undefined && data.unitId !== current.unitId) {
+    const unitRow = await unitRepo.getUnit(orgId, db, data.unitId);
+    if (!unitRow) throw notFound('Unit');
+    currency = unitRow.currency;
+
+    const propertyRow = await propertyRepo.getProperty(orgId, db, unitRow.propertyId);
+    if (!propertyRow) throw notFound('Unit');
+    calendarForValidation = propertyRow.calendar;
+    policyForValidation = propertyRow.moveOutBillingPolicy;
+  }
+
+  const BILLING_FIELDS = ['unitId', 'startDate', 'endDate', 'rentFrequency', 'billingDay', 'ledgerStartDate', 'moveOutDate', 'rentCents'] as const;
   const touchesBilling = BILLING_FIELDS.some((f) => data[f] !== undefined);
   if (touchesBilling) {
     const terms: LeaseBillingTerms = {
@@ -616,21 +669,14 @@ export async function updateLease(
       endDate: data.endDate !== undefined ? (data.endDate ?? null) : current.endDate,
       ledgerStartDate: data.ledgerStartDate ?? current.ledgerStartDate,
       moveOutDate: data.moveOutDate !== undefined ? (data.moveOutDate ?? null) : current.moveOutDate,
-      moveOutBillingPolicy: current.moveOutBillingPolicy,
-      calendar: current.calendar,
+      moveOutBillingPolicy: policyForValidation,
+      calendar: calendarForValidation,
     };
     const billingError = validateBillingTerms(terms);
     if (billingError) throw validationFailed({ _: [billingError] });
 
     const rangeError = validateEndDateSchedulable(terms.calendar, terms.endDate);
     if (rangeError) throw validationFailed({ endDate: [rangeError] });
-  }
-
-  let currency: string | undefined;
-  if (data.unitId !== undefined && data.unitId !== current.unitId) {
-    const unitRow = await unitRepo.getUnit(orgId, db, data.unitId);
-    if (!unitRow) throw notFound('Unit');
-    currency = unitRow.currency;
   }
 
   const result = await updateLeaseQuery(orgId, db, id, data, currency);
@@ -662,19 +708,25 @@ export async function activateLease(orgId: string, db: Database, id: string): Pr
   const primaries = live.filter((t) => t.isPrimary);
   if (live.length === 0 || primaries.length !== 1) throw conflict(NO_TENANTS_MESSAGE);
 
+  let result: { id: string }[];
   try {
-    const result = await db
+    result = await db
       .update(lease)
       .set({ status: 'active', updatedAt: new Date() })
       .where(and(eq(lease.orgId, orgId), eq(lease.id, id), eq(lease.status, 'draft')))
       .returning({ id: lease.id });
-    if (result.length === 0) return null;
   } catch (err) {
     // The race: two concurrent activates for the same unit. The pre-check above
     // is the nice message; this catch is the authority.
     if (isUniqueViolation(err)) throw conflict(UNIT_ACTIVE_CONFLICT_MESSAGE);
     throw err;
   }
+  // `current` was just confirmed to exist and be `draft` moments ago, so the ONLY
+  // way this UPDATE's WHERE (status = 'draft') now matches zero rows is a
+  // concurrent request that changed this SAME lease's status in between — not
+  // "the lease doesn't exist". 409, never 404: 404 would wrongly claim the row is
+  // gone.
+  if (result.length === 0) throw conflict('Only a draft lease can be activated.');
 
   // §5.4: lease row, THEN unit.status — a torn failure here leaves an active lease
   // on a unit still marked vacant, which is visible and the lease is the system of
@@ -719,6 +771,15 @@ export async function endLease(
 
   const rangeError = validateEndDateSchedulable(current.calendar, data.endDate);
   if (rangeError) throw validationFailed({ endDate: [rangeError] });
+
+  // lease_moveout_ck: move_out_date IS NULL OR move_out_date >= start_date. Validate
+  // BEFORE the UPDATE — an unvalidated write here turns a landlord's typo into an
+  // unhandled SQLSTATE 23514 (db-errors.ts only recognises 23505), which would 500
+  // and leave the lease still active instead of 422ing with a field-level message.
+  const nextMoveOutDate = data.moveOutDate !== undefined ? data.moveOutDate : current.moveOutDate;
+  if (nextMoveOutDate !== null && compareIsoDate(nextMoveOutDate, current.startDate) < 0) {
+    throw validationFailed({ moveOutDate: ['moveOutDate cannot be before the lease started.'] });
+  }
 
   const status = statusForEndReason(data.reason);
 
@@ -812,6 +873,17 @@ export async function renewLease(
   // would hit lease_unit_active_uq and 500 on the legitimate path.
   if (predecessor.status === 'active') {
     const predecessorEnd = addDays(data.startDate, -1);
+    // lease_ledger_ck: ledger_start_date <= end_date. An onboarded predecessor
+    // (ledgerStartDate set later than startDate, e.g. an in-flight tenancy) can
+    // have its ledger start fall AFTER `newStart - 1` for a renewal requested soon
+    // enough after the predecessor began — ending it there would violate the CHECK
+    // and 500. Caught here, before the UPDATE, as a 409 naming the real conflict.
+    if (compareIsoDate(predecessorEnd, predecessor.ledgerStartDate) < 0) {
+      throw conflict(
+        "The renewal's startDate is too soon after the predecessor's ledger start date. " +
+          'Choose a later startDate.',
+      );
+    }
     await db
       .update(lease)
       .set({ status: 'ended', endDate: predecessorEnd, endReason: 'renewed', updatedAt: new Date() })
@@ -994,6 +1066,13 @@ export async function removeLeaseTenant(
   // The one place in Phase 2 that reads the clock — in the PROPERTY's zone, per
   // removeLeaseTenantBody's contract comment.
   const removedOn = data.removedOn ?? localToday(current.propertyTimezone);
+
+  // lease_tenant_ck: removed_on IS NULL OR removed_on >= added_on. Validate BEFORE
+  // the UPDATE — same reasoning as endLease's moveOutDate check above: an
+  // unvalidated write here is an unhandled SQLSTATE 23514, not a 422.
+  if (compareIsoDate(removedOn, target.addedOn) < 0) {
+    throw validationFailed({ removedOn: ['removedOn cannot be before the tenant was added to the lease.'] });
+  }
 
   const result = await db
     .update(leaseTenant)
