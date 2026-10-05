@@ -19,7 +19,7 @@
   "devDependencies": {
     "@sbmdkl/nepali-date-converter": "^2.0.5",
     "bikram-sambat": "^1.8.1",
-    "typescript": "^5.6.3",
-    "vitest": "^3.2.4"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
   }
 }
