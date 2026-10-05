@@ -3,7 +3,7 @@ import { uuid, isoDate, currency, timezone } from './common.js';
 import { address } from './property.js';
 import { leaseStatus } from './lease.js';
 import { rentFrequency, moveOutBillingPolicy, plannedCharge } from './billing.js';
-import { calendarSystem } from './calendar/index.js';
+import { calendarSystem, MAX_BILLING_DAY_ANY } from './calendar/index.js';
 
 /**
  * Tenant-facing responses.
@@ -78,7 +78,7 @@ export const portalLease = z.object({
   rentCents: z.number().int(),
   currency,
   rentFrequency,
-  billingDay: z.number().int().min(1).max(31),
+  billingDay: z.number().int().min(1).max(MAX_BILLING_DAY_ANY),
   depositCents: z.number().int(),
   /**
    * The tenant sees it. Whether leaving early stops their rent is exactly the thing

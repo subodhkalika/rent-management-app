@@ -7,6 +7,7 @@ import {
   moveOutBillingPolicy,
   plannedCharge,
   validateBillingTerms,
+  compareIsoDate,
   type RentFrequency,
   type LeaseBillingTerms,
 } from './billing.js';
@@ -93,7 +94,7 @@ const createLeaseBodyShape = z.object({
   notes: z.string().trim().max(2000).optional(),
 });
 
-function billingTermsFromCreateBody(
+export function billingTermsFromCreateBody(
   data: {
     rentFrequency: RentFrequency;
     rentCents: number;
@@ -135,9 +136,30 @@ export const createLeaseBody = createLeaseBodyShape.superRefine((data, ctx) => {
       message: 'Duplicate tenant ids',
     });
   }
-  const error = validateBillingTerms(billingTermsFromCreateBody(data));
-  if (error) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ledgerStartDate'], message: error });
+  // Calendar-INDEPENDENT checks only. A request schema cannot see which property —
+  // and therefore which calendar — the lease belongs to, and guessing Gregorian here
+  // was actively harmful: it rejected a valid Bikram Sambat ledger start (a BS month
+  // boundary is not a Gregorian one) and a valid billingDay of 32, before the
+  // calendar-correct check could run. The intersection of "passes this guess" and
+  // "passes the real check" was empty, so onboarding an in-flight tenancy was
+  // unreachable on any Bikram Sambat property.
+  //
+  // The calendar-dependent rules live in `validateBillingTerms`, which the API calls
+  // with the property's real calendar. Clients that know the calendar — the lease
+  // wizard does — should call it directly for inline feedback.
+  if (data.endDate && compareIsoDate(data.endDate, data.startDate) < 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['endDate'],
+      message: 'End date cannot be before the start date',
+    });
+  }
+  if (data.ledgerStartDate && compareIsoDate(data.ledgerStartDate, data.startDate) < 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['ledgerStartDate'],
+      message: 'Ledger start cannot be before the lease start date',
+    });
   }
 });
 export type CreateLeaseBody = z.infer<typeof createLeaseBody>;

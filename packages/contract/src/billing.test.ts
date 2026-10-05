@@ -45,7 +45,31 @@ import type { IsoDate } from './common.js';
 
 describe('I1 purity', () => {
   const thisFile = fileURLToPath(import.meta.url);
-  const billingSource = readFileSync(join(dirname(thisFile), 'billing.ts'), 'utf-8');
+  const here = dirname(thisFile);
+
+  // Every file carrying the purity rule, not just billing.ts. The calendar layer
+  // states the same rule and a table-driven calendar needs it more than Gregorian
+  // does — one Date.now() in bikram-sambat.ts would make a schedule depend on when
+  // it was computed, which is the bug purity exists to make impossible.
+  const PURE_FILES = [
+    'billing.ts',
+    'calendar/index.ts',
+    'calendar/gregorian.ts',
+    'calendar/bikram-sambat.ts',
+    'calendar/civil-days.ts',
+  ] as const;
+
+  const sources = PURE_FILES.map((f) => [f, readFileSync(join(here, f), 'utf-8')] as const);
+  const billingSource = sources[0]![1];
+
+  it.each(PURE_FILES.map((f, i) => [f, sources[i]![1]] as const))(
+    '%s reads no clock and no locale',
+    (_name, src) => {
+      expect(src).not.toMatch(/Date\.now\(/);
+      expect(src).not.toMatch(/new Date\(\s*\)/);
+      expect(src).not.toMatch(/\bIntl\./);
+    },
+  );
 
   it('never calls Date.now()', () => {
     expect(billingSource).not.toMatch(/Date\.now\(/);
