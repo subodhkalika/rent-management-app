@@ -76,11 +76,18 @@ docker compose down -v         # stop and wipe the database
 
 Editing anything under `apps/web/src` or `apps/api/src` hot-reloads. No rebuild.
 
-After changing a **dependency** (`package.json`), restart so `deps` reinstalls:
+After changing a **dependency** (`package.json`), just restart the service:
 
 ```bash
-docker compose up -d --force-recreate deps && docker compose restart api web
+docker compose restart web     # or api
 ```
+
+`api` and `web` each run `pnpm install --frozen-lockfile` before starting, so a
+package added on the host is picked up on the next restart. This exists because the
+container keeps its own `node_modules` in a named volume — the host's is macOS/arm64
+and would break a Linux container — so a host-side install is otherwise invisible
+inside. Without it you get `Failed to resolve import "<pkg>"` only when you navigate
+to the screen that needs it.
 
 After changing the **database schema**, generate the migration on the host, then
 re-run the migrate service:

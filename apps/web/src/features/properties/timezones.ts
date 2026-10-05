@@ -16,7 +16,7 @@ function supportedTimezones(): string[] {
   // `Intl.supportedValuesOf` is in every evergreen browser; fall back to just the
   // browser's own zone on the rare runtime that lacks it, so the form still works.
   if (typeof Intl.supportedValuesOf === 'function') {
-    return Intl.supportedValuesOf('timeZone');
+    return Intl.supportedValuesOf('timeZone').map(tz => tz === 'Asia/Katmandu' ? 'Asia/Kathmandu' : tz);
   }
   return [browserTimezone()];
 }
