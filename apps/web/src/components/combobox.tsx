@@ -15,6 +15,8 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 export interface ComboboxOption {
   value: string;
   label: string;
+  /** Extra terms this option should also match on when searching. */
+  keywords?: string[];
 }
 
 interface ComboboxProps {
@@ -67,8 +69,16 @@ export const Combobox = React.forwardRef<HTMLButtonElement, ComboboxProps>(
             className="w-full justify-between font-normal"
             {...rest}
           >
-            <span className={cn('truncate', !selected && 'text-muted-foreground')}>
-              {selected ? selected.label : placeholder}
+            {/*
+              A value with no matching option (e.g. a stored zone the current
+              options list doesn't enumerate) must render as itself, not fall
+              back to the placeholder — otherwise a field holding a real value
+              looks empty, and a user who saves without touching it keeps a
+              value they never saw. Only an actually-empty value gets the
+              placeholder treatment.
+            */}
+            <span className={cn('truncate', !value && 'text-muted-foreground')}>
+              {selected ? selected.label : value || placeholder}
             </span>
             <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" aria-hidden="true" />
           </Button>
@@ -83,6 +93,7 @@ export const Combobox = React.forwardRef<HTMLButtonElement, ComboboxProps>(
                   <CommandItem
                     key={option.value}
                     value={option.label}
+                    keywords={option.keywords}
                     onSelect={() => {
                       onChange(option.value);
                       setOpen(false);

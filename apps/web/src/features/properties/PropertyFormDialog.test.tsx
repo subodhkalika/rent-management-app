@@ -82,6 +82,45 @@ describe('PropertyFormDialog', () => {
     );
   });
 
+  it('finds the India timezone when searching its modern name, "Kolkata"', async () => {
+    // ICU still canonicalizes this zone as `Asia/Calcutta`; landlords type the
+    // modern name, so the combobox must find it by that too.
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole('combobox', { name: /timezone/i }));
+    await user.type(screen.getByPlaceholderText(/search timezones/i), 'Kolkata');
+    await user.click(await screen.findByRole('option', { name: 'Asia/Calcutta' }));
+
+    expect(screen.getByRole('combobox', { name: /timezone/i })).toHaveTextContent(
+      'Asia/Calcutta',
+    );
+  });
+
+  it('offers UTC as a selectable timezone option', async () => {
+    // `Intl.supportedValuesOf('timeZone')` omits UTC entirely, yet it is the
+    // stored value of every property created so far — it must still be pickable.
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole('combobox', { name: /timezone/i }));
+    await user.click(await screen.findByRole('option', { name: 'UTC' }));
+
+    expect(screen.getByRole('combobox', { name: /timezone/i })).toHaveTextContent('UTC');
+  });
+
+  it('shows an existing property\'s UTC timezone as selected, not as the placeholder', () => {
+    // Every property stored before this fix has `timezone: 'UTC'`. Editing one
+    // must show "UTC" as the field's value, not silently fall back to looking
+    // unset.
+    const property = makeProperty({ timezone: 'UTC' });
+    renderDialog(property);
+
+    const trigger = screen.getByRole('combobox', { name: /timezone/i });
+    expect(trigger).toHaveTextContent('UTC');
+    expect(trigger).not.toHaveTextContent(/select a timezone/i);
+  });
+
   it('defaults a new property to Gregorian and "bill the full term"', () => {
     renderDialog();
 
