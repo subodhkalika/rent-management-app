@@ -24,6 +24,8 @@ export function mapProperty(row: PropertyRow): Property {
     },
     notes: row.notes,
     timezone: row.timezone,
+    moveOutBillingPolicy: row.moveOutBillingPolicy,
+    calendar: row.calendar,
     unitCount: row.unitCount,
     occupiedUnitCount: row.occupiedUnitCount,
     createdAt: row.createdAt.toISOString(),

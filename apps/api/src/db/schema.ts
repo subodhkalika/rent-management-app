@@ -133,6 +133,20 @@ export const propertyTypeEnum = pgEnum('property_type', [
 
 export const unitStatusEnum = pgEnum('unit_status', ['vacant', 'occupied', 'unavailable']);
 
+// Whether an early move-out stops rent. Mirrors `moveOutBillingPolicy` in
+// packages/contract/src/billing.ts. `bill_full_term` is the default because it is
+// the behaviour every existing property already has — this migration is a semantic
+// no-op until a landlord deliberately changes it.
+export const moveOutBillingPolicyEnum = pgEnum('move_out_billing_policy', [
+  'bill_full_term', 'stop_at_move_out',
+]);
+
+// Which calendar defines this property's billing periods. Mirrors `calendarSystem`
+// in packages/contract/src/calendar/index.ts. Dates are always stored as Gregorian
+// ISO regardless (docs/DATES.md) — this decides where PERIODS begin and end, not the
+// storage format. 'gregorian' is the default for the same no-op-migration reason.
+export const calendarSystemEnum = pgEnum('calendar_system', ['gregorian', 'bikram_sambat']);
+
 export const property = pgTable(
   'property',
   {
@@ -157,6 +171,14 @@ export const property = pgTable(
     // property created from here on gets a real value; existing rows keep 'UTC'
     // until the landlord is prompted to fix them.
     timezone: text().notNull().default('UTC'),
+
+    // Both NOT NULL DEFAULT, same no-op-migration reasoning as `timezone` above —
+    // see docs/TASKS/006-calendar-seam.md and docs/DATES.md. `billing_day`'s 1..31
+    // CHECK (none currently enforced at the DB layer) is Gregorian-only; widening it
+    // for 'bikram_sambat' properties is `Calendar.maxDayOfMonth` / `MAX_BILLING_DAY`
+    // in packages/contract, not a column constraint here.
+    moveOutBillingPolicy: moveOutBillingPolicyEnum().notNull().default('bill_full_term'),
+    calendar: calendarSystemEnum().notNull().default('gregorian'),
 
     notes: text(),
 

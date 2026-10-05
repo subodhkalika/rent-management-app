@@ -22,6 +22,8 @@ export interface PropertyRow {
   country: string;
   notes: string | null;
   timezone: string;
+  moveOutBillingPolicy: (typeof property.$inferSelect)['moveOutBillingPolicy'];
+  calendar: (typeof property.$inferSelect)['calendar'];
   unitCount: number;
   occupiedUnitCount: number;
   createdAt: Date;
@@ -42,6 +44,8 @@ const propertyColumns = {
   country: property.country,
   notes: property.notes,
   timezone: property.timezone,
+  moveOutBillingPolicy: property.moveOutBillingPolicy,
+  calendar: property.calendar,
   createdAt: property.createdAt,
   updatedAt: property.updatedAt,
   unitCount: sql<number>`count(${unit.id}) filter (where ${unit.deletedAt} is null)`.mapWith(Number),
@@ -121,6 +125,8 @@ export function createPropertyQuery(
     postalCode: data.address.postalCode,
     country: data.address.country,
     timezone: data.timezone,
+    moveOutBillingPolicy: data.moveOutBillingPolicy,
+    calendar: data.calendar,
     notes: data.notes ?? null,
   });
 }
@@ -163,6 +169,8 @@ export function updatePropertyQuery(
     patch.country = data.address.country;
   }
   if (data.timezone !== undefined) patch.timezone = data.timezone;
+  if (data.moveOutBillingPolicy !== undefined) patch.moveOutBillingPolicy = data.moveOutBillingPolicy;
+  if (data.calendar !== undefined) patch.calendar = data.calendar;
   if (data.notes !== undefined) patch.notes = data.notes ?? null;
 
   return db

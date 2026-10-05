@@ -18,6 +18,8 @@ const propertyRow: PropertyRow = {
   country: 'US',
   notes: null,
   timezone: 'Australia/Perth',
+  moveOutBillingPolicy: 'bill_full_term',
+  calendar: 'gregorian',
   unitCount: 4,
   occupiedUnitCount: 3,
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -63,6 +65,17 @@ describe('mapProperty', () => {
     const mapped = mapProperty(propertyRow) as Record<string, unknown>;
     expect(mapped.orgId).toBeUndefined();
     expect(mapped.deletedAt).toBeUndefined();
+  });
+
+  it('passes through moveOutBillingPolicy and calendar', () => {
+    const mapped = mapProperty({
+      ...propertyRow,
+      moveOutBillingPolicy: 'stop_at_move_out',
+      calendar: 'bikram_sambat',
+    });
+    expect(mapped.moveOutBillingPolicy).toBe('stop_at_move_out');
+    expect(mapped.calendar).toBe('bikram_sambat');
+    expect(propertySchema.safeParse(mapped).success).toBe(true);
   });
 });
 

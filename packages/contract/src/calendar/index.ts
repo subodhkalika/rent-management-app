@@ -80,13 +80,21 @@ export const MAX_BILLING_DAY: Record<CalendarSystem, number> = {
  *
  * Request schemas accept up to this, because a schema cannot know which property —
  * and therefore which calendar — a lease belongs to. `validateBillingTerms` then
- * rejects a day that exceeds the lease's OWN calendar, so 32 is accepted on a Bikram
- * Sambat lease and refused on a Gregorian one.
+ * rejects a day exceeding the lease's OWN calendar, so 32 is valid on a Bikram
+ * Sambat lease and still refused on a Gregorian one.
  *
- * Derived, not written: adding a calendar with longer months widens this
- * automatically rather than leaving a stale literal behind.
+ * A LITERAL, deliberately, despite being derivable from MAX_BILLING_DAY above.
+ * This value is read at module scope by the zod schemas in lease.ts, and a
+ * module-scope constant computed from another module-scope constant is exactly the
+ * shape that breaks under a bundler that reorders or partially reloads modules —
+ * it surfaces as `MAX_BILLING_DAY_ANY is not defined` at runtime, long after the
+ * build passed. That failure was observed once in the Worker during development.
+ *
+ * The staleness risk a literal normally carries is covered by the test below it,
+ * which fails if this ever stops matching the table. Literal value, derived
+ * guarantee.
  */
-export const MAX_BILLING_DAY_ANY = Math.max(...Object.values(MAX_BILLING_DAY));
+export const MAX_BILLING_DAY_ANY = 32;
 
 export { gregorian } from './gregorian.js';
 export { bikramSambat, BsDateOutOfRangeError } from './bikram-sambat.js';

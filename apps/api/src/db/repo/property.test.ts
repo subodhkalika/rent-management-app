@@ -93,6 +93,8 @@ const createBody = {
     country: 'US',
   },
   timezone: 'America/Chicago',
+  moveOutBillingPolicy: 'bill_full_term' as const,
+  calendar: 'gregorian' as const,
 };
 
 describe('createPropertyQuery', () => {
@@ -107,6 +109,18 @@ describe('createPropertyQuery', () => {
     const { sql, params } = createPropertyQuery('org_1', db, 'prop_1', createBody).toSQL();
     expect(sql).toContain('"timezone"');
     expect(params).toContain('America/Chicago');
+  });
+
+  it('inserts moveOutBillingPolicy and calendar from the request body', () => {
+    const { sql, params } = createPropertyQuery('org_1', db, 'prop_1', {
+      ...createBody,
+      moveOutBillingPolicy: 'stop_at_move_out',
+      calendar: 'bikram_sambat',
+    }).toSQL();
+    expect(sql).toContain('"move_out_billing_policy"');
+    expect(sql).toContain('"calendar"');
+    expect(params).toContain('stop_at_move_out');
+    expect(params).toContain('bikram_sambat');
   });
 });
 
@@ -135,6 +149,23 @@ describe('updatePropertyQuery', () => {
   it('leaves timezone untouched when absent from the patch', () => {
     const { sql } = updatePropertyQuery('org_1', db, 'prop_1', { name: 'New name' }).toSQL();
     expect(sql).not.toContain('"timezone" =');
+  });
+
+  it('sets moveOutBillingPolicy and calendar when present in the patch', () => {
+    const { sql, params } = updatePropertyQuery('org_1', db, 'prop_1', {
+      moveOutBillingPolicy: 'stop_at_move_out',
+      calendar: 'bikram_sambat',
+    }).toSQL();
+    expect(sql).toContain('"move_out_billing_policy" =');
+    expect(sql).toContain('"calendar" =');
+    expect(params).toContain('stop_at_move_out');
+    expect(params).toContain('bikram_sambat');
+  });
+
+  it('leaves moveOutBillingPolicy and calendar untouched when absent from the patch', () => {
+    const { sql } = updatePropertyQuery('org_1', db, 'prop_1', { name: 'New name' }).toSQL();
+    expect(sql).not.toContain('"move_out_billing_policy" =');
+    expect(sql).not.toContain('"calendar" =');
   });
 });
 
