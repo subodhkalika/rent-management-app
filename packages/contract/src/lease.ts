@@ -106,6 +106,10 @@ function billingTermsFromCreateBody(data: {
     // No move-out exists yet at creation; irrelevant to validateBillingTerms's checks.
     moveOutDate: null,
     moveOutBillingPolicy: 'bill_full_term',
+    // No per-property (or per-lease) calendar setting exists yet — every lease is
+    // Gregorian until one is added. See docs/DATES.md: "a calendar setting, almost
+    // certainly on property" is still undecided/unbuilt.
+    calendar: 'gregorian',
   };
 }
 
@@ -323,5 +327,7 @@ export function billingTermsFor(
     ledgerStartDate: lease.ledgerStartDate,
     moveOutDate: lease.moveOutDate,
     moveOutBillingPolicy: lease.moveOutBillingPolicy,
+    // Same gap as `billingTermsFromCreateBody` — no calendar setting exists yet.
+    calendar: 'gregorian',
   };
 }

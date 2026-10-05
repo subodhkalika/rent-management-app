@@ -513,6 +513,7 @@ describe('I14 under bill_full_term, buildSchedule output is independent of moveO
 describe('validateBillingTerms', () => {
   const base: LeaseBillingTerms = {
     frequency: 'monthly',
+    calendar: 'gregorian',
     rentCents: 100000,
     billingDay: 1,
     startDate: '2026-01-01',
@@ -570,6 +571,7 @@ describe('MAX_SCHEDULE_PERIODS', () => {
   it('throws RangeError past the limit', () => {
     const terms: LeaseBillingTerms = {
       frequency: 'monthly',
+      calendar: 'gregorian',
       rentCents: 100000,
       billingDay: 1,
       startDate: '2000-01-01',
@@ -586,6 +588,7 @@ describe('MAX_SCHEDULE_PERIODS', () => {
   it('does not throw at exactly the limit', () => {
     const terms: LeaseBillingTerms = {
       frequency: 'monthly',
+      calendar: 'gregorian',
       rentCents: 100000,
       billingDay: 1,
       startDate: '2000-01-01',

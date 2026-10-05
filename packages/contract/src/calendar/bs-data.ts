@@ -12,9 +12,8 @@
  * PROVENANCE AND VERIFICATION (2026-10-05)
  * ----------------------------------------
  * Generated from `bikram-sambat@^1` and independently cross-checked against
- * `@sbmdkl/nepali-date-converter@^2`. The two agree on **every one of 32,976 days
- * from 1944-01-01 to 2043-01-01** — zero disagreements — and on all 89 shared
- * year-rows of this table.
+ * `@sbmdkl/nepali-date-converter@^2`. The two agree on every day both can represent
+ * — zero disagreements — and on every year-row of this table.
  *
  * A third library, `nepali-date-converter`, was evaluated and REJECTED: it diverges
  * on 459 days across BS 2084–2086 (AD 2027–2030), believing Jestha 2084 has 32 days
@@ -22,14 +21,27 @@
  * That window is inside this application's operating life, so the disagreement is
  * not academic.
  *
- * Independent self-check: for all 90 consecutive year pairs, the sum of a year's
- * twelve month lengths equals the exact day span between that year's Baisakh 1 and
- * the next. Zero mismatches. This validates internal consistency without reference
- * to either source library.
+ * Independent self-check: the twelve month lengths of every year sum exactly to the
+ * day span between that year's Baisakh 1 and the next. This validates internal
+ * consistency without reference to either source library.
  *
- * `packages/contract/src/calendar/bs-data.conformance.test.ts` re-runs both checks
- * against the installed libraries, so a future edit to this table — or a library
- * revising its own data — fails the build rather than silently shifting rent dates.
+ * RANGE — note this carefully
+ * ---------------------------
+ * 91 year-rows, BS 2000–2090, which is **AD 1943-04-14 through 2034-04-13**, 33,238
+ * days. There is nothing after 2034-04-13. `bikram-sambat` itself throws beyond BS
+ * 2090, which independently confirms that boundary.
+ *
+ * An earlier version of this comment claimed verification "from 1944-01-01 to
+ * 2043-01-01". That was wrong: 2043 was the upper bound of the loop that generated
+ * the table, not of the data. The loop skipped dates the libraries could not
+ * represent, so everything past 2034 was never compared and does not exist here.
+ * Recorded because an overstated range is worse than a narrow one — it invites
+ * trusting dates that are absent.
+ *
+ * `bs-data.conformance.test.ts` re-derives the real range from the table itself
+ * rather than from this comment, and re-runs both checks against the installed
+ * libraries. A future edit here, or a library revising its data, fails the build
+ * instead of silently shifting rent dates.
  *
  * THE OPERATIONAL RISK, STATED PLAINLY
  * ------------------------------------

@@ -1,24 +1,61 @@
 import { z } from 'zod';
 import { isoDate, money, type IsoDate } from './common.js';
+import {
+  calendarSystem,
+  calendarForSystem,
+  MAX_BILLING_DAY,
+  type Calendar,
+  type CalendarSystem,
+} from './calendar/index.js';
+import {
+  parseIsoDate,
+  toIsoDate,
+  addDays,
+  compareIsoDate,
+  daysBetweenInclusive,
+  minIsoDate,
+  maxIsoDate,
+  clampIsoDate,
+  daysFromCivil,
+} from './calendar/civil-days.js';
+import { isLeapYear, daysInMonth, addMonths, addYears, clampDayToMonth } from './calendar/gregorian.js';
 
 /**
  * PURITY IS THE POINT.
  *
  * Everything in this file is plain integer/string arithmetic on `IsoDate` strings
  * and numbers. No wall-clock read, no bare/zero-argument `Date` construction, no
- * `Intl`, no I/O.
+ * `Intl`, no I/O. Same rule for `./calendar/*`: a table-driven calendar needs it even
+ * more than Gregorian does.
  *
  * `IsoDate` strings are fixed-width `YYYY-MM-DD`, so lexicographic comparison is
- * chronological comparison — `compareIsoDate` below never touches a `Date` object.
- * Day-count arithmetic (`addDays`, `daysBetweenInclusive`) uses the Howard Hinnant
- * `days_from_civil` / `civil_from_days` algorithm: pure integer conversion between a
- * proleptic-Gregorian (year, month, day) triple and a day count relative to the
- * 1970-01-01 epoch. No `Date` object is ever constructed.
+ * chronological comparison — `compareIsoDate` (from `./calendar/civil-days.js`) never
+ * touches a `Date` object. Day-count arithmetic (`addDays`, `daysBetweenInclusive`)
+ * uses the Howard Hinnant `days_from_civil` / `civil_from_days` algorithm: pure
+ * integer conversion between a proleptic-Gregorian (year, month, day) triple and a
+ * day count relative to the 1970-01-01 epoch. No `Date` object is ever constructed.
  *
  * The same logic runs in the browser's live schedule preview and (in Phase 3) the
  * server's cron. If it ever touched the wall clock or the runtime's locale, the two
  * could disagree — which is the one bug this design exists to prevent.
+ *
+ * CALENDAR SEAM — `./calendar/index.ts` exports the `Calendar` interface and
+ * `calendarForSystem`, a resolver from the `calendarSystem` enum ('gregorian' |
+ * 'bikram_sambat') to an implementation. `periodsOverlapping`, `periodContaining`,
+ * `isPeriodStart` and `dueDateFor` all take a `CalendarSystem` (defaulting to
+ * 'gregorian' so existing call sites are unaffected) and resolve it once internally.
+ * `addDays`, `compareIsoDate`, `daysBetweenInclusive`, `minIsoDate`, `maxIsoDate` and
+ * `clampIsoDate` stay OUTSIDE that interface, imported from `./calendar/civil-days.js`
+ * — they operate on the proleptic day number, which is the same regardless of which
+ * calendar is choosing period boundaries. `isLeapYear`, `daysInMonth`, `addMonths`,
+ * `addYears` and `clampDayToMonth` stay exported from here with identical signatures,
+ * now delegating to `./calendar/gregorian.js`. `isLeapYear` has no analogue on
+ * `Calendar` — it is Gregorian-specific and is NOT part of the interface.
  */
+
+export { calendarSystem, type CalendarSystem };
+export { isLeapYear, daysInMonth, addMonths, addYears, clampDayToMonth };
+export { parseIsoDate, toIsoDate, addDays, compareIsoDate, daysBetweenInclusive, minIsoDate, maxIsoDate, clampIsoDate };
 
 /* ======================================================================== */
 /* frequency                                                                 */
@@ -46,158 +83,6 @@ export const moveOutBillingPolicyLabels: Record<MoveOutBillingPolicy, string> = 
 };
 
 /* ======================================================================== */
-/* plain calendar arithmetic — no instants, no timezone                     */
-/* ======================================================================== */
-
-export function isLeapYear(year: number): boolean {
-  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
-}
-
-const MONTH_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const;
-
-/** `month` is 1..12. */
-export function daysInMonth(year: number, month: number): number {
-  if (month === 2 && isLeapYear(year)) return 29;
-  const d = MONTH_DAYS[month - 1];
-  if (d === undefined) throw new RangeError(`Invalid month: ${month}`);
-  return d;
-}
-
-export function parseIsoDate(d: IsoDate): { year: number; month: number; day: number } {
-  const parts = d.split('-');
-  const yearStr = parts[0];
-  const monthStr = parts[1];
-  const dayStr = parts[2];
-  if (yearStr === undefined || monthStr === undefined || dayStr === undefined) {
-    throw new RangeError(`Invalid IsoDate: ${d}`);
-  }
-  return { year: Number(yearStr), month: Number(monthStr), day: Number(dayStr) };
-}
-
-function pad(n: number, width: number): string {
-  return String(n).padStart(width, '0');
-}
-
-/** Throws `RangeError` on an impossible calendar date (e.g. 2026-02-30). */
-export function toIsoDate(year: number, month: number, day: number): IsoDate {
-  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
-    throw new RangeError(`Non-integer date component: ${year}-${month}-${day}`);
-  }
-  if (month < 1 || month > 12) {
-    throw new RangeError(`Invalid month: ${month}`);
-  }
-  const dim = daysInMonth(year, month);
-  if (day < 1 || day > dim) {
-    throw new RangeError(`Invalid day ${day} for ${year}-${pad(month, 2)}`);
-  }
-  return `${pad(Math.abs(year), 4)}-${pad(month, 2)}-${pad(day, 2)}` as IsoDate;
-}
-
-/** Clamps `day` into the valid range for `year`/`month` — 31 in February becomes 28/29. */
-export function clampDayToMonth(year: number, month: number, day: number): IsoDate {
-  const dim = daysInMonth(year, month);
-  return toIsoDate(year, month, Math.min(day, dim));
-}
-
-function floorDiv(a: number, b: number): number {
-  return Math.floor(a / b);
-}
-
-/**
- * Days since the 1970-01-01 epoch, for a proleptic-Gregorian (year, month, day).
- * Howard Hinnant's `days_from_civil`. Pure integer arithmetic, no `Date`.
- */
-function daysFromCivil(year: number, month: number, day: number): number {
-  const y = month <= 2 ? year - 1 : year;
-  const era = floorDiv(y >= 0 ? y : y - 399, 400);
-  const yoe = y - era * 400; // [0, 399]
-  const mp = month > 2 ? month - 3 : month + 9; // [0, 11]
-  const doy = floorDiv(153 * mp + 2, 5) + day - 1; // [0, 365]
-  const doe = yoe * 365 + floorDiv(yoe, 4) - floorDiv(yoe, 100) + doy; // [0, 146096]
-  return era * 146097 + doe - 719468;
-}
-
-/** Inverse of `daysFromCivil`. Howard Hinnant's `civil_from_days`. */
-function civilFromDays(z: number): { year: number; month: number; day: number } {
-  const zz = z + 719468;
-  const era = floorDiv(zz >= 0 ? zz : zz - 146096, 146097);
-  const doe = zz - era * 146097; // [0, 146096]
-  const yoe = floorDiv(
-    doe - floorDiv(doe, 1460) + floorDiv(doe, 36524) - floorDiv(doe, 146096),
-    365,
-  ); // [0, 399]
-  const y = yoe + era * 400;
-  const doy = doe - (365 * yoe + floorDiv(yoe, 4) - floorDiv(yoe, 100)); // [0, 365]
-  const mp = floorDiv(5 * doy + 2, 153); // [0, 11]
-  const day = doy - floorDiv(153 * mp + 2, 5) + 1; // [1, 31]
-  const month = mp < 10 ? mp + 3 : mp - 9; // [1, 12]
-  const year = month <= 2 ? y + 1 : y;
-  return { year, month, day };
-}
-
-export function addDays(d: IsoDate, n: number): IsoDate {
-  const { year, month, day } = parseIsoDate(d);
-  const z = daysFromCivil(year, month, day) + n;
-  const result = civilFromDays(z);
-  return toIsoDate(result.year, result.month, result.day);
-}
-
-/** Clamps the day to the target month's length — Jan 31 + 1 month = Feb 28/29. */
-export function addMonths(d: IsoDate, n: number): IsoDate {
-  const { year, month, day } = parseIsoDate(d);
-  const total = (year * 12 + (month - 1)) + n;
-  const newYear = floorDiv(total, 12);
-  const newMonth = (((total % 12) + 12) % 12) + 1;
-  return clampDayToMonth(newYear, newMonth, day);
-}
-
-/** Feb 29 -> Feb 28 when the target year is not a leap year. */
-export function addYears(d: IsoDate, n: number): IsoDate {
-  const { year, month, day } = parseIsoDate(d);
-  return clampDayToMonth(year + n, month, day);
-}
-
-/** Lexicographic comparison — correct because `IsoDate` is fixed-width `YYYY-MM-DD`. */
-export function compareIsoDate(a: IsoDate, b: IsoDate): -1 | 0 | 1 {
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
-}
-
-/** Inclusive day count from `from` to `to`. `0` when `to < from`. */
-export function daysBetweenInclusive(from: IsoDate, to: IsoDate): number {
-  if (compareIsoDate(to, from) < 0) return 0;
-  const f = parseIsoDate(from);
-  const t = parseIsoDate(to);
-  return daysFromCivil(t.year, t.month, t.day) - daysFromCivil(f.year, f.month, f.day) + 1;
-}
-
-export function minIsoDate(...d: IsoDate[]): IsoDate {
-  const first = d[0];
-  if (first === undefined) throw new RangeError('minIsoDate requires at least one date');
-  let result = first;
-  for (const x of d.slice(1)) {
-    if (compareIsoDate(x, result) < 0) result = x;
-  }
-  return result;
-}
-
-export function maxIsoDate(...d: IsoDate[]): IsoDate {
-  const first = d[0];
-  if (first === undefined) throw new RangeError('maxIsoDate requires at least one date');
-  let result = first;
-  for (const x of d.slice(1)) {
-    if (compareIsoDate(x, result) > 0) result = x;
-  }
-  return result;
-}
-
-/** Clamps `d` into `[lo, hi]`. Assumes `lo <= hi`. */
-export function clampIsoDate(d: IsoDate, lo: IsoDate, hi: IsoDate): IsoDate {
-  return maxIsoDate(lo, minIsoDate(d, hi));
-}
-
-/* ======================================================================== */
 /* periods                                                                   */
 /* ======================================================================== */
 
@@ -211,45 +96,81 @@ export const billingPeriod = z.object({
 });
 export type BillingPeriod = z.infer<typeof billingPeriod>;
 
-/** Builds the period at a known index relative to `anchorDate`, for either cadence. */
-function periodAtIndex(f: RentFrequency, anchorDate: IsoDate, index: number): BillingPeriod {
+/**
+ * Builds the period at a known index relative to `anchorDate`, for either cadence,
+ * under `calendar`.
+ *
+ * Monthly: `calendar.startOfMonth`/`addMonths`/`endOfMonth` do the calendar-specific
+ * work; `index` counts calendar months from the one containing `anchorDate`.
+ *
+ * Yearly: periods anchor on `anchorDate`'s own day, not the start of its month or
+ * year — a lease starting mid-month renews on that same day each cycle. `addYears`
+ * is the only calendar-specific step; the period boundary one day before the next
+ * anniversary is day-number arithmetic (`addDays`), same as before.
+ */
+function periodAtIndex(f: RentFrequency, calendar: Calendar, anchorDate: IsoDate, index: number): BillingPeriod {
   if (f === 'monthly') {
-    const anchor = parseIsoDate(anchorDate);
-    const anchorFirst = toIsoDate(anchor.year, anchor.month, 1);
-    const start = addMonths(anchorFirst, index);
-    const end = addDays(addMonths(anchorFirst, index + 1), -1);
+    const anchorFirst = calendar.startOfMonth(anchorDate);
+    const start = calendar.addMonths(anchorFirst, index);
+    const end = calendar.endOfMonth(start);
     return { index, start, end };
   }
-  const start = addYears(anchorDate, index);
-  const end = addDays(addYears(anchorDate, index + 1), -1);
+  const start = calendar.addYears(anchorDate, index);
+  const end = addDays(calendar.addYears(anchorDate, index + 1), -1);
   return { index, start, end };
 }
 
-function yearlyIndexFor(anchorDate: IsoDate, on: IsoDate): number {
-  const anchor = parseIsoDate(anchorDate);
-  const onParsed = parseIsoDate(on);
-  let k = onParsed.year - anchor.year;
-  let period = periodAtIndex('yearly', anchorDate, k);
+/**
+ * Finds the period index containing `on`, for either cadence, by estimating from the
+ * day-number distance to `anchorDate` and correcting to the exact boundary. Works for
+ * ANY `Calendar` without needing to know the calendar's own year/month numbering for
+ * an arbitrary `IsoDate` — `Calendar` does not expose that reverse mapping, only
+ * `addMonths`/`addYears`/`startOfMonth`/`endOfMonth`, which this builds on via
+ * `periodAtIndex`. The correction loop makes the result exact regardless of how
+ * rough the initial guess is; for Gregorian, where the old code computed the index in
+ * one step via year/month subtraction, this converges in zero or one iteration and
+ * returns an identical index — it replaces a special case with a general one, not a
+ * different answer.
+ */
+function periodIndexFor(f: RentFrequency, calendar: Calendar, anchorDate: IsoDate, on: IsoDate): number {
+  const anchorBase = f === 'monthly' ? calendar.startOfMonth(anchorDate) : anchorDate;
+  const averageDaysPerPeriod = f === 'monthly' ? 30 : 365;
+  const signedDays =
+    daysFromCivilOf(on) - daysFromCivilOf(anchorBase); // positive when `on` is after the anchor
+  let k = Math.trunc(signedDays / averageDaysPerPeriod);
+  let period = periodAtIndex(f, calendar, anchorDate, k);
   while (compareIsoDate(on, period.start) < 0) {
     k -= 1;
-    period = periodAtIndex('yearly', anchorDate, k);
+    period = periodAtIndex(f, calendar, anchorDate, k);
   }
   while (compareIsoDate(on, period.end) > 0) {
     k += 1;
-    period = periodAtIndex('yearly', anchorDate, k);
+    period = periodAtIndex(f, calendar, anchorDate, k);
   }
   return k;
 }
 
-export function periodContaining(f: RentFrequency, anchorDate: IsoDate, on: IsoDate): BillingPeriod {
-  if (f === 'monthly') {
-    const anchor = parseIsoDate(anchorDate);
-    const onParsed = parseIsoDate(on);
-    const index = (onParsed.year - anchor.year) * 12 + (onParsed.month - anchor.month);
-    return periodAtIndex(f, anchorDate, index);
-  }
-  const index = yearlyIndexFor(anchorDate, on);
-  return periodAtIndex(f, anchorDate, index);
+/**
+ * Signed day-number distance from the 1970-01-01 epoch, for the estimate in
+ * `periodIndexFor`. Reuses the day-number layer rather than re-deriving it:
+ * `IsoDate` is always Gregorian on the wire (see `docs/DATES.md`), so this is valid
+ * regardless of which `Calendar` is in play — it is only ever used here as an
+ * ESTIMATE, corrected to exactness by the while-loops above.
+ */
+function daysFromCivilOf(d: IsoDate): number {
+  const { year, month, day } = parseIsoDate(d);
+  return daysFromCivil(year, month, day);
+}
+
+export function periodContaining(
+  f: RentFrequency,
+  anchorDate: IsoDate,
+  on: IsoDate,
+  system: CalendarSystem = 'gregorian',
+): BillingPeriod {
+  const calendar = calendarForSystem(system);
+  const index = periodIndexFor(f, calendar, anchorDate, on);
+  return periodAtIndex(f, calendar, anchorDate, index);
 }
 
 /** A contiguous, gapless, non-overlapping cover of every period overlapping `[from, to]`. */
@@ -258,38 +179,59 @@ export function periodsOverlapping(
   anchorDate: IsoDate,
   from: IsoDate,
   to: IsoDate,
+  system: CalendarSystem = 'gregorian',
 ): BillingPeriod[] {
   if (compareIsoDate(from, to) > 0) return [];
-  const firstIndex = periodContaining(f, anchorDate, from).index;
-  const lastIndex = periodContaining(f, anchorDate, to).index;
+  const calendar = calendarForSystem(system);
+  const firstIndex = periodIndexFor(f, calendar, anchorDate, from);
+  const lastIndex = periodIndexFor(f, calendar, anchorDate, to);
   const result: BillingPeriod[] = [];
   for (let i = firstIndex; i <= lastIndex; i += 1) {
-    result.push(periodAtIndex(f, anchorDate, i));
+    result.push(periodAtIndex(f, calendar, anchorDate, i));
   }
   return result;
 }
 
-export function isPeriodStart(f: RentFrequency, anchorDate: IsoDate, d: IsoDate): boolean {
-  return compareIsoDate(periodContaining(f, anchorDate, d).start, d) === 0;
+export function isPeriodStart(
+  f: RentFrequency,
+  anchorDate: IsoDate,
+  d: IsoDate,
+  system: CalendarSystem = 'gregorian',
+): boolean {
+  return compareIsoDate(periodContaining(f, anchorDate, d, system).start, d) === 0;
 }
 
 /* ======================================================================== */
 /* due date — one formula, zero special cases                               */
 /* ======================================================================== */
 
+/** The billingDay-th day of the month containing `anyDateInMonth`, under `calendar`,
+ *  clamped to that month's actual length. Built only from `startOfMonth`/`endOfMonth`
+ *  (interface) plus `addDays`/`daysBetweenInclusive` (day-number layer) — no reverse
+ *  year/month mapping needed, unlike the old Gregorian-only `clampDayToMonth` call
+ *  this replaces here. */
+function dayOfMonthClamped(calendar: Calendar, anyDateInMonth: IsoDate, day: number): IsoDate {
+  const start = calendar.startOfMonth(anyDateInMonth);
+  const end = calendar.endOfMonth(anyDateInMonth);
+  const length = daysBetweenInclusive(start, end);
+  const clamped = Math.min(Math.max(day, 1), length);
+  return addDays(start, clamped - 1);
+}
+
 export function dueDateFor(input: {
   frequency: RentFrequency;
   period: BillingPeriod;
   occupiedStart: IsoDate;
   occupiedEnd: IsoDate;
-  /** 1..31; ignored when `frequency === 'yearly'`. */
+  /** 1..32; ignored when `frequency === 'yearly'`. Bound by the calendar's own
+   *  maximum — see `MAX_BILLING_DAY` / `Calendar.maxDayOfMonth`. */
   billingDay: number;
+  /** Defaults to Gregorian so existing call sites are unaffected. */
+  calendar?: CalendarSystem;
 }): IsoDate {
-  const { frequency, period, occupiedStart, occupiedEnd, billingDay } = input;
-  const raw =
-    frequency === 'monthly'
-      ? clampDayToMonth(parseIsoDate(period.start).year, parseIsoDate(period.start).month, billingDay)
-      : period.start;
+  const { frequency, period, occupiedStart, occupiedEnd, billingDay, calendar: system = 'gregorian' } = input;
+  const calendar = calendarForSystem(system);
+  const raw = frequency === 'monthly' ? dayOfMonthClamped(calendar, period.start, billingDay) : period.start;
   return clampIsoDate(raw, occupiedStart, occupiedEnd);
 }
 
@@ -308,7 +250,11 @@ export function prorate(rentCents: number, daysOccupied: number, daysInPeriod: n
 export const leaseBillingTerms = z.object({
   frequency: rentFrequency,
   rentCents: money,
-  billingDay: z.number().int().min(1).max(31),
+  /** 1..32 — 32 because Bikram Sambat months reach 32 days (see
+   *  `./calendar/bs-data.ts`). The true per-calendar ceiling is narrower
+   *  (`Calendar.maxDayOfMonth` / `MAX_BILLING_DAY`); `validateBillingTerms` enforces
+   *  it. This bound is only the outer structural limit shared by every calendar. */
+  billingDay: z.number().int().min(1).max(32),
   startDate: isoDate,
   endDate: isoDate.nullable(),
   ledgerStartDate: isoDate,
@@ -316,6 +262,9 @@ export const leaseBillingTerms = z.object({
   moveOutDate: isoDate.nullable(),
   /** Resolved live from the property. */
   moveOutBillingPolicy,
+  /** Which calendar defines this lease's periods. Storage and every `IsoDate` value
+   *  here stay Gregorian regardless — see `docs/DATES.md`. */
+  calendar: calendarSystem,
 });
 export type LeaseBillingTerms = z.infer<typeof leaseBillingTerms>;
 
@@ -370,7 +319,7 @@ export function buildSchedule(terms: LeaseBillingTerms, through: IsoDate): Plann
 
   if (compareIsoDate(windowStart, to) > 0) return [];
 
-  const periods = periodsOverlapping(terms.frequency, terms.startDate, windowStart, to);
+  const periods = periodsOverlapping(terms.frequency, terms.startDate, windowStart, to, terms.calendar);
   if (periods.length > MAX_SCHEDULE_PERIODS) {
     throw new RangeError(
       `Schedule would produce ${periods.length} periods, exceeding MAX_SCHEDULE_PERIODS (${MAX_SCHEDULE_PERIODS})`,
@@ -405,6 +354,7 @@ export function buildSchedule(terms: LeaseBillingTerms, through: IsoDate): Plann
         occupiedStart,
         occupiedEnd,
         billingDay: terms.billingDay,
+        calendar: terms.calendar,
       }),
       amountCents,
       isProrated: daysOccupied < daysInPeriod,
@@ -431,6 +381,9 @@ export function chargesDueForGeneration(terms: LeaseBillingTerms, today: IsoDate
 /* ======================================================================== */
 
 export function validateBillingTerms(terms: LeaseBillingTerms): string | null {
+  if (terms.billingDay > MAX_BILLING_DAY[terms.calendar]) {
+    return `billingDay must not exceed ${MAX_BILLING_DAY[terms.calendar]} for this calendar`;
+  }
   if (terms.endDate !== null && compareIsoDate(terms.endDate, terms.startDate) < 0) {
     return 'endDate must not be before startDate';
   }
@@ -441,7 +394,7 @@ export function validateBillingTerms(terms: LeaseBillingTerms): string | null {
     return 'ledgerStartDate must not be after endDate';
   }
   const isAtStart = compareIsoDate(terms.ledgerStartDate, terms.startDate) === 0;
-  if (!isAtStart && !isPeriodStart(terms.frequency, terms.startDate, terms.ledgerStartDate)) {
+  if (!isAtStart && !isPeriodStart(terms.frequency, terms.startDate, terms.ledgerStartDate, terms.calendar)) {
     return 'ledgerStartDate must equal startDate or be the first day of a billing period';
   }
   if (terms.moveOutDate !== null && compareIsoDate(terms.moveOutDate, terms.startDate) < 0) {

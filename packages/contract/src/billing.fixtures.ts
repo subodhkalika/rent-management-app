@@ -54,7 +54,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
   {
     // F1 — day 31 across a non-leap year. The February assertion is 2026-02-28.
     name: 'F1 day 31 across a non-leap year',
-    terms: { frequency: 'monthly', rentCents: 150000, billingDay: 31, startDate: '2026-01-01', endDate: null, ledgerStartDate: '2026-01-01', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
+    terms: { frequency: 'monthly', calendar: 'gregorian', rentCents: 150000, billingDay: 31, startDate: '2026-01-01', endDate: null, ledgerStartDate: '2026-01-01', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
     through: '2026-12-01',
     expected: [
       { generationKey: '2026-01-01', periodIndex: 0, periodStart: '2026-01-01', periodEnd: '2026-01-31', occupiedStart: '2026-01-01', occupiedEnd: '2026-01-31', daysOccupied: 31, daysInPeriod: 31, dueDate: '2026-01-31', amountCents: 150000, isProrated: false },
@@ -74,7 +74,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
   {
     // F2 — day 31 across a leap year. February: daysInPeriod 29, due 2028-02-29.
     name: 'F2 day 31 across a leap year',
-    terms: { frequency: 'monthly', rentCents: 150000, billingDay: 31, startDate: '2028-01-01', endDate: null, ledgerStartDate: '2028-01-01', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
+    terms: { frequency: 'monthly', calendar: 'gregorian', rentCents: 150000, billingDay: 31, startDate: '2028-01-01', endDate: null, ledgerStartDate: '2028-01-01', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
     through: '2028-12-01',
     expected: [
       { generationKey: '2028-01-01', periodIndex: 0, periodStart: '2028-01-01', periodEnd: '2028-01-31', occupiedStart: '2028-01-01', occupiedEnd: '2028-01-31', daysOccupied: 31, daysInPeriod: 31, dueDate: '2028-01-31', amountCents: 150000, isProrated: false },
@@ -94,7 +94,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
   {
     // F3 — starting mid-period, billing day before move-in.
     name: 'F3 starting mid-period, billing day before move-in',
-    terms: { frequency: 'monthly', rentCents: 100000, billingDay: 1, startDate: '2026-03-15', endDate: null, ledgerStartDate: '2026-03-15', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
+    terms: { frequency: 'monthly', calendar: 'gregorian', rentCents: 100000, billingDay: 1, startDate: '2026-03-15', endDate: null, ledgerStartDate: '2026-03-15', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
     through: '2026-05-01',
     expected: [
       { generationKey: '2026-03-01', periodIndex: 0, periodStart: '2026-03-01', periodEnd: '2026-03-31', occupiedStart: '2026-03-15', occupiedEnd: '2026-03-31', daysOccupied: 17, daysInPeriod: 31, dueDate: '2026-03-15', amountCents: 54839, isProrated: true },
@@ -105,7 +105,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
   {
     // F3b — starting mid-period, billing day inside the stub. [CORRECTION] to PLAN-V1 §4.3.
     name: 'F3b starting mid-period, billing day inside the stub',
-    terms: { frequency: 'monthly', rentCents: 100000, billingDay: 20, startDate: '2026-03-15', endDate: null, ledgerStartDate: '2026-03-15', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
+    terms: { frequency: 'monthly', calendar: 'gregorian', rentCents: 100000, billingDay: 20, startDate: '2026-03-15', endDate: null, ledgerStartDate: '2026-03-15', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
     through: '2026-05-01',
     expected: [
       { generationKey: '2026-03-01', periodIndex: 0, periodStart: '2026-03-01', periodEnd: '2026-03-31', occupiedStart: '2026-03-15', occupiedEnd: '2026-03-31', daysOccupied: 17, daysInPeriod: 31, dueDate: '2026-03-20', amountCents: 54839, isProrated: true },
@@ -116,7 +116,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
   {
     // F4a — ends mid-period, bill_full_term. The original F4.
     name: 'F4a ends mid-period, bill_full_term',
-    terms: { frequency: 'monthly', rentCents: 100000, billingDay: 5, startDate: '2026-01-01', endDate: '2026-06-10', ledgerStartDate: '2026-01-01', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
+    terms: { frequency: 'monthly', calendar: 'gregorian', rentCents: 100000, billingDay: 5, startDate: '2026-01-01', endDate: '2026-06-10', ledgerStartDate: '2026-01-01', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
     through: '2026-12-01',
     expected: [
       { generationKey: '2026-01-01', periodIndex: 0, periodStart: '2026-01-01', periodEnd: '2026-01-31', occupiedStart: '2026-01-01', occupiedEnd: '2026-01-31', daysOccupied: 31, daysInPeriod: 31, dueDate: '2026-01-05', amountCents: 100000, isProrated: false },
@@ -130,7 +130,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
   {
     // F4b — early move-out, bill_full_term. Byte-identical to F4a: proves the move-out is ignored.
     name: 'F4b early move-out, bill_full_term',
-    terms: { frequency: 'monthly', rentCents: 100000, billingDay: 5, startDate: '2026-01-01', endDate: '2026-06-10', ledgerStartDate: '2026-01-01', moveOutDate: '2026-05-12', moveOutBillingPolicy: 'bill_full_term' },
+    terms: { frequency: 'monthly', calendar: 'gregorian', rentCents: 100000, billingDay: 5, startDate: '2026-01-01', endDate: '2026-06-10', ledgerStartDate: '2026-01-01', moveOutDate: '2026-05-12', moveOutBillingPolicy: 'bill_full_term' },
     through: '2026-12-01',
     expected: [
       { generationKey: '2026-01-01', periodIndex: 0, periodStart: '2026-01-01', periodEnd: '2026-01-31', occupiedStart: '2026-01-01', occupiedEnd: '2026-01-31', daysOccupied: 31, daysInPeriod: 31, dueDate: '2026-01-05', amountCents: 100000, isProrated: false },
@@ -144,7 +144,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
   {
     // F4c — early move-out, stop_at_move_out. No June entry at all.
     name: 'F4c early move-out, stop_at_move_out',
-    terms: { frequency: 'monthly', rentCents: 100000, billingDay: 5, startDate: '2026-01-01', endDate: '2026-06-10', ledgerStartDate: '2026-01-01', moveOutDate: '2026-05-12', moveOutBillingPolicy: 'stop_at_move_out' },
+    terms: { frequency: 'monthly', calendar: 'gregorian', rentCents: 100000, billingDay: 5, startDate: '2026-01-01', endDate: '2026-06-10', ledgerStartDate: '2026-01-01', moveOutDate: '2026-05-12', moveOutBillingPolicy: 'stop_at_move_out' },
     through: '2026-12-01',
     expected: [
       { generationKey: '2026-01-01', periodIndex: 0, periodStart: '2026-01-01', periodEnd: '2026-01-31', occupiedStart: '2026-01-01', occupiedEnd: '2026-01-31', daysOccupied: 31, daysInPeriod: 31, dueDate: '2026-01-05', amountCents: 100000, isProrated: false },
@@ -157,7 +157,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
   {
     // F4d — holdover, stop_at_move_out. The asymmetry fixture: the policy can only ever shorten.
     name: 'F4d holdover, stop_at_move_out',
-    terms: { frequency: 'monthly', rentCents: 100000, billingDay: 5, startDate: '2026-01-01', endDate: '2026-06-10', ledgerStartDate: '2026-01-01', moveOutDate: '2026-07-20', moveOutBillingPolicy: 'stop_at_move_out' },
+    terms: { frequency: 'monthly', calendar: 'gregorian', rentCents: 100000, billingDay: 5, startDate: '2026-01-01', endDate: '2026-06-10', ledgerStartDate: '2026-01-01', moveOutDate: '2026-07-20', moveOutBillingPolicy: 'stop_at_move_out' },
     through: '2026-12-01',
     expected: [
       { generationKey: '2026-01-01', periodIndex: 0, periodStart: '2026-01-01', periodEnd: '2026-01-31', occupiedStart: '2026-01-01', occupiedEnd: '2026-01-31', daysOccupied: 31, daysInPeriod: 31, dueDate: '2026-01-05', amountCents: 100000, isProrated: false },
@@ -171,7 +171,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
   {
     // F4e — holdover, bill_full_term. Completes the 2x2.
     name: 'F4e holdover, bill_full_term',
-    terms: { frequency: 'monthly', rentCents: 100000, billingDay: 5, startDate: '2026-01-01', endDate: '2026-06-10', ledgerStartDate: '2026-01-01', moveOutDate: '2026-07-20', moveOutBillingPolicy: 'bill_full_term' },
+    terms: { frequency: 'monthly', calendar: 'gregorian', rentCents: 100000, billingDay: 5, startDate: '2026-01-01', endDate: '2026-06-10', ledgerStartDate: '2026-01-01', moveOutDate: '2026-07-20', moveOutBillingPolicy: 'bill_full_term' },
     through: '2026-12-01',
     expected: [
       { generationKey: '2026-01-01', periodIndex: 0, periodStart: '2026-01-01', periodEnd: '2026-01-31', occupiedStart: '2026-01-01', occupiedEnd: '2026-01-31', daysOccupied: 31, daysInPeriod: 31, dueDate: '2026-01-05', amountCents: 100000, isProrated: false },
@@ -185,7 +185,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
   {
     // F5 — starts and ends inside the same period.
     name: 'F5 starts and ends inside the same period',
-    terms: { frequency: 'monthly', rentCents: 100000, billingDay: 1, startDate: '2026-03-05', endDate: '2026-03-20', ledgerStartDate: '2026-03-05', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
+    terms: { frequency: 'monthly', calendar: 'gregorian', rentCents: 100000, billingDay: 1, startDate: '2026-03-05', endDate: '2026-03-20', ledgerStartDate: '2026-03-05', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
     through: '2026-12-01',
     expected: [
       { generationKey: '2026-03-01', periodIndex: 0, periodStart: '2026-03-01', periodEnd: '2026-03-31', occupiedStart: '2026-03-05', occupiedEnd: '2026-03-20', daysOccupied: 16, daysInPeriod: 31, dueDate: '2026-03-05', amountCents: 51613, isProrated: true },
@@ -194,7 +194,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
   {
     // F6 — clean yearly, three entries, none prorated.
     name: 'F6 clean yearly',
-    terms: { frequency: 'yearly', rentCents: 2400000, billingDay: 1, startDate: '2026-04-01', endDate: '2029-03-31', ledgerStartDate: '2026-04-01', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
+    terms: { frequency: 'yearly', calendar: 'gregorian', rentCents: 2400000, billingDay: 1, startDate: '2026-04-01', endDate: '2029-03-31', ledgerStartDate: '2026-04-01', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
     through: '2029-04-01',
     expected: [
       { generationKey: '2026-04-01', periodIndex: 0, periodStart: '2026-04-01', periodEnd: '2027-03-31', occupiedStart: '2026-04-01', occupiedEnd: '2027-03-31', daysOccupied: 365, daysInPeriod: 365, dueDate: '2026-04-01', amountCents: 2400000, isProrated: false },
@@ -205,7 +205,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
   {
     // F7a — yearly terminated mid-year, bill_full_term. The original F7.
     name: 'F7a yearly terminated mid-year, bill_full_term',
-    terms: { frequency: 'yearly', rentCents: 2400000, billingDay: 1, startDate: '2026-04-01', endDate: '2026-09-30', ledgerStartDate: '2026-04-01', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
+    terms: { frequency: 'yearly', calendar: 'gregorian', rentCents: 2400000, billingDay: 1, startDate: '2026-04-01', endDate: '2026-09-30', ledgerStartDate: '2026-04-01', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
     through: '2027-04-01',
     expected: [
       { generationKey: '2026-04-01', periodIndex: 0, periodStart: '2026-04-01', periodEnd: '2027-03-31', occupiedStart: '2026-04-01', occupiedEnd: '2026-09-30', daysOccupied: 183, daysInPeriod: 365, dueDate: '2026-04-01', amountCents: 1203288, isProrated: true },
@@ -214,7 +214,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
   {
     // F7b — yearly early move-out, stop_at_move_out.
     name: 'F7b yearly early move-out, stop_at_move_out',
-    terms: { frequency: 'yearly', rentCents: 2400000, billingDay: 1, startDate: '2026-04-01', endDate: '2026-09-30', ledgerStartDate: '2026-04-01', moveOutDate: '2026-08-15', moveOutBillingPolicy: 'stop_at_move_out' },
+    terms: { frequency: 'yearly', calendar: 'gregorian', rentCents: 2400000, billingDay: 1, startDate: '2026-04-01', endDate: '2026-09-30', ledgerStartDate: '2026-04-01', moveOutDate: '2026-08-15', moveOutBillingPolicy: 'stop_at_move_out' },
     through: '2027-04-01',
     expected: [
       { generationKey: '2026-04-01', periodIndex: 0, periodStart: '2026-04-01', periodEnd: '2027-03-31', occupiedStart: '2026-04-01', occupiedEnd: '2026-08-15', daysOccupied: 137, daysInPeriod: 365, dueDate: '2026-04-01', amountCents: 900822, isProrated: true },
@@ -224,7 +224,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
     // F8 — yearly anchored on a leap day. Three entries, none prorated. No day is ever
     // uncovered or double-covered; year 0 ends Feb 27, every later year runs Feb 28 -> Feb 27.
     name: 'F8 yearly anchored on a leap day',
-    terms: { frequency: 'yearly', rentCents: 1200000, billingDay: 1, startDate: '2028-02-29', endDate: null, ledgerStartDate: '2028-02-29', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
+    terms: { frequency: 'yearly', calendar: 'gregorian', rentCents: 1200000, billingDay: 1, startDate: '2028-02-29', endDate: null, ledgerStartDate: '2028-02-29', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
     through: '2031-01-01',
     expected: [
       { generationKey: '2028-02-29', periodIndex: 0, periodStart: '2028-02-29', periodEnd: '2029-02-27', occupiedStart: '2028-02-29', occupiedEnd: '2029-02-27', daysOccupied: 365, daysInPeriod: 365, dueDate: '2028-02-29', amountCents: 1200000, isProrated: false },
@@ -235,7 +235,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
   {
     // F9 — onboarding an in-flight tenancy. periodIndex 9, not 0 — pins I12.
     name: 'F9 onboarding an in-flight tenancy',
-    terms: { frequency: 'monthly', rentCents: 100000, billingDay: 1, startDate: '2025-06-15', endDate: null, ledgerStartDate: '2026-03-01', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
+    terms: { frequency: 'monthly', calendar: 'gregorian', rentCents: 100000, billingDay: 1, startDate: '2025-06-15', endDate: null, ledgerStartDate: '2026-03-01', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
     through: '2026-05-01',
     expected: [
       { generationKey: '2026-03-01', periodIndex: 9, periodStart: '2026-03-01', periodEnd: '2026-03-31', occupiedStart: '2026-03-01', occupiedEnd: '2026-03-31', daysOccupied: 31, daysInPeriod: 31, dueDate: '2026-03-01', amountCents: 100000, isProrated: false },
@@ -246,7 +246,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
   {
     // F10 — the composite case. One-day proration and the February clamp in one lease.
     name: 'F10 the composite case',
-    terms: { frequency: 'monthly', rentCents: 100000, billingDay: 31, startDate: '2026-01-31', endDate: null, ledgerStartDate: '2026-01-31', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
+    terms: { frequency: 'monthly', calendar: 'gregorian', rentCents: 100000, billingDay: 31, startDate: '2026-01-31', endDate: null, ledgerStartDate: '2026-01-31', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term' },
     through: '2026-04-01',
     expected: [
       { generationKey: '2026-01-01', periodIndex: 0, periodStart: '2026-01-01', periodEnd: '2026-01-31', occupiedStart: '2026-01-31', occupiedEnd: '2026-01-31', daysOccupied: 1, daysInPeriod: 31, dueDate: '2026-01-31', amountCents: 3226, isProrated: true },
@@ -259,7 +259,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
     // F13 — rolling lease, move-out, stop_at_move_out. The policy is what terminates an
     // open-ended schedule — no April-onward entries despite the far `through`.
     name: 'F13 rolling lease, move-out, stop_at_move_out',
-    terms: { frequency: 'monthly', rentCents: 100000, billingDay: 1, startDate: '2026-01-01', endDate: null, ledgerStartDate: '2026-01-01', moveOutDate: '2026-03-18', moveOutBillingPolicy: 'stop_at_move_out' },
+    terms: { frequency: 'monthly', calendar: 'gregorian', rentCents: 100000, billingDay: 1, startDate: '2026-01-01', endDate: null, ledgerStartDate: '2026-01-01', moveOutDate: '2026-03-18', moveOutBillingPolicy: 'stop_at_move_out' },
     through: '2026-12-01',
     expected: [
       { generationKey: '2026-01-01', periodIndex: 0, periodStart: '2026-01-01', periodEnd: '2026-01-31', occupiedStart: '2026-01-01', occupiedEnd: '2026-01-31', daysOccupied: 31, daysInPeriod: 31, dueDate: '2026-01-01', amountCents: 100000, isProrated: false },
@@ -272,7 +272,7 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
     // bill_full_term a rolling lease with a recorded move-out and no end_date keeps
     // billing forever. 12 full entries through December.
     name: 'F14 rolling lease, move-out, bill_full_term',
-    terms: { frequency: 'monthly', rentCents: 100000, billingDay: 1, startDate: '2026-01-01', endDate: null, ledgerStartDate: '2026-01-01', moveOutDate: '2026-03-18', moveOutBillingPolicy: 'bill_full_term' },
+    terms: { frequency: 'monthly', calendar: 'gregorian', rentCents: 100000, billingDay: 1, startDate: '2026-01-01', endDate: null, ledgerStartDate: '2026-01-01', moveOutDate: '2026-03-18', moveOutBillingPolicy: 'bill_full_term' },
     through: '2026-12-01',
     expected: [
       { generationKey: '2026-01-01', periodIndex: 0, periodStart: '2026-01-01', periodEnd: '2026-01-31', occupiedStart: '2026-01-01', occupiedEnd: '2026-01-31', daysOccupied: 31, daysInPeriod: 31, dueDate: '2026-01-01', amountCents: 100000, isProrated: false },
@@ -296,12 +296,12 @@ export const scheduleFixtures: readonly ScheduleFixture[] = [
 /* ======================================================================== */
 
 const f1TermsForGeneration: LeaseBillingTerms = {
-  frequency: 'monthly', rentCents: 150000, billingDay: 31, startDate: '2026-01-01',
+  frequency: 'monthly', calendar: 'gregorian', rentCents: 150000, billingDay: 31, startDate: '2026-01-01',
   endDate: null, ledgerStartDate: '2026-01-01', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term',
 };
 
 const f6TermsForGeneration: LeaseBillingTerms = {
-  frequency: 'yearly', rentCents: 2400000, billingDay: 1, startDate: '2026-04-01',
+  frequency: 'yearly', calendar: 'gregorian', rentCents: 2400000, billingDay: 1, startDate: '2026-04-01',
   endDate: '2029-03-31', ledgerStartDate: '2026-04-01', moveOutDate: null, moveOutBillingPolicy: 'bill_full_term',
 };
 
@@ -322,47 +322,47 @@ export const generationFixtures: readonly GenerationFixture[] = [
 export const dueDateFixtures: readonly DueDateFixture[] = [
   {
     name: 'monthly Feb 2026 billingDay 31 full',
-    input: { frequency: 'monthly', period: { index: 0, start: '2026-02-01', end: '2026-02-28' }, occupiedStart: '2026-02-01', occupiedEnd: '2026-02-28', billingDay: 31 },
+    input: { frequency: 'monthly', calendar: 'gregorian', period: { index: 0, start: '2026-02-01', end: '2026-02-28' }, occupiedStart: '2026-02-01', occupiedEnd: '2026-02-28', billingDay: 31 },
     expected: '2026-02-28',
   },
   {
     name: 'monthly Feb 2028 billingDay 31 full (leap)',
-    input: { frequency: 'monthly', period: { index: 0, start: '2028-02-01', end: '2028-02-29' }, occupiedStart: '2028-02-01', occupiedEnd: '2028-02-29', billingDay: 31 },
+    input: { frequency: 'monthly', calendar: 'gregorian', period: { index: 0, start: '2028-02-01', end: '2028-02-29' }, occupiedStart: '2028-02-01', occupiedEnd: '2028-02-29', billingDay: 31 },
     expected: '2028-02-29',
   },
   {
     name: 'monthly Feb 2100 billingDay 31 full (century non-leap)',
-    input: { frequency: 'monthly', period: { index: 0, start: '2100-02-01', end: '2100-02-28' }, occupiedStart: '2100-02-01', occupiedEnd: '2100-02-28', billingDay: 31 },
+    input: { frequency: 'monthly', calendar: 'gregorian', period: { index: 0, start: '2100-02-01', end: '2100-02-28' }, occupiedStart: '2100-02-01', occupiedEnd: '2100-02-28', billingDay: 31 },
     expected: '2100-02-28',
   },
   {
     name: 'monthly Feb 2000 billingDay 29 full (century leap)',
-    input: { frequency: 'monthly', period: { index: 0, start: '2000-02-01', end: '2000-02-29' }, occupiedStart: '2000-02-01', occupiedEnd: '2000-02-29', billingDay: 29 },
+    input: { frequency: 'monthly', calendar: 'gregorian', period: { index: 0, start: '2000-02-01', end: '2000-02-29' }, occupiedStart: '2000-02-01', occupiedEnd: '2000-02-29', billingDay: 29 },
     expected: '2000-02-29',
   },
   {
     name: 'monthly Apr 2026 billingDay 31 full',
-    input: { frequency: 'monthly', period: { index: 0, start: '2026-04-01', end: '2026-04-30' }, occupiedStart: '2026-04-01', occupiedEnd: '2026-04-30', billingDay: 31 },
+    input: { frequency: 'monthly', calendar: 'gregorian', period: { index: 0, start: '2026-04-01', end: '2026-04-30' }, occupiedStart: '2026-04-01', occupiedEnd: '2026-04-30', billingDay: 31 },
     expected: '2026-04-30',
   },
   {
     name: 'monthly Mar 2026 billingDay 1, occupied 03-15..03-31 (floored)',
-    input: { frequency: 'monthly', period: { index: 0, start: '2026-03-01', end: '2026-03-31' }, occupiedStart: '2026-03-15', occupiedEnd: '2026-03-31', billingDay: 1 },
+    input: { frequency: 'monthly', calendar: 'gregorian', period: { index: 0, start: '2026-03-01', end: '2026-03-31' }, occupiedStart: '2026-03-15', occupiedEnd: '2026-03-31', billingDay: 1 },
     expected: '2026-03-15',
   },
   {
     name: 'monthly Mar 2026 billingDay 20, occupied 03-15..03-31 (honoured)',
-    input: { frequency: 'monthly', period: { index: 0, start: '2026-03-01', end: '2026-03-31' }, occupiedStart: '2026-03-15', occupiedEnd: '2026-03-31', billingDay: 20 },
+    input: { frequency: 'monthly', calendar: 'gregorian', period: { index: 0, start: '2026-03-01', end: '2026-03-31' }, occupiedStart: '2026-03-15', occupiedEnd: '2026-03-31', billingDay: 20 },
     expected: '2026-03-20',
   },
   {
     name: 'monthly Jun 2026 billingDay 25, occupied 06-01..06-10 (ceilinged)',
-    input: { frequency: 'monthly', period: { index: 0, start: '2026-06-01', end: '2026-06-30' }, occupiedStart: '2026-06-01', occupiedEnd: '2026-06-10', billingDay: 25 },
+    input: { frequency: 'monthly', calendar: 'gregorian', period: { index: 0, start: '2026-06-01', end: '2026-06-30' }, occupiedStart: '2026-06-01', occupiedEnd: '2026-06-10', billingDay: 25 },
     expected: '2026-06-10',
   },
   {
     name: 'yearly 2026-04-01.. billingDay 15 full (ignored)',
-    input: { frequency: 'yearly', period: { index: 0, start: '2026-04-01', end: '2027-03-31' }, occupiedStart: '2026-04-01', occupiedEnd: '2027-03-31', billingDay: 15 },
+    input: { frequency: 'yearly', calendar: 'gregorian', period: { index: 0, start: '2026-04-01', end: '2027-03-31' }, occupiedStart: '2026-04-01', occupiedEnd: '2027-03-31', billingDay: 15 },
     expected: '2026-04-01',
   },
 ];
@@ -394,7 +394,7 @@ function billingEndTerms(
   policy: MoveOutBillingPolicy,
 ): LeaseBillingTerms {
   return {
-    frequency: 'monthly',
+    frequency: 'monthly', calendar: 'gregorian',
     rentCents: 100000,
     billingDay: 1,
     startDate: '2026-01-01',
