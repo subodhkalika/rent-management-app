@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { scheduleFixtures } from '@rms/contract';
+import { scheduleFixtures, bsScheduleFixtures, bsYearlyFixture } from '@rms/contract';
 import { ApiException } from '../lib/errors.js';
 import type { AppBindings, TenantScope } from '../types.js';
 import { authLayer } from '../middleware/auth-layer.js';
@@ -230,4 +230,47 @@ describe('GET /v1/portal/leases/:id/schedule — scheduleFixtures through the HT
       expect(body.periods).toEqual(fixture.expected);
     });
   }
+
+  // Bikram Sambat fixtures — no existing test exercised the portal BS route end to
+  // end before this.
+  for (const fixture of [...bsScheduleFixtures, bsYearlyFixture]) {
+    it(`[BS] ${fixture.name}: matches the contract's buildSchedule exactly`, async () => {
+      portalLeaseRepoMock.resolveLease.mockResolvedValue(
+        portalLeaseDetailRow({
+          rentFrequency: fixture.terms.frequency,
+          calendar: fixture.terms.calendar,
+          rentCents: fixture.terms.rentCents,
+          billingDay: fixture.terms.billingDay,
+          startDate: fixture.terms.startDate,
+          endDate: fixture.terms.endDate,
+          ledgerStartDate: fixture.terms.ledgerStartDate,
+          moveOutDate: fixture.terms.moveOutDate,
+          moveOutBillingPolicy: fixture.terms.moveOutBillingPolicy,
+        }),
+      );
+
+      const res = await get(`/v1/portal/leases/${LEASE_L1}/schedule?through=${fixture.through}`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { periods: unknown[] };
+      expect(body.periods).toEqual(fixture.expected);
+    });
+  }
+});
+
+describe('GET /v1/portal/leases/:id/schedule — the Bikram Sambat 500 a live run caught, now fixed', () => {
+  it('a BS lease requesting a near-term schedule succeeds', async () => {
+    portalLeaseRepoMock.resolveLease.mockResolvedValue(
+      portalLeaseDetailRow({ calendar: 'bikram_sambat', startDate: '2026-09-26', ledgerStartDate: '2026-09-26' }),
+    );
+    const res = await get(`/v1/portal/leases/${LEASE_L1}/schedule?through=2027-09-26`);
+    expect(res.status).toBe(200);
+  });
+
+  it('a BS lease genuinely extending past the data table returns a clear 422, never a 500', async () => {
+    portalLeaseRepoMock.resolveLease.mockResolvedValue(
+      portalLeaseDetailRow({ calendar: 'bikram_sambat', startDate: '1950-01-01', ledgerStartDate: '1950-01-01' }),
+    );
+    const res = await get(`/v1/portal/leases/${LEASE_L1}/schedule?through=2040-01-01`);
+    expect(res.status).toBe(422);
+  });
 });

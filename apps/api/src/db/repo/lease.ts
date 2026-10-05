@@ -19,6 +19,7 @@ import { lease, leaseTenant, unit, property, tenant } from '../schema.js';
 import { conflict, notFound, validationFailed } from '../../lib/errors.js';
 import { decodeCursor } from '../../lib/pagination.js';
 import { isUniqueViolation } from '../../lib/db-errors.js';
+import { validateEndDateSchedulable } from '../../lib/schedule.js';
 import * as unitRepo from './unit.js';
 import * as propertyRepo from './property.js';
 
@@ -495,6 +496,11 @@ export async function createLease(
   const billingError = validateBillingTerms(terms);
   if (billingError) throw validationFailed({ _: [billingError] });
 
+  // Refuse an endDate the property's calendar cannot schedule, up front — not
+  // only when someone later asks for the schedule (lib/schedule.ts).
+  const rangeError = validateEndDateSchedulable(propertyRow.calendar, terms.endDate);
+  if (rangeError) throw validationFailed({ endDate: [rangeError] });
+
   const id = uuidv7();
   await createLeaseQuery(orgId, db, id, userId, data.unitId, unitRow.currency, ledgerStartDate, data);
 
@@ -615,6 +621,9 @@ export async function updateLease(
     };
     const billingError = validateBillingTerms(terms);
     if (billingError) throw validationFailed({ _: [billingError] });
+
+    const rangeError = validateEndDateSchedulable(terms.calendar, terms.endDate);
+    if (rangeError) throw validationFailed({ endDate: [rangeError] });
   }
 
   let currency: string | undefined;
@@ -708,6 +717,9 @@ export async function endLease(
     throw conflict('endDate cannot be before the ledger start date.');
   }
 
+  const rangeError = validateEndDateSchedulable(current.calendar, data.endDate);
+  if (rangeError) throw validationFailed({ endDate: [rangeError] });
+
   const status = statusForEndReason(data.reason);
 
   const result = await db
@@ -792,6 +804,9 @@ export async function renewLease(
   };
   const billingError = validateBillingTerms(terms);
   if (billingError) throw validationFailed({ _: [billingError] });
+
+  const rangeError = validateEndDateSchedulable(terms.calendar, terms.endDate);
+  if (rangeError) throw validationFailed({ endDate: [rangeError] });
 
   // §5.4: end the predecessor FIRST, then insert the successor. Inserting first
   // would hit lease_unit_active_uq and 500 on the legitimate path.

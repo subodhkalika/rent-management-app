@@ -53,7 +53,7 @@ const DIR = dirname(fileURLToPath(import.meta.url));
 
 // Bump this UP whenever a legitimate source file is added. Never lower it to make a
 // failing suite pass — see tenancy.guard.test.ts for why a floor exists at all.
-const MIN_SOURCE_FILES = 32;
+const MIN_SOURCE_FILES = 33;
 
 const FORBIDDEN_LOCAL_NAMES = ['daysInMonth', 'isLeapYear'];
 

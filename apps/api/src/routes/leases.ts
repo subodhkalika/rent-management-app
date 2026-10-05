@@ -10,9 +10,7 @@ import {
   leaseListQuery,
   scheduleQuery,
   billingTermsFor,
-  buildSchedule,
   compareIsoDate,
-  calendarForSystem,
   type CreateLeaseBody,
   type UpdateLeaseBody,
   type EndLeaseBody,
@@ -28,6 +26,7 @@ import { conflict, notFound, validationFailed } from '../lib/errors.js';
 import { requireUuidParam } from '../lib/params.js';
 import { encodeCursor } from '../lib/pagination.js';
 import { mapLeaseSummary, mapLeaseDetail, mapLeaseTenant } from '../lib/mappers.js';
+import { scheduleSanityMaxThrough, buildScheduleOrThrow } from '../lib/schedule.js';
 import * as leaseRepo from '../db/repo/lease.js';
 import type { AppBindings } from '../types.js';
 
@@ -146,10 +145,11 @@ leases.get('/v1/leases/:id/schedule', validateQuery(scheduleQuery), async (c) =>
   if (!row) throw notFound('Lease');
 
   // Keeps buildSchedule's MAX_SCHEDULE_PERIODS RangeError unreachable in practice
-  // (packages/contract's billing.ts §1.5). The 10-year bound is computed by the
-  // CONTRACT's own calendar-aware addYears — never a local calculation.
-  const calendar = calendarForSystem(row.calendar);
-  const maxThrough = calendar.addYears(row.startDate, 10);
+  // (packages/contract's billing.ts §1.5). This bound is an INPUT SANITY check,
+  // not a billing computation — lib/schedule.ts's scheduleSanityMaxThrough is pure
+  // day-count arithmetic (never a calendar's addYears), so it can never throw
+  // regardless of the property's calendar.
+  const maxThrough = scheduleSanityMaxThrough(row.startDate);
   if (compareIsoDate(query.through, maxThrough) > 0) {
     throw validationFailed({ through: ['through must be within 10 years of startDate'] });
   }
@@ -160,15 +160,9 @@ leases.get('/v1/leases/:id/schedule', validateQuery(scheduleQuery), async (c) =>
   // arithmetic anywhere in this file.
   const terms = billingTermsFor(row);
 
-  let periods;
-  try {
-    periods = buildSchedule(terms, query.through);
-  } catch (err) {
-    if (err instanceof RangeError) {
-      throw validationFailed({ through: ['This date range produces too many billing periods'] });
-    }
-    throw err;
-  }
+  // buildScheduleOrThrow turns a Bikram Sambat lease running past the calendar's
+  // data table into a 422 naming the real limit, never a 500 (lib/schedule.ts).
+  const periods = buildScheduleOrThrow(terms, query.through);
 
   const response: LeaseSchedule = {
     leaseId: row.id,

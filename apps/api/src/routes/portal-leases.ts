@@ -2,9 +2,7 @@ import { Hono } from 'hono';
 import {
   scheduleQuery,
   billingTermsFor,
-  buildSchedule,
   compareIsoDate,
-  calendarForSystem,
   type ScheduleQuery,
   type PortalLeaseSchedule,
 } from '@rms/contract';
@@ -12,6 +10,7 @@ import { validateQuery, parsedQuery } from '../middleware/validate.js';
 import { notFound, validationFailed } from '../lib/errors.js';
 import { requireUuidParam } from '../lib/params.js';
 import { mapPortalLease, mapPortalLeaseDetail } from '../lib/mappers.js';
+import { scheduleSanityMaxThrough, buildScheduleOrThrow } from '../lib/schedule.js';
 import * as portalLeaseRepo from '../db/repo/portal/lease.js';
 import type { AppBindings } from '../types.js';
 
@@ -56,23 +55,16 @@ portalLeases.get('/v1/portal/leases/:id/schedule', validateQuery(scheduleQuery),
   const row = await portalLeaseRepo.resolveLease(scope, db, id);
   if (!row) throw notFound('Lease');
 
-  const calendar = calendarForSystem(row.calendar);
-  const maxThrough = calendar.addYears(row.startDate, 10);
+  // See routes/leases.ts for why this is pure day-count arithmetic, never a
+  // calendar computation — this bound must never throw.
+  const maxThrough = scheduleSanityMaxThrough(row.startDate);
   if (compareIsoDate(query.through, maxThrough) > 0) {
     throw validationFailed({ through: ['through must be within 10 years of startDate'] });
   }
 
   const terms = billingTermsFor(row);
 
-  let periods;
-  try {
-    periods = buildSchedule(terms, query.through);
-  } catch (err) {
-    if (err instanceof RangeError) {
-      throw validationFailed({ through: ['This date range produces too many billing periods'] });
-    }
-    throw err;
-  }
+  const periods = buildScheduleOrThrow(terms, query.through);
 
   const response: PortalLeaseSchedule = {
     leaseId: row.id,

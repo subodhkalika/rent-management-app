@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
-import { scheduleFixtures } from '@rms/contract';
+import { scheduleFixtures, bsScheduleFixtures, bsYearlyFixture } from '@rms/contract';
 import { ApiException, conflict, notFound } from '../lib/errors.js';
 import type { AppBindings } from '../types.js';
 import { authLayer } from '../middleware/auth-layer.js';
@@ -369,5 +369,60 @@ describe('GET /v1/leases/:id/schedule — scheduleFixtures through the HTTP rout
     leaseRepoMock.getLease.mockResolvedValue(leaseRow({ startDate: '2026-01-01' }));
     const res = await get(`/v1/leases/${LEASE_ID}/schedule?through=2040-01-01`);
     expect(res.status).toBe(422);
+  });
+
+  // Bikram Sambat fixtures — the BS counterpart of the Gregorian loop above. No
+  // existing test exercised the BS route end to end before this: every one of
+  // scheduleFixtures is Gregorian, so the "year + 10 past BS_MAX_YEAR" 500 a live
+  // Docker run caught was invisible to the whole suite.
+  for (const fixture of [...bsScheduleFixtures, bsYearlyFixture]) {
+    it(`[BS] ${fixture.name}: matches the contract's buildSchedule exactly`, async () => {
+      leaseRepoMock.getLease.mockResolvedValue(
+        leaseRow({
+          rentFrequency: fixture.terms.frequency,
+          calendar: fixture.terms.calendar,
+          rentCents: fixture.terms.rentCents,
+          billingDay: fixture.terms.billingDay,
+          startDate: fixture.terms.startDate,
+          endDate: fixture.terms.endDate,
+          ledgerStartDate: fixture.terms.ledgerStartDate,
+          moveOutDate: fixture.terms.moveOutDate,
+          moveOutBillingPolicy: fixture.terms.moveOutBillingPolicy,
+        }),
+      );
+
+      const res = await get(`/v1/leases/${LEASE_ID}/schedule?through=${fixture.through}`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { periods: unknown[] };
+      expect(body.periods).toEqual(fixture.expected);
+    });
+  }
+});
+
+describe('GET /v1/leases/:id/schedule — the Bikram Sambat 500 a live run caught, now fixed', () => {
+  it('a BS lease requesting a near-term schedule succeeds (the sanity bound no longer throws unconditionally)', async () => {
+    leaseRepoMock.getLease.mockResolvedValue(
+      leaseRow({ calendar: 'bikram_sambat', startDate: '2026-09-26', ledgerStartDate: '2026-09-26' }),
+    );
+    const res = await get(`/v1/leases/${LEASE_ID}/schedule?through=2027-09-26`);
+    expect(res.status).toBe(200);
+  });
+
+  it('a BS lease genuinely extending past the data table returns a clear 422, never a 500', async () => {
+    leaseRepoMock.getLease.mockResolvedValue(
+      leaseRow({ calendar: 'bikram_sambat', startDate: '1950-01-01', ledgerStartDate: '1950-01-01' }),
+    );
+    // Within the 10-year sanity bound from 1950, but — requested directly, past
+    // the real BS table (~2034) — buildSchedule itself throws BsDateOutOfRangeError.
+    const res = await get(`/v1/leases/${LEASE_ID}/schedule?through=2040-01-01`);
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toBe('Some fields are invalid');
+  });
+
+  it('the Gregorian path is unaffected by any of the BS fix', async () => {
+    leaseRepoMock.getLease.mockResolvedValue(leaseRow({ calendar: 'gregorian', startDate: '2026-01-01' }));
+    const res = await get(`/v1/leases/${LEASE_ID}/schedule?through=2026-12-01`);
+    expect(res.status).toBe(200);
   });
 });
