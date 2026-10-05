@@ -88,12 +88,7 @@ export function PortalAccessPanel({ tenant }: PortalAccessPanelProps) {
           )}
         </div>
 
-        {tenant.portalAccess === 'invited' && (
-          <p className="text-sm text-muted-foreground">
-            Waiting for them to open the invite link and accept. Resend revokes the old link
-            and issues a new one.
-          </p>
-        )}
+        {tenant.portalAccess === 'invited' && <InvitedStatus tenant={tenant} />}
         {tenant.portalAccess === 'revoked' && (
           <p className="text-sm text-muted-foreground">
             Access was revoked. Inviting again issues a brand new link.
@@ -165,6 +160,44 @@ export function PortalAccessPanel({ tenant }: PortalAccessPanelProps) {
         </AlertDialogContent>
       </AlertDialog>
     </Card>
+  );
+}
+
+/**
+ * `invitedEmail` and `inviteExpiresAt` are non-null exactly while `portalAccess`
+ * is `'invited'` (see `tenant` in the contract), so the row says which address
+ * holds the live link and whether it has already lapsed — the status stays
+ * `'invited'` either way, so "waiting to accept" alone would hide an expired
+ * link that silently needs a resend.
+ */
+function InvitedStatus({ tenant }: { tenant: Tenant }) {
+  if (!tenant.invitedEmail || !tenant.inviteExpiresAt) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        An invite is outstanding. Resend revokes the old link and issues a new one.
+      </p>
+    );
+  }
+
+  const expiresAt = new Date(tenant.inviteExpiresAt);
+  const expired = expiresAt.getTime() < Date.now();
+
+  return (
+    <p className="text-sm text-muted-foreground">
+      {expired ? (
+        <>
+          The invite sent to{' '}
+          <span className="font-medium text-foreground">{tenant.invitedEmail}</span> expired on{' '}
+          {expiresAt.toLocaleString()}. Resend to issue a new link.
+        </>
+      ) : (
+        <>
+          Waiting for <span className="font-medium text-foreground">{tenant.invitedEmail}</span> to
+          accept. The link expires {expiresAt.toLocaleString()}. Resend revokes the old link and
+          issues a new one.
+        </>
+      )}
+    </p>
   );
 }
 

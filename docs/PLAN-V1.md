@@ -188,7 +188,7 @@ Anti-enumeration rules, all mandatory:
 - No rate limiting. A 256-bit token is not brute-forceable and Workers free tier has no
   durable counter worth the complexity. Stated deliberately, not forgotten.
 
-Landlord controls: `DELETE /v1/tenants/:id/invite` revokes any pending invite;
+Landlord controls: `DELETE /v1/tenants/:id/portal-access` revokes any pending invite;
 `POST /v1/tenants/:id/invite` on a tenant with a live invite revokes the old one and issues
 a new one (so "resend" is just "invite again"). `DELETE /v1/tenants/:id/portal-access`
 unbinds `tenant.user_id` and revokes outstanding invites — the move-out kill switch.

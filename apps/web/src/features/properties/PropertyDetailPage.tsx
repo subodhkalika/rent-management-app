@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Pencil, Trash2 } from 'lucide-react';
-import { formatAddress, propertyTypeLabels } from '@rms/contract';
+import { ArrowLeft, Clock, Pencil, Trash2 } from 'lucide-react';
+import { formatAddress, propertyTypeLabels, type Property } from '@rms/contract';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { useDismissed } from '@/lib/use-dismissed';
 import { UnitsSection } from '@/features/units/UnitsSection';
 import { useProperty } from './api';
 import { PropertyFormDialog } from './PropertyFormDialog';
@@ -61,6 +63,10 @@ export function PropertyDetailPage() {
         )}
       </div>
 
+      {property && property.timezone === 'UTC' && (
+        <UtcTimezoneBanner property={property} onFix={() => setEditOpen(true)} />
+      )}
+
       <UnitsSection propertyId={id} />
 
       {property && (
@@ -85,6 +91,39 @@ function PropertyHeaderSkeleton() {
       <Skeleton className="h-4 w-80" />
       <Skeleton className="h-4 w-48" />
     </div>
+  );
+}
+
+/**
+ * `timezone` was added to the contract after properties could already exist, so
+ * every one created before then is sitting at the column default, 'UTC' — wrong for
+ * most landlords. This is a setting to confirm, not a data problem, so the copy
+ * says what it affects rather than warning about corruption.
+ */
+function UtcTimezoneBanner({ property, onFix }: { property: Property; onFix: () => void }) {
+  const [dismissed, setDismissed] = useDismissed(`property:${property.id}:utc-timezone-banner`);
+  if (dismissed) return null;
+
+  return (
+    <Alert className="mt-4">
+      <Clock />
+      <AlertTitle>Confirm this property's timezone</AlertTitle>
+      <AlertDescription>
+        <p>
+          This property is set to UTC. Rent due dates and overdue status are evaluated in a
+          property's own timezone, so it's worth confirming UTC is actually right for{' '}
+          {property.name}.
+        </p>
+        <div className="mt-2 flex gap-2">
+          <Button size="sm" onClick={onFix}>
+            Set the correct timezone
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setDismissed(true)}>
+            Dismiss
+          </Button>
+        </div>
+      </AlertDescription>
+    </Alert>
   );
 }
 

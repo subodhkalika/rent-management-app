@@ -33,4 +33,26 @@ describe('PropertyFormDialog', () => {
 
     expect(screen.queryByText(/name is required/i)).not.toBeInTheDocument();
   });
+
+  it('defaults the timezone field to the browser\'s own zone, not UTC', () => {
+    renderDialog();
+
+    const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    expect(screen.getByRole('combobox', { name: /timezone/i })).toHaveTextContent(
+      browserZone.replace(/_/g, ' '),
+    );
+  });
+
+  it('lets the timezone be changed via the searchable combobox', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole('combobox', { name: /timezone/i }));
+    await user.type(screen.getByPlaceholderText(/search timezones/i), 'Perth');
+    await user.click(await screen.findByRole('option', { name: 'Australia/Perth' }));
+
+    expect(screen.getByRole('combobox', { name: /timezone/i })).toHaveTextContent(
+      'Australia/Perth',
+    );
+  });
 });

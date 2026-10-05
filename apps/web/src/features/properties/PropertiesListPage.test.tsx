@@ -20,6 +20,7 @@ function makeProperty(name: string): Property {
       country: 'US',
     },
     notes: null,
+    timezone: 'America/Chicago',
     unitCount: 1,
     occupiedUnitCount: 0,
     createdAt: now,

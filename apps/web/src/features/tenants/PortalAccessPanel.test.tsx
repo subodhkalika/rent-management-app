@@ -19,6 +19,8 @@ function makeTenant(overrides: Partial<Tenant> = {}): Tenant {
     status: 'active',
     portalAccess: 'none',
     portalEmail: null,
+    invitedEmail: null,
+    inviteExpiresAt: null,
     remindersOptedOut: false,
     createdAt: now,
     updatedAt: now,
@@ -129,5 +131,33 @@ describe('PortalAccessPanel', () => {
     // The first token must not be anywhere in the document any more —
     // not in a hidden node, not concatenated into other text.
     expect(document.body.textContent).not.toContain('firsttoken1111');
+  });
+
+  it('shows which address holds a live invite and when it expires', () => {
+    const expiresAt = new Date(Date.now() + 86_400_000).toISOString();
+    renderPanel(
+      makeTenant({
+        portalAccess: 'invited',
+        invitedEmail: 'dana-invite@example.com',
+        inviteExpiresAt: expiresAt,
+      }),
+    );
+
+    expect(screen.getByText(/dana-invite@example\.com/)).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(new Date(expiresAt).toLocaleString().split(',')[0]!))).toBeInTheDocument();
+    expect(screen.queryByText(/waiting to accept/i)).not.toBeInTheDocument();
+  });
+
+  it('says clearly when an outstanding invite has already expired', () => {
+    const expiresAt = new Date(Date.now() - 86_400_000).toISOString();
+    renderPanel(
+      makeTenant({
+        portalAccess: 'invited',
+        invitedEmail: 'dana-invite@example.com',
+        inviteExpiresAt: expiresAt,
+      }),
+    );
+
+    expect(screen.getByText(/expired on/i)).toBeInTheDocument();
   });
 });

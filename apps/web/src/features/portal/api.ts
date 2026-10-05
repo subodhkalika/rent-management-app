@@ -4,10 +4,12 @@ import {
   portalProfile,
   acceptInviteBody,
   inviteAccepted,
+  invitePreview,
   type PortalProfile,
   type UpdatePortalProfileBody,
   type AcceptInviteBody,
   type InviteAccepted,
+  type InvitePreview,
 } from '@rms/contract';
 import { ApiClientError, request } from '@/lib/api';
 
@@ -32,6 +34,21 @@ export function useUpdatePortalProfile(tenantId: string) {
     onSuccess: (updated: PortalProfile) => {
       queryClient.setQueryData(portalKeys.profile(tenantId), updated);
     },
+  });
+}
+
+/**
+ * What the accept page may show before the caller proves anything beyond holding
+ * the token — see `invitePreview` in the contract. Public, like `acceptInvite`,
+ * and fails with the same uniform 404; `AcceptInvitePage` renders that failure
+ * identically to a malformed token, never a more specific message.
+ */
+export function usePortalInvitePreview(token: string, options?: { enabled?: boolean }) {
+  return useQuery<InvitePreview, ApiClientError>({
+    queryKey: ['portal', 'invite-preview', token],
+    queryFn: ({ signal }) =>
+      request(routes.portal.invitePreview(token), { schema: invitePreview, signal }),
+    enabled: options?.enabled ?? true,
   });
 }
 

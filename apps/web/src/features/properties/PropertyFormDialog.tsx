@@ -21,6 +21,7 @@ import {
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -35,23 +36,31 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Combobox } from '@/components/combobox';
 import { useCreateProperty, useUpdateProperty } from './api';
 import { applyServerErrors, blankToUndefined, errorMessage } from '@/lib/form-errors';
+import { browserTimezone, timezoneOptions } from './timezones';
 
 const propertyTypes = Object.keys(propertyTypeLabels) as PropertyType[];
 
-const emptyValues: CreatePropertyBody = {
-  name: '',
-  type: 'single_family',
-  address: { line1: '', line2: '', city: '', region: '', postalCode: '', country: 'US' },
-  notes: '',
-};
+function emptyValues(): CreatePropertyBody {
+  return {
+    name: '',
+    type: 'single_family',
+    address: { line1: '', line2: '', city: '', region: '', postalCode: '', country: 'US' },
+    // Right far more often than UTC — saves most landlords a decision they would
+    // otherwise never think to make, and leave wrong.
+    timezone: browserTimezone(),
+    notes: '',
+  };
+}
 
 function valuesFromProperty(property: Property): CreatePropertyBody {
   return {
     name: property.name,
     type: property.type,
     address: property.address,
+    timezone: property.timezone,
     notes: property.notes ?? '',
   };
 }
@@ -67,13 +76,13 @@ export function PropertyFormDialog({ open, onOpenChange, property }: PropertyFor
   const isEditing = !!property;
   const form = useForm<CreatePropertyBody>({
     resolver: zodResolver(createPropertyBody),
-    defaultValues: property ? valuesFromProperty(property) : emptyValues,
+    defaultValues: property ? valuesFromProperty(property) : emptyValues(),
   });
 
   // Reset to the right defaults each time the dialog opens, for whichever property
   // (or none) it was opened with.
   useEffect(() => {
-    if (open) form.reset(property ? valuesFromProperty(property) : emptyValues);
+    if (open) form.reset(property ? valuesFromProperty(property) : emptyValues());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, property]);
 
@@ -232,6 +241,31 @@ export function PropertyFormDialog({ open, onOpenChange, property }: PropertyFor
                 )}
               />
             </div>
+
+            <FormField
+              control={form.control}
+              name="timezone"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Timezone</FormLabel>
+                  <FormControl>
+                    <Combobox
+                      value={field.value}
+                      onChange={field.onChange}
+                      options={timezoneOptions}
+                      placeholder="Select a timezone"
+                      searchPlaceholder="Search timezones…"
+                      emptyText="No matching timezone."
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    Rent due dates and overdue status are evaluated in this property's own
+                    timezone, so get this right rather than leaving it at your own.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
 
             <FormField
               control={form.control}

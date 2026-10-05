@@ -1,6 +1,6 @@
 # Task 005 — Phase 1 contract amendments
 
-**Status:** queued, do after phase 1 lands and is reviewed.
+**Status:** DONE 2026-10-05. All three gaps closed and verified against the running stack.
 
 Two gaps `frontend-dev` found in the phase 1 contract. Both are orchestrator errors:
 the brief asked for behaviour the contract gave no way to implement. The agent
@@ -78,8 +78,11 @@ The plan describes separate `DELETE /v1/tenants/:id/invite` and
 `DELETE /v1/tenants/:id/portal-access`. The contract exposes only the latter, so the UI
 points both "Revoke invite" and "Revoke access" at it. That is fine — one endpoint that
 revokes outstanding invites and unbinds the user is simpler and has no gap between the
-two states. Confirm the backend implements it that way, then delete the plan's
-reference to the second endpoint so the two documents agree.
+two states. **Confirmed 2026-10-05:** `revokePortalAccess` unbinds `tenant.user_id` and calls
+`revokeLiveInvites` in the same function. Verified live — after the call, the
+outstanding token 404s through the preview endpoint and the tenant's `invitedEmail`
+and `inviteExpiresAt` clear. The single endpoint genuinely covers both states, so the
+plan's second endpoint is not needed and its reference has been removed.
 
 ## Scope
 
