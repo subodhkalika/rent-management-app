@@ -186,7 +186,10 @@ describe('CreateLeasePage wizard', () => {
     expect(await screen.findByText(/schedule preview/i)).toBeInTheDocument();
     // Rent defaulted from the unit's market rent (150000 cents = $1,500.00),
     // computed by the SAME `buildSchedule` the create wizard exists to preview.
-    expect((await screen.findAllByText('$1,500.00')).length).toBeGreaterThan(0);
+    // The collapsed summary folds the amount into a longer sentence ("$1,500.00
+    // monthly, N periods, ...") rather than an isolated cell, so match on the
+    // substring rather than requiring the whole node's text to equal it exactly.
+    expect((await screen.findAllByText(/\$1,500\.00/)).length).toBeGreaterThan(0);
   });
 
   it('shows an error, never a silently-defaulted Gregorian/bill_full_term preview, when the property fails to load (regression)', async () => {

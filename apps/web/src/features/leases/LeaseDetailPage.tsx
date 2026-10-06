@@ -17,6 +17,7 @@ import { defaultPreviewThrough } from './schedule-preview';
 import { leaseStatusVariant } from './lease-ui';
 import { moveOutBillingCopy } from './frequency-copy';
 import { LeaseScheduleTable } from './LeaseScheduleTable';
+import { LeaseScheduleSummary } from './LeaseScheduleSummary';
 import { LeaseRosterPanel } from './LeaseRosterPanel';
 import { LeaseChainTimeline } from './LeaseChainTimeline';
 import { ActivateLeaseDialog } from './ActivateLeaseDialog';
@@ -118,7 +119,15 @@ export function LeaseDetailPage() {
               <LeaseRosterPanel lease={lease} />
             </TabsContent>
             <TabsContent value="schedule">
-              <LeaseScheduleTab leaseId={lease.id} startDate={lease.startDate} endDate={lease.endDate} currency={lease.currency} calendar={lease.calendar} propertyTimezone={lease.propertyTimezone} />
+              <LeaseScheduleTab
+                leaseId={lease.id}
+                startDate={lease.startDate}
+                endDate={lease.endDate}
+                currency={lease.currency}
+                calendar={lease.calendar}
+                rentFrequency={lease.rentFrequency}
+                propertyTimezone={lease.propertyTimezone}
+              />
             </TabsContent>
             <TabsContent value="chain">
               <LeaseChainTimeline lease={lease} />
@@ -194,6 +203,7 @@ function LeaseScheduleTab({
   endDate,
   currency,
   calendar,
+  rentFrequency,
   propertyTimezone,
 }: {
   leaseId: string;
@@ -201,6 +211,7 @@ function LeaseScheduleTab({
   endDate: string | null;
   currency: Parameters<typeof LeaseScheduleTable>[0]['currency'];
   calendar: Parameters<typeof LeaseScheduleTable>[0]['calendar'];
+  rentFrequency: Parameters<typeof LeaseScheduleSummary>[0]['rentFrequency'];
   propertyTimezone: string;
 }) {
   // Computed server-side via the SAME `buildSchedule` the create wizard's preview
@@ -223,10 +234,11 @@ function LeaseScheduleTab({
 
   return (
     <div className="mt-4">
-      <LeaseScheduleTable
+      <LeaseScheduleSummary
         periods={data.periods}
         currency={currency}
         calendar={calendar}
+        rentFrequency={rentFrequency}
         propertyTimezone={propertyTimezone}
         emptyMessage="No charges fall before this lease's end date and the preview window."
       />

@@ -23,7 +23,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea';
 import { errorMessage } from '@/lib/form-errors';
 import { useEndLease } from './api';
-import { LeaseScheduleTable } from './LeaseScheduleTable';
+import { LeaseScheduleSummary } from './LeaseScheduleSummary';
 import { previewSchedule, type PreviewLeaseInput } from './schedule-preview';
 import { moveOutBillingCopy } from './frequency-copy';
 
@@ -170,10 +170,11 @@ export function EndLeaseDialog({ open, onOpenChange, lease }: EndLeaseDialogProp
               </p>
             )}
             <div className="mt-2">
-              <LeaseScheduleTable
+              <LeaseScheduleSummary
                 periods={periods}
                 currency={lease.currency}
                 calendar={lease.calendar}
+                rentFrequency={lease.rentFrequency}
                 emptyMessage="Pick an end date to preview the final charge."
               />
             </div>

@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useTenants } from '@/features/tenants/api';
 import { formatCivilDate } from '@/lib/format-civil-date';
-import { LeaseScheduleTable } from '../LeaseScheduleTable';
+import { LeaseScheduleSummary } from '../LeaseScheduleSummary';
 import { previewSchedule, defaultPreviewThrough, type PreviewLeaseInput } from '../schedule-preview';
 import { moveOutBillingCopy } from '../frequency-copy';
 import type { WizardForm } from './types';
@@ -190,10 +190,11 @@ export function ReviewStep({ form, unit, propertyQuery }: ReviewStepProps) {
               {previewError}
             </p>
           ) : (
-            <LeaseScheduleTable
+            <LeaseScheduleSummary
               periods={periods}
               currency={currency}
               calendar={calendar}
+              rentFrequency={values.rentFrequency ?? 'monthly'}
               truncatedCount={truncated}
               emptyMessage="Fill in the start date and rent to see the schedule."
             />

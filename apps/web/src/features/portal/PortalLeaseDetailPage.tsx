@@ -8,7 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { formatCivilDate } from '@/lib/format-civil-date';
 import { leaseStatusVariant } from '@/features/leases/lease-ui';
 import { moveOutBillingCopy } from '@/features/leases/frequency-copy';
-import { LeaseScheduleTable } from '@/features/leases/LeaseScheduleTable';
+import { LeaseScheduleSummary } from '@/features/leases/LeaseScheduleSummary';
 import { defaultPreviewThrough } from '@/features/leases/schedule-preview';
 import { usePortalLease, usePortalLeaseSchedule } from './api';
 
@@ -112,10 +112,11 @@ function LeaseContent({ lease }: { lease: NonNullable<ReturnType<typeof usePorta
               </Button>
             </div>
           ) : (
-            <LeaseScheduleTable
+            <LeaseScheduleSummary
               periods={scheduleQuery.data.periods}
               currency={lease.currency}
               calendar={lease.calendar}
+              rentFrequency={lease.rentFrequency}
               propertyTimezone={lease.propertyTimezone}
             />
           )}
