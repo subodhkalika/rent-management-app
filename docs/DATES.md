@@ -64,7 +64,9 @@ Deliberately concentrated. The grep guard in `apps/api` exists partly to keep it
 | `apps/api/src/db/repo/*.ts` | `new Date()` for `updatedAt` / `deletedAt` | No — category A |
 | `apps/api/src/routes/tenants.ts` | invite `expiresAt` = now + 14d | No — a duration on an instant |
 | `apps/api/src/routes/portal.ts` | invite liveness vs now | No — category A |
-| `apps/web/**` | `toLocaleString()` on instants | B1 only — presentation |
+| `apps/web/src/components/civil-date-input.tsx` | B1 — civil date ENTRY in the property's calendar | Yes, but delegated: `decompose` + `clampDayToMonth` only, no arithmetic of its own |
+| `apps/web/src/lib/format-civil-date.ts` | B1 — civil date DISPLAY | Yes, but delegated: `decompose` + `monthNames` |
+| `apps/web/**` elsewhere | `toLocaleString()` on instants | No — category A, presentation only |
 
 **The concentration is the asset.** Everything structural is in `billing.ts`.
 Everything else is either an instant or a render.
@@ -105,7 +107,14 @@ Everything else is either an instant or a render.
 
 - **Decided:** storage stays Gregorian ISO regardless of any future calendar.
 - **Decided:** the calendar setting, if added, is per-property.
-- **Not built:** the `Calendar` seam. Tracked as task 006 — worth doing while
-  `billing.ts` is young, since it is additive now and a rewrite once Phase 3's cron,
-  Phase 4's reminders and Phase 6's reports all depend on its current shape.
-- **Not built, and not currently planned:** Bikram Sambat itself.
+- **Built:** the `Calendar` seam (task 006), with `decompose` and `monthNames` added
+  later so display and entry can be calendar-generic rather than branching on id.
+- **Built:** Bikram Sambat, end to end — month-length table, period arithmetic,
+  display formatter, and a date input. A property picks its calendar; nothing else
+  in either app knows which one it is.
+- **Built:** date-arithmetic guards over both `apps/api` and `apps/web`, each proven
+  against a deliberate violation.
+- **Range limit, live:** the Bikram Sambat table ends at AD 2034-04-13. The API
+  refuses an unschedulable lease end date at create, and the date input cannot
+  select a year beyond it. Extending the range means extending the table, which the
+  conformance test will then re-verify against both source libraries.

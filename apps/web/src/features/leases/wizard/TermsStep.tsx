@@ -4,9 +4,11 @@ import {
   rentFrequencyLabels,
   MAX_BILLING_DAY,
   MAX_BILLING_DAY_ANY,
+  type CalendarSystem,
   type Property,
   type Unit,
 } from '@rms/contract';
+import { CivilDateInput } from '@/components/civil-date-input';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
@@ -38,6 +40,10 @@ export function TermsStep({ form, property, unit }: TermsStepProps) {
   // 31 — a Bikram Sambat month reaches 32 (`MAX_BILLING_DAY`), and the server
   // validates the real per-calendar bound regardless of what this attribute says.
   const maxBillingDay = property ? MAX_BILLING_DAY[property.calendar] : MAX_BILLING_DAY_ANY;
+  // The property may not have resolved yet — same fallback as above. A fresh
+  // wizard with no property picked yet has nothing to be wrong about; once the
+  // property loads, this re-renders with its real calendar.
+  const calendar: CalendarSystem = property?.calendar ?? 'gregorian';
 
   return (
     <div className="space-y-6">
@@ -123,11 +129,12 @@ export function TermsStep({ form, property, unit }: TermsStepProps) {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="grid gap-1.5">
           <Label htmlFor="wizard-startDate">Start date</Label>
-          <Input
+          <CivilDateInput
             id="wizard-startDate"
-            type="date"
+            label="Start date"
+            calendar={calendar}
             value={form.watch('startDate') ?? ''}
-            onChange={(e) => form.setValue('startDate', e.target.value, { shouldValidate: true })}
+            onChange={(value) => form.setValue('startDate', value, { shouldValidate: true })}
             aria-invalid={!!errors.startDate}
           />
           {errors.startDate && (
@@ -139,11 +146,12 @@ export function TermsStep({ form, property, unit }: TermsStepProps) {
 
         <div className="grid gap-1.5">
           <Label htmlFor="wizard-endDate">End date</Label>
-          <Input
+          <CivilDateInput
             id="wizard-endDate"
-            type="date"
+            label="End date"
+            calendar={calendar}
             value={form.watch('endDate') ?? ''}
-            onChange={(e) => form.setValue('endDate', e.target.value === '' ? null : e.target.value, { shouldValidate: true })}
+            onChange={(value) => form.setValue('endDate', value === '' ? null : value, { shouldValidate: true })}
             aria-invalid={!!errors.endDate}
             aria-describedby="wizard-endDate-help"
           />
@@ -185,12 +193,13 @@ export function TermsStep({ form, property, unit }: TermsStepProps) {
           <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="grid gap-1.5">
               <Label htmlFor="wizard-ledgerStartDate">Ledger start date</Label>
-              <Input
+              <CivilDateInput
                 id="wizard-ledgerStartDate"
-                type="date"
+                label="Ledger start date"
+                calendar={calendar}
                 value={form.watch('ledgerStartDate') ?? ''}
-                onChange={(e) =>
-                  form.setValue('ledgerStartDate', e.target.value === '' ? undefined : e.target.value, {
+                onChange={(value) =>
+                  form.setValue('ledgerStartDate', value === '' ? undefined : value, {
                     shouldValidate: true,
                   })
                 }

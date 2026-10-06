@@ -11,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { CivilDateInput } from '@/components/civil-date-input';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -82,16 +83,23 @@ export function RenewLeaseDialog({ open, onOpenChange, lease }: RenewLeaseDialog
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="grid gap-1.5">
               <Label htmlFor="renew-startDate">New start date</Label>
-              <Input
+              <CivilDateInput
                 id="renew-startDate"
-                type="date"
+                label="New start date"
+                calendar={lease.calendar}
                 value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
+                onChange={setStartDate}
               />
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="renew-endDate">End date (optional)</Label>
-              <Input id="renew-endDate" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+              <CivilDateInput
+                id="renew-endDate"
+                label="End date"
+                calendar={lease.calendar}
+                value={endDate}
+                onChange={setEndDate}
+              />
             </div>
           </div>
 

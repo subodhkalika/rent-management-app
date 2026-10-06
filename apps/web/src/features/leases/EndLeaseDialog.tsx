@@ -17,7 +17,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
+import { CivilDateInput } from '@/components/civil-date-input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
@@ -116,20 +116,22 @@ export function EndLeaseDialog({ open, onOpenChange, lease }: EndLeaseDialogProp
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="grid gap-1.5">
               <Label htmlFor="end-lease-endDate">End date</Label>
-              <Input
+              <CivilDateInput
                 id="end-lease-endDate"
-                type="date"
+                label="End date"
+                calendar={lease.calendar}
                 value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
+                onChange={setEndDate}
               />
             </div>
             <div className="grid gap-1.5">
               <Label htmlFor="end-lease-moveOutDate">Move-out date (optional)</Label>
-              <Input
+              <CivilDateInput
                 id="end-lease-moveOutDate"
-                type="date"
+                label="Move-out date"
+                calendar={lease.calendar}
                 value={moveOutDate}
-                onChange={(e) => setMoveOutDate(e.target.value)}
+                onChange={setMoveOutDate}
               />
             </div>
           </div>

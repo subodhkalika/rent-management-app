@@ -50,7 +50,7 @@ const DIR = dirname(fileURLToPath(import.meta.url));
 
 // Bump this UP whenever a legitimate source file is added. Never lower it to make
 // a failing suite pass — see apps/api's tenancy guards for why a floor exists.
-const MIN_SOURCE_FILES = 99;
+const MIN_SOURCE_FILES = 100;
 
 const FORBIDDEN_LOCAL_NAMES = ['daysInMonth', 'isLeapYear'];
 
