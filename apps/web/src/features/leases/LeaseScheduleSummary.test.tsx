@@ -86,7 +86,11 @@ describe('LeaseScheduleSummary', () => {
 
     expect(screen.getByText('Rent')).toBeInTheDocument();
     expect(screen.queryByText('Then')).not.toBeInTheDocument();
-    expect(screen.getByText(new RegExp(`${periods.length} periods`))).toBeInTheDocument();
+    // The collapsed run states the amount and cadence only — the period count and
+    // date span are derivable from the lease term already on screen, and spelling
+    // them out here is exactly the noise collapsing the run was meant to remove.
+    expect(screen.getByText(`onwards ${formatMoney(periods[0]!.amountCents, 'USD')} monthly`)).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(`${periods.length} periods`))).not.toBeInTheDocument();
     // Still reconcilable in full, just not by default.
     expect(screen.getByRole('button', { name: new RegExp(`show every period \\(${periods.length}\\)`, 'i') })).toBeInTheDocument();
   });

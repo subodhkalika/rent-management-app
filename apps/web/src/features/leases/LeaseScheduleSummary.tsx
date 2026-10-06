@@ -126,9 +126,12 @@ export function LeaseScheduleSummary({
 
 /**
  * The text to the right of a group's label. Formatting only — picks fields off
- * the group's periods (`periods.length`, `periods[0]`, `periods.at(-1)`) and runs
- * them through `formatCivilDate` / `formatMoney`, never arithmetic on a date or an
- * amount.
+ * the group's periods (`periods.length`, `periods[0]`) and runs them through
+ * `formatCivilDate` / `formatMoney`, never arithmetic on a date or an amount.
+ *
+ * A collapsed run (more than one period) states only the amount and cadence —
+ * e.g. "onwards ₹5,000.00 monthly" — never the period count or date span. Both
+ * are derivable from the lease term already on screen.
  */
 function describeGroup(
   group: ScheduleGroup,
@@ -151,11 +154,12 @@ function describeGroup(
     return parts.join(' · ');
   }
 
+  // Deliberately NOT the period count or the date span — both are derivable from
+  // the lease term already on screen, and spelling them out here just reintroduces
+  // the noise collapsing the run was meant to remove. The amount and cadence are
+  // the only facts this line owns; everything else lives in the full table behind
+  // the disclosure.
   const first = periods[0]!;
-  const last = periods.at(-1)!;
   const frequencyWord = rentFrequencyLabels[rentFrequency].toLowerCase();
-  return (
-    `${formatMoney(first.amountCents, currency)} ${frequencyWord}, ${periods.length} periods, ` +
-    `${formatCivilDate(first.periodStart, calendar)} – ${formatCivilDate(last.periodEnd, calendar)}`
-  );
+  return `onwards ${formatMoney(first.amountCents, currency)} ${frequencyWord}`;
 }
