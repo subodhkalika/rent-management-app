@@ -4,12 +4,10 @@ import {
   routes,
   lease,
   leaseDetail,
-  leaseSchedule,
   leaseTenantSummary,
   paged,
   type Lease,
   type LeaseDetail,
-  type LeaseSchedule,
   type LeaseTenantSummary,
   type CreateLeaseBody,
   type UpdateLeaseBody,
@@ -19,7 +17,6 @@ import {
   type AddLeaseTenantBody,
   type RemoveLeaseTenantBody,
   type LeaseStatus,
-  type IsoDate,
 } from '@rms/contract';
 import { ApiClientError, request } from '@/lib/api';
 
@@ -27,7 +24,6 @@ export const leasesKeys = {
   all: ['leases'] as const,
   list: (filters: LeaseFilters) => [...leasesKeys.all, 'list', filters] as const,
   detail: (id: string) => [...leasesKeys.all, 'detail', id] as const,
-  schedule: (id: string, through: string) => [...leasesKeys.all, 'schedule', id, through] as const,
 };
 
 export interface LeaseFilters {
@@ -68,25 +64,6 @@ export function useLease(id: string) {
     queryKey: leasesKeys.detail(id),
     queryFn: ({ signal }) => request(routes.leases.get(id), { schema: leaseDetail, signal }),
     enabled: id.length > 0,
-  });
-}
-
-/**
- * `GET /leases/:id/schedule` — computed, nothing written. Used by the lease detail
- * page and anywhere else an EXISTING lease's schedule is shown; the create wizard's
- * review step does NOT use this hook — it previews client-side via
- * `schedule-preview.ts`'s `buildSchedule` call, which is the one this phase exists
- * for (see docs/PLAN-PHASE2.md).
- */
-export function useLeaseSchedule(id: string, through: IsoDate) {
-  return useQuery<LeaseSchedule, ApiClientError>({
-    queryKey: leasesKeys.schedule(id, through),
-    queryFn: ({ signal }) =>
-      request(`${routes.leases.schedule(id)}?${new URLSearchParams({ through }).toString()}`, {
-        schema: leaseSchedule,
-        signal,
-      }),
-    enabled: id.length > 0 && through.length > 0,
   });
 }
 

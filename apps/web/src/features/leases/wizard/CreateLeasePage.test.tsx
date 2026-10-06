@@ -165,7 +165,7 @@ describe('CreateLeasePage wizard', () => {
     expect(await screen.findByLabelText(/billing day/i)).toBeInTheDocument();
   });
 
-  it('reaches the review step and renders a live schedule preview matching the entered rent', async () => {
+  it('reaches the review step and shows the first charge matching the entered rent', async () => {
     stubFetch();
     const user = userEvent.setup();
     renderWizard();
@@ -183,13 +183,42 @@ describe('CreateLeasePage wizard', () => {
 
     await user.click(screen.getByRole('button', { name: /^next$/i }));
 
-    expect(await screen.findByText(/schedule preview/i)).toBeInTheDocument();
-    // Rent defaulted from the unit's market rent (150000 cents = $1,500.00),
-    // computed by the SAME `buildSchedule` the create wizard exists to preview.
-    // The collapsed summary folds the amount into a sentence ("onwards $1,500.00
-    // monthly") rather than an isolated cell, so match on the substring rather
-    // than requiring the whole node's text to equal it exactly.
+    expect(await screen.findByText(/first charge/i)).toBeInTheDocument();
+    // Rent defaulted from the unit's market rent (150000 cents = $1,500.00). The
+    // Summary section states it plainly regardless of whether today happens to
+    // land on a prorated or clean first period.
     expect((await screen.findAllByText(/\$1,500\.00/)).length).toBeGreaterThan(0);
+    // Never a full-term table or a total — the per-period table and its
+    // disclosure were removed entirely, not hidden behind a click.
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(screen.queryByText(/total over the term/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /show every period/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the prorated first charge in full — dates, due date, amount, and days occupied — for a lease starting mid-period', async () => {
+    stubFetch();
+    const user = userEvent.setup();
+    renderWizard();
+
+    await pickUnit(user);
+    await user.click(screen.getByRole('button', { name: /^next$/i }));
+    await user.click(await screen.findByRole('checkbox', { name: /select ada lovelace/i }));
+    await user.click(screen.getByRole('button', { name: /^next$/i }));
+
+    // 2026-01-15 is deliberately mid-month: billingDay defaults to 1, so the
+    // first natural period is 2026-01-01..2026-01-31 and the lease only occupies
+    // 17 of its 31 days — the "unusual number" a tenant actually queries.
+    await waitFor(() =>
+      expect((screen.getByLabelText(/start date/i) as HTMLInputElement).value).not.toBe(''),
+    );
+    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-01-15' } });
+
+    await user.click(screen.getByRole('button', { name: /^next$/i }));
+
+    expect(await screen.findByText(/first charge/i)).toBeInTheDocument();
+    expect(screen.getByText(/prorated/i)).toBeInTheDocument();
+    expect(screen.getByText(/17 of 31 days/i)).toBeInTheDocument();
+    expect(screen.getByText(/due/i)).toBeInTheDocument();
   });
 
   it('shows an error, never a silently-defaulted Gregorian/bill_full_term preview, when the property fails to load (regression)', async () => {
@@ -226,9 +255,9 @@ describe('CreateLeasePage wizard', () => {
     await user.click(screen.getByRole('button', { name: /^next$/i }));
 
     expect(await screen.findByText(/couldn't load this unit's property/i)).toBeInTheDocument();
-    // Never a schedule table rendered on top of the error — a missing preview is
-    // honest, a confidently wrong one is not.
-    expect(screen.queryByRole('heading', { name: /^schedule preview$/i })).not.toBeInTheDocument();
+    // Never a first-charge section rendered on top of the error — a missing
+    // preview is honest, a confidently wrong one is not.
+    expect(screen.queryByText(/first charge/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 });

@@ -5,9 +5,11 @@ import {
   endReasonLabels,
   statusForEndReason,
   leaseStatusLabels,
+  formatMoney,
   type EndReason,
   type LeaseDetail,
 } from '@rms/contract';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -22,8 +24,8 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { errorMessage } from '@/lib/form-errors';
+import { formatCivilDate } from '@/lib/format-civil-date';
 import { useEndLease } from './api';
-import { LeaseScheduleSummary } from './LeaseScheduleSummary';
 import { previewSchedule, type PreviewLeaseInput } from './schedule-preview';
 import { moveOutBillingCopy } from './frequency-copy';
 
@@ -36,10 +38,12 @@ interface EndLeaseDialogProps {
 }
 
 /**
- * Recomputes the schedule preview LIVE as the landlord types a move-out date, so
- * the final charge is on screen before they commit (docs/PLAN-PHASE2.md §8.2 item
- * 7, Amendment A.5). The move-out copy is driven by the lease's own
- * `moveOutBillingPolicy` (read live from its property) — never hardcoded.
+ * Recomputes the FINAL period LIVE as the landlord types a move-out date, so the
+ * final charge is on screen before they commit (docs/PLAN-PHASE2.md §8.2 item 7,
+ * Amendment A.5). Only the last period is read and rendered — never a table, never
+ * a total — that is the one number a landlord is checking here. The move-out copy
+ * is driven by the lease's own `moveOutBillingPolicy` (read live from its
+ * property) — never hardcoded.
  */
 export function EndLeaseDialog({ open, onOpenChange, lease }: EndLeaseDialogProps) {
   const [endDate, setEndDate] = useState(lease.endDate ?? lease.startDate);
@@ -163,21 +167,36 @@ export function EndLeaseDialog({ open, onOpenChange, lease }: EndLeaseDialogProp
           </div>
 
           <div>
-            <h3 className="text-sm font-medium">Final schedule</h3>
-            {finalPeriod && (
+            <h3 className="text-sm font-medium">Final charge</h3>
+            {finalPeriod ? (
+              <div className="mt-2 space-y-1 text-sm">
+                <p>
+                  {formatCivilDate(finalPeriod.occupiedStart, lease.calendar)} –{' '}
+                  {formatCivilDate(finalPeriod.occupiedEnd, lease.calendar)}
+                  {finalPeriod.isProrated && (
+                    <Badge variant="outline" className="ml-2">
+                      Prorated
+                    </Badge>
+                  )}
+                </p>
+                <p>
+                  Due {formatCivilDate(finalPeriod.dueDate, lease.calendar)} ·{' '}
+                  {formatMoney(finalPeriod.amountCents, lease.currency)}
+                </p>
+                {finalPeriod.isProrated && (
+                  <p className="text-muted-foreground">
+                    {finalPeriod.daysOccupied} of {finalPeriod.daysInPeriod} days
+                  </p>
+                )}
+                <p className="text-muted-foreground">
+                  The final charge is on screen before you commit — nothing here is a surprise.
+                </p>
+              </div>
+            ) : (
               <p className="mt-1 text-sm text-muted-foreground">
-                The final charge is on screen before you commit — nothing here is a surprise.
+                Pick an end date to preview the final charge.
               </p>
             )}
-            <div className="mt-2">
-              <LeaseScheduleSummary
-                periods={periods}
-                currency={lease.currency}
-                calendar={lease.calendar}
-                rentFrequency={lease.rentFrequency}
-                emptyMessage="Pick an end date to preview the final charge."
-              />
-            </div>
           </div>
         </div>
 

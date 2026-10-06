@@ -9,12 +9,12 @@ import {
   type PlannedCharge,
 } from '@rms/contract';
 import type { ApiClientError } from '@/lib/api';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useTenants } from '@/features/tenants/api';
 import { formatCivilDate } from '@/lib/format-civil-date';
-import { LeaseScheduleSummary } from '../LeaseScheduleSummary';
-import { previewSchedule, defaultPreviewThrough, type PreviewLeaseInput } from '../schedule-preview';
+import { previewFirstPeriod, type PreviewLeaseInput } from '../schedule-preview';
 import { moveOutBillingCopy } from '../frequency-copy';
 import type { WizardForm } from './types';
 
@@ -27,12 +27,11 @@ interface ReviewStepProps {
   propertyQuery: UseQueryResult<Property, ApiClientError>;
 }
 
-const PREVIEW_ROW_CAP = 36;
-
 /**
- * Step 4 — THE screen this phase exists for (docs/PLAN-PHASE2.md). A live schedule
- * preview computed client-side by `buildSchedule`, not fetched, so the landlord
- * sees the actual charges this lease will generate before committing to it.
+ * Step 4. Shows the lease's summary and the one number a tenant actually queries:
+ * the first charge, in full when it is prorated (the unusual amount), or stated
+ * plainly when it is not. Computed with a single-period call — see
+ * `previewFirstPeriod` — never the full term's schedule.
  */
 export function ReviewStep({ form, unit, propertyQuery }: ReviewStepProps) {
   const values = form.watch();
@@ -45,13 +44,12 @@ export function ReviewStep({ form, unit, propertyQuery }: ReviewStepProps) {
 
   // Hooks stay unconditional (Rules of Hooks) — the loading/error branches below
   // only decide what JSX this returns, never whether this memo runs.
-  const { periods, truncated, previewError } = useMemo((): {
-    periods: PlannedCharge[];
-    truncated: number;
+  const { firstPeriod, previewError } = useMemo((): {
+    firstPeriod: PlannedCharge | undefined;
     previewError: string | null;
   } => {
     if (!property || !values.startDate || !values.rentFrequency) {
-      return { periods: [], truncated: 0, previewError: null };
+      return { firstPeriod: undefined, previewError: null };
     }
     const leaseInput: PreviewLeaseInput = {
       rentFrequency: values.rentFrequency,
@@ -65,17 +63,10 @@ export function ReviewStep({ form, unit, propertyQuery }: ReviewStepProps) {
       calendar: property.calendar,
     };
     try {
-      const through = defaultPreviewThrough(values.startDate, values.endDate ?? null, property.timezone);
-      const full = previewSchedule(leaseInput, through);
-      return {
-        periods: full.slice(0, PREVIEW_ROW_CAP),
-        truncated: Math.max(0, full.length - PREVIEW_ROW_CAP),
-        previewError: null,
-      };
+      return { firstPeriod: previewFirstPeriod(leaseInput), previewError: null };
     } catch (error) {
       return {
-        periods: [],
-        truncated: 0,
+        firstPeriod: undefined,
         previewError: error instanceof Error ? error.message : 'Could not compute a preview.',
       };
     }
@@ -178,26 +169,41 @@ export function ReviewStep({ form, unit, propertyQuery }: ReviewStepProps) {
         </p>
       </section>
 
-      <section>
-        <h2 className="text-sm font-medium">Schedule preview</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Computed from the same rules the server bills with — this is what the tenant will
-          actually be charged, not an estimate.
-        </p>
-        <div className="mt-3">
+      <section className="rounded-md border p-4">
+        <h2 className="text-sm font-medium">First charge</h2>
+        <div className="mt-2">
           {previewError ? (
             <p role="alert" className="text-sm text-destructive">
               {previewError}
             </p>
+          ) : !firstPeriod ? (
+            <p className="text-sm text-muted-foreground">
+              Fill in the start date and rent to see the first charge.
+            </p>
+          ) : firstPeriod.isProrated ? (
+            <div className="space-y-1 text-sm">
+              <p>
+                {formatCivilDate(firstPeriod.occupiedStart, calendar)} –{' '}
+                {formatCivilDate(firstPeriod.occupiedEnd, calendar)}
+                <Badge variant="outline" className="ml-2">
+                  Prorated
+                </Badge>
+              </p>
+              <p>
+                Due {formatCivilDate(firstPeriod.dueDate, calendar)} ·{' '}
+                {formatMoney(firstPeriod.amountCents, currency)}
+              </p>
+              <p className="text-muted-foreground">
+                {firstPeriod.daysOccupied} of {firstPeriod.daysInPeriod} days
+              </p>
+            </div>
           ) : (
-            <LeaseScheduleSummary
-              periods={periods}
-              currency={currency}
-              calendar={calendar}
-              rentFrequency={values.rentFrequency ?? 'monthly'}
-              truncatedCount={truncated}
-              emptyMessage="Fill in the start date and rent to see the schedule."
-            />
+            <p className="text-sm text-muted-foreground">
+              {formatMoney(values.rentCents ?? 0, currency)} /{' '}
+              {rentFrequencyLabels[values.rentFrequency].toLowerCase()}, starting{' '}
+              {formatCivilDate(firstPeriod.periodStart, calendar)}, due{' '}
+              {formatCivilDate(firstPeriod.dueDate, calendar)}.
+            </p>
           )}
         </div>
       </section>

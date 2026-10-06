@@ -8,7 +8,6 @@ import {
   invitePreview,
   portalLease,
   portalLeaseDetail,
-  portalLeaseSchedule,
   type PortalProfile,
   type UpdatePortalProfileBody,
   type AcceptInviteBody,
@@ -16,8 +15,6 @@ import {
   type InvitePreview,
   type PortalLease,
   type PortalLeaseDetail,
-  type PortalLeaseSchedule,
-  type IsoDate,
 } from '@rms/contract';
 import { ApiClientError, request } from '@/lib/api';
 
@@ -84,7 +81,6 @@ export const portalLeasesKeys = {
   all: ['portal', 'leases'] as const,
   list: () => [...portalLeasesKeys.all, 'list'] as const,
   detail: (id: string) => [...portalLeasesKeys.all, 'detail', id] as const,
-  schedule: (id: string, through: string) => [...portalLeasesKeys.all, 'schedule', id, through] as const,
 };
 
 const portalLeaseListSchema = z.object({ items: z.array(portalLease) });
@@ -106,19 +102,5 @@ export function usePortalLease(id: string) {
     queryKey: portalLeasesKeys.detail(id),
     queryFn: ({ signal }) => request(routes.portal.lease(id), { schema: portalLeaseDetail, signal }),
     enabled: id.length > 0,
-  });
-}
-
-/** `GET /portal/leases/:id/schedule` — computed server-side from the SAME
- *  `buildSchedule` the landlord side and the create wizard's preview use. */
-export function usePortalLeaseSchedule(id: string, through: IsoDate) {
-  return useQuery<PortalLeaseSchedule, ApiClientError>({
-    queryKey: portalLeasesKeys.schedule(id, through),
-    queryFn: ({ signal }) =>
-      request(`${routes.portal.leaseSchedule(id)}?${new URLSearchParams({ through }).toString()}`, {
-        schema: portalLeaseSchedule,
-        signal,
-      }),
-    enabled: id.length > 0 && through.length > 0,
   });
 }

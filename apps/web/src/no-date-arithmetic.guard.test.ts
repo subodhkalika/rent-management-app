@@ -50,7 +50,15 @@ const DIR = dirname(fileURLToPath(import.meta.url));
 
 // Bump this UP whenever a legitimate source file is added. Never lower it to make
 // a failing suite pass — see apps/api's tenancy guards for why a floor exists.
-const MIN_SOURCE_FILES = 103;
+//
+// Lowered 103 -> 99 for a legitimate reduction: product feedback on the schedule
+// preview removed the per-period table, its disclosure, and the "total over the
+// term" row entirely (LeaseScheduleTable.tsx, LeaseScheduleSummary.tsx,
+// schedule-summary.ts), and `nextDuePeriodIndex` (next-due.ts) went with them —
+// it existed only to highlight a row in that table. The prorated-period preview
+// these supported stays, now computed with a single-period `buildSchedule` call
+// instead of building the whole term.
+const MIN_SOURCE_FILES = 99;
 
 const FORBIDDEN_LOCAL_NAMES = ['daysInMonth', 'isLeapYear'];
 

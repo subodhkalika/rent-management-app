@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { scheduleFixtures, compareIsoDate, type LeaseSummary } from '@rms/contract';
-import { previewSchedule, defaultPreviewThrough, type PreviewLeaseInput } from './schedule-preview';
+import { scheduleFixtures, buildSchedule, type LeaseBillingTerms, type LeaseSummary } from '@rms/contract';
+import { previewSchedule, previewFirstPeriod, type PreviewLeaseInput } from './schedule-preview';
 
 /**
  * The contract ships `scheduleFixtures` precisely so the backend's HTTP route and
@@ -41,54 +41,100 @@ describe('previewSchedule against the contract scheduleFixtures', () => {
   });
 });
 
-describe('defaultPreviewThrough', () => {
-  it('anchors a long-running rolling lease on TODAY, not on its start date (regression: HIGH 5)', () => {
-    // A lease that started five years ago, still rolling (no endDate). Anchoring
-    // on `startDate` alone — the original bug — produced a window that ended two
-    // years in the past: no current period, no "next due" row, for the ordinary
-    // state of any long-running tenancy.
-    const startDate = '2021-01-01';
-    const today = new Date('2026-06-15T12:00:00.000Z');
+/**
+ * The wizard's only preview call left after the product feedback that removed the
+ * per-period table: a single-period call for the first charge, never the full
+ * term. Every case here is cross-checked against `buildSchedule` run over the
+ * FULL term so a regression that happens to agree with itself can't hide.
+ */
+describe('previewFirstPeriod', () => {
+  it('returns exactly the prorated first period of a mid-month lease, matching buildSchedule(full term)[0]', () => {
+    const lease: PreviewLeaseInput = {
+      rentFrequency: 'monthly',
+      rentCents: 150000,
+      billingDay: 1,
+      startDate: '2026-03-05',
+      endDate: '2026-12-31',
+      ledgerStartDate: '2026-03-05',
+      moveOutDate: null,
+      moveOutBillingPolicy: 'bill_full_term',
+      calendar: 'gregorian',
+    };
+    const terms: LeaseBillingTerms = { ...lease, frequency: lease.rentFrequency };
+    const full = buildSchedule(terms, '2026-12-31');
 
-    const through = defaultPreviewThrough(startDate, null, 'UTC', today);
+    const result = previewFirstPeriod(lease);
 
-    expect(compareIsoDate(through, '2026-06-15')).toBeGreaterThanOrEqual(0);
+    expect(result).toEqual(full[0]);
+    expect(result?.isProrated).toBe(true);
+    expect(result?.daysOccupied).toBe(27);
+    expect(result?.daysInPeriod).toBe(31);
   });
 
-  it("uses the PROPERTY's timezone for today, not the runner's", () => {
-    // 2026-01-15T23:00:00Z is still 15 Jan in UTC but already 16 Jan in Kiritimati
-    // (UTC+14) — the same cross-timezone proof as next-due.test.ts.
-    const now = new Date('2026-01-15T23:00:00.000Z');
-    const startDate = '2020-01-01';
+  it('returns the single, un-prorated period for a lease that starts on the first day of its period', () => {
+    const lease: PreviewLeaseInput = {
+      rentFrequency: 'monthly',
+      rentCents: 150000,
+      billingDay: 1,
+      startDate: '2026-01-01',
+      endDate: '2026-12-31',
+      ledgerStartDate: '2026-01-01',
+      moveOutDate: null,
+      moveOutBillingPolicy: 'bill_full_term',
+      calendar: 'gregorian',
+    };
+    const terms: LeaseBillingTerms = { ...lease, frequency: lease.rentFrequency };
+    const full = buildSchedule(terms, '2026-12-31');
+    expect(full.length).toBeGreaterThan(1); // confirms this really is a long term
 
-    const utcThrough = defaultPreviewThrough(startDate, null, 'UTC', now);
-    const kiritimatiThrough = defaultPreviewThrough(startDate, null, 'Pacific/Kiritimati', now);
+    const result = previewFirstPeriod(lease);
 
-    expect(compareIsoDate(kiritimatiThrough, utcThrough)).toBeGreaterThan(0);
+    expect(result).toEqual(full[0]);
+    expect(result?.isProrated).toBe(false);
+    expect(result?.amountCents).toBe(150000);
   });
 
-  it('never asks for a `through` beyond the backend\'s 10-year-from-start sanity bound (regression: HIGH 5)', () => {
-    // A 20-year fixed-term lease. Before the fix, `through = endDate` unconditionally
-    // — 20 years out — which the route rejects with a 422, breaking the schedule
-    // panel permanently for both the landlord and the tenant.
-    const startDate = '2020-01-01';
-    const endDate = '2040-01-01';
+  it('never builds more than the one period it returns, even for a five-year term', () => {
+    // The regression this function exists to fix: a five-year monthly lease used
+    // to construct sixty `PlannedCharge` objects on every keystroke just to show
+    // the first one. Proven here by comparing lengths, not by mocking internals —
+    // `buildSchedule` itself has no way to return more than one element when
+    // `through` is pinned to the window's own start.
+    const lease: PreviewLeaseInput = {
+      rentFrequency: 'monthly',
+      rentCents: 200000,
+      billingDay: 1,
+      startDate: '2021-01-01',
+      endDate: '2026-01-01',
+      ledgerStartDate: '2021-01-01',
+      moveOutDate: null,
+      moveOutBillingPolicy: 'bill_full_term',
+      calendar: 'gregorian',
+    };
+    const terms: LeaseBillingTerms = { ...lease, frequency: lease.rentFrequency };
+    expect(buildSchedule(terms, '2026-01-01').length).toBeGreaterThan(50);
 
-    const through = defaultPreviewThrough(startDate, endDate, 'UTC', new Date('2026-01-01T00:00:00.000Z'));
+    const result = previewFirstPeriod(lease);
 
-    // 2020-01-01 + 3653 days ("ten years", apps/api's own sanity constant) is
-    // exactly 2030-01-01 — three leap days (2020, 2024, 2028) land inside the span.
-    expect(compareIsoDate(through, '2030-01-01')).toBeLessThanOrEqual(0);
+    expect(result?.periodIndex).toBe(0);
   });
 
-  it('still clamps to endDate when the term ends before the sanity bound', () => {
-    const through = defaultPreviewThrough(
-      '2026-01-01',
-      '2026-06-10',
-      'UTC',
-      new Date('2026-01-15T00:00:00.000Z'),
-    );
+  it('is anchored on ledgerStartDate, not startDate, when the ledger starts later', () => {
+    const lease: PreviewLeaseInput = {
+      rentFrequency: 'monthly',
+      rentCents: 150000,
+      billingDay: 1,
+      startDate: '2026-01-01',
+      endDate: '2026-12-31',
+      ledgerStartDate: '2026-02-01',
+      moveOutDate: null,
+      moveOutBillingPolicy: 'bill_full_term',
+      calendar: 'gregorian',
+    };
 
-    expect(through).toBe('2026-06-10');
+    const result = previewFirstPeriod(lease);
+
+    expect(result?.periodStart).toBe('2026-02-01');
+    expect(result?.isProrated).toBe(false);
   });
 });

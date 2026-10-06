@@ -12,12 +12,9 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { formatCivilDate } from '@/lib/format-civil-date';
-import { useLease, useLeaseSchedule } from './api';
-import { defaultPreviewThrough } from './schedule-preview';
+import { useLease } from './api';
 import { leaseStatusVariant } from './lease-ui';
 import { moveOutBillingCopy } from './frequency-copy';
-import { LeaseScheduleTable } from './LeaseScheduleTable';
-import { LeaseScheduleSummary } from './LeaseScheduleSummary';
 import { LeaseRosterPanel } from './LeaseRosterPanel';
 import { LeaseChainTimeline } from './LeaseChainTimeline';
 import { ActivateLeaseDialog } from './ActivateLeaseDialog';
@@ -112,22 +109,10 @@ export function LeaseDetailPage() {
           <Tabs defaultValue="roster" className="mt-6">
             <TabsList>
               <TabsTrigger value="roster">Roster</TabsTrigger>
-              <TabsTrigger value="schedule">Schedule</TabsTrigger>
               <TabsTrigger value="chain">Chain</TabsTrigger>
             </TabsList>
             <TabsContent value="roster">
               <LeaseRosterPanel lease={lease} />
-            </TabsContent>
-            <TabsContent value="schedule">
-              <LeaseScheduleTab
-                leaseId={lease.id}
-                startDate={lease.startDate}
-                endDate={lease.endDate}
-                currency={lease.currency}
-                calendar={lease.calendar}
-                rentFrequency={lease.rentFrequency}
-                propertyTimezone={lease.propertyTimezone}
-              />
             </TabsContent>
             <TabsContent value="chain">
               <LeaseChainTimeline lease={lease} />
@@ -193,55 +178,6 @@ function LeaseTermsSummary({ lease }: { lease: NonNullable<ReturnType<typeof use
           fields lock once it's active.
         </p>
       )}
-    </div>
-  );
-}
-
-function LeaseScheduleTab({
-  leaseId,
-  startDate,
-  endDate,
-  currency,
-  calendar,
-  rentFrequency,
-  propertyTimezone,
-}: {
-  leaseId: string;
-  startDate: string;
-  endDate: string | null;
-  currency: Parameters<typeof LeaseScheduleTable>[0]['currency'];
-  calendar: Parameters<typeof LeaseScheduleTable>[0]['calendar'];
-  rentFrequency: Parameters<typeof LeaseScheduleSummary>[0]['rentFrequency'];
-  propertyTimezone: string;
-}) {
-  // Computed server-side via the SAME `buildSchedule` the create wizard's preview
-  // calls — `GET /leases/:id/schedule` is pure computation, nothing written.
-  const through = defaultPreviewThrough(startDate, endDate, propertyTimezone);
-  const { data, isPending, isError, error, refetch } = useLeaseSchedule(leaseId, through);
-
-  if (isPending) return <Skeleton className="mt-4 h-40 w-full" />;
-  if (isError) {
-    return (
-      <div role="alert" aria-live="polite" className="mt-4 rounded-md border border-destructive/30 bg-destructive/5 p-4">
-        <p className="text-sm font-medium">Couldn't load the schedule</p>
-        <p className="mt-1 text-sm text-muted-foreground">{error.message}</p>
-        <Button variant="outline" size="sm" className="mt-2" onClick={() => void refetch()}>
-          Try again
-        </Button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="mt-4">
-      <LeaseScheduleSummary
-        periods={data.periods}
-        currency={currency}
-        calendar={calendar}
-        rentFrequency={rentFrequency}
-        propertyTimezone={propertyTimezone}
-        emptyMessage="No charges fall before this lease's end date and the preview window."
-      />
     </div>
   );
 }

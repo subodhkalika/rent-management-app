@@ -8,9 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { formatCivilDate } from '@/lib/format-civil-date';
 import { leaseStatusVariant } from '@/features/leases/lease-ui';
 import { moveOutBillingCopy } from '@/features/leases/frequency-copy';
-import { LeaseScheduleSummary } from '@/features/leases/LeaseScheduleSummary';
-import { defaultPreviewThrough } from '@/features/leases/schedule-preview';
-import { usePortalLease, usePortalLeaseSchedule } from './api';
+import { usePortalLease } from './api';
 
 export function PortalLeaseDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -41,9 +39,6 @@ export function PortalLeaseDetailPage() {
 }
 
 function LeaseContent({ lease }: { lease: NonNullable<ReturnType<typeof usePortalLease>['data']> }) {
-  const through = defaultPreviewThrough(lease.startDate, lease.endDate, lease.propertyTimezone);
-  const scheduleQuery = usePortalLeaseSchedule(lease.id, through);
-
   return (
     <>
       {lease.yourRole === 'former' && (
@@ -98,30 +93,6 @@ function LeaseContent({ lease }: { lease: NonNullable<ReturnType<typeof usePorta
           {moveOutBillingCopy(lease.moveOutBillingPolicy, lease.endDate, lease.calendar)}
         </p>
       </div>
-
-      <section className="mt-6">
-        <h2 className="text-sm font-medium">Schedule</h2>
-        <div className="mt-2">
-          {scheduleQuery.isPending ? (
-            <Skeleton className="h-40 w-full" />
-          ) : scheduleQuery.isError ? (
-            <div role="alert" aria-live="polite" className="rounded-md border border-destructive/30 bg-destructive/5 p-4">
-              <p className="text-sm">{scheduleQuery.error.message}</p>
-              <Button variant="outline" size="sm" className="mt-2" onClick={() => void scheduleQuery.refetch()}>
-                Try again
-              </Button>
-            </div>
-          ) : (
-            <LeaseScheduleSummary
-              periods={scheduleQuery.data.periods}
-              currency={lease.currency}
-              calendar={lease.calendar}
-              rentFrequency={lease.rentFrequency}
-              propertyTimezone={lease.propertyTimezone}
-            />
-          )}
-        </div>
-      </section>
     </>
   );
 }
