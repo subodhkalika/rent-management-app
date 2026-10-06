@@ -1,16 +1,19 @@
-# Plan — Rent escalation clauses
+# Plan — Rent escalation: stored rent steps
 
-> Written by `architect`. A **plan**, not a contract. The orchestrator turns §3 into real
-> contract files, freezes them, then dispatches the §4 backend and frontend tasks in
+> Written by `architect`. A **plan**, not a contract. The orchestrator turns §5 into real
+> contract files, freezes them, then dispatches the §7 backend and frontend tasks in
 > parallel.
 >
 > Builds on `docs/PLAN-PHASE2.md` (including Amendment A) and `docs/DATES.md`. Where this
-> file and PLAN-PHASE2 disagree, this one wins for anything touching the per-period rent;
-> everything else in PLAN-PHASE2 stands unchanged.
+> file and PLAN-PHASE2 disagree, this one wins for anything touching the per-period rent.
+>
+> **REVISION 2 — 2026-10-06.** Revision 1 modelled the clause as a *rule*: a pure function
+> of `(base, rateBps, cycle)` evaluated at read time. The user corrected it. Sections
+> changed by R2 are marked **[R2]**; everything unmarked carried over intact.
 
 ---
 
-## 0. The requirement, and what it is not
+## 0. The requirement, and the correction that reshaped it
 
 > *"the aggrement consists of 10% rent increase every year or every two year… this needs
 > to be implemented in the same lease. its the same tenanat, its the same lease but its
@@ -18,14 +21,41 @@
 
 **This is ONE lease.** A five-year agreement with a 10%-per-year clause is a single signed
 document with a single tenant. Modelling it as a renewal chain would fabricate four
-tenancies that never happened and make `leaseDetail.chain` lie about the timeline. The
-clause belongs on the lease.
+tenancies that never happened and make `leaseDetail.chain` lie. The clause belongs on the
+lease.
 
-**The consequence for the engine:** `lease.rentCents` stops being a constant for the term
-and becomes a function of which period you are in. `buildSchedule` must apply it.
-`packages/contract/src/billing.ts` is the single definition the browser preview and
-Phase 3's charge generator both use, so this is the most load-bearing change since the
-calendar seam.
+### 0.1 **[R2]** The clause is a PROPOSAL, not a rule
+
+> *"rather than rounding, it should be modifiable by the owner, because lets say they had
+> decided 10% previously but they had good relations and he is only doing 5% increase or
+> say the increase is 536.55, he is only going to increase it to 530. … if the owner wants
+> to override the rent value, they can always modify the rent value and it stays what they
+> fix it to be."*
+
+A pure function of `(base, rate, cycle)` cannot express any of that. **What replaces it is
+a stored list of rent steps — `(effectiveFrom, rentCents)` — where the clause is merely the
+generator that drafts them. The stored steps are the truth; the formula is scaffolding that
+produced a first version.**
+
+This is better than R1 for four reasons beyond the stated requirement:
+
+1. **It is honest.** A landlord signing a five-year lease sees all five numbers and
+   corrects any of them *before* saving, rather than trusting a formula to be right about
+   year four.
+2. **Rounding stops being a rule we impose.** The generator proposes a sensible figure; the
+   landlord fixes it if they disagree. R1's open question about whole rupees versus paisa
+   **dissolves** — see §9.3.
+3. **It subsumes the explicit-amounts case** — commercial agreements that write each year's
+   rent into the contract. Same model, no clause at all, just steps.
+4. **`rentForPeriodStart` becomes a lookup, not arithmetic.** No compounding at read time,
+   no rounding at read time, no calendar call at read time. Simpler and auditable.
+
+### 0.2 What R2 keeps from R1, unchanged
+
+Integer basis points at the clause level. The anniversary anchored on `lease.start_date` in
+the property's own calendar via `Calendar.addYears`. A period taking the rent in force at
+its start, never split. The audit trail. Shipping before Phase 3. The byte-identical
+guarantee for a lease with no steps beyond its base.
 
 ---
 
@@ -33,24 +63,26 @@ calendar seam.
 
 | # | Decision | One-line reason |
 |---|---|---|
-| 1 | The clause is **four columns on `lease`**, not a chain, not a child table. | One signed agreement is one row; a child table would invite per-period overrides, which is a different feature. |
-| 2 | Rate is **integer basis points** (`10% = 1000`), never a float percentage. | Same discipline as integer cents: `7.35 * 100 === 734.9999999999999` in IEEE754, and a rate that feeds a money calculation cannot be allowed to carry that. |
-| 3 | The escalation interval is **in years**, independent of `rent_frequency`. | A monthly-billed lease escalating annually is the dominant real case; tying the interval to the billing cadence would make it unexpressible. |
-| 4 | **Compound by default**, with `simple` expressible on the lease. | "10% every year" in a signed agreement is almost always applied to last year's rent; `simple` exists because some agreements say "of the original rent" and both must be representable. |
-| 5 | An escalated rent **rounds to the nearest whole major unit** (100 minor units), half-up, and the next cycle compounds from the **rounded** value. | A quoted rent repeats on twelve receipts; ₹5,866.30 is noise no landlord writes down, and compounding from the rounded value keeps every step's input an exact integer that the tenant can reproduce. |
-| 6 | **The base rent is never rounded.** `rentForPeriodStart` returns `terms.rentCents` *exactly* for cycle 0. | Rounding cycle 0 would silently re-price the lease's own stated rent. |
-| 7 | Anniversaries anchor on **`lease.start_date`** and are computed as `calendar.addYears(startDate, k * intervalYears)` — always from the original start, never iteratively. | Identical rule to the yearly cadence's period anchor (PLAN-PHASE2 §1.2), so there is no cumulative drift and no second convention to learn. |
-| 8 | The anniversary uses **the lease's own calendar** (`terms.calendar`), via `Calendar.addYears`. | A Bikram Sambat property escalates on a BS anniversary; `addYears` is already the calendar-generic anchor function, so this costs zero new date arithmetic. |
-| 9 | **A billing period takes the rent in force on its `periodStart`.** No period is ever split. | One period = one charge = one `generationKey` = one amount; splitting breaks I3 and doubles every anniversary month's invoice count. |
-| 10 | A monthly anniversary falling mid-month therefore **takes effect at the next period start** — the straddling month bills at the OLD rent. | Of the two whole-period options, the one that errs in the tenant's favour for at most one period per cycle is the defensible one. |
-| 11 | **`PlannedCharge` gains no field.** | The brief's hard requirement is byte-identical output for a no-clause lease; any new field breaks that for every lease. The one thing the UI loses is recovered by calling `rentForPeriodStart`. |
-| 12 | The clause is **frozen once the lease has been active**, with a dedicated `POST /correct-escalation` route for a typo. | It is a term of the signed agreement exactly as `rentCents` is — but `/renew` is the wrong escape hatch here, because the user explicitly rejected renewal as the model. |
-| 13 | `rateBps` is capped at **5000** (50% per step). | The cheapest place to catch the 100%-instead-of-10% typo is the input boundary, before it ever reaches a charge. |
-| 14 | **Ship this before Phase 3.** | Changing the rent-per-period rule after the generator exists turns a pure-function change into a data migration. |
+| 1 | **[R2]** Steps live in a child table `lease_rent_step`. The clause stays as four columns on `lease`. | Steps are the data the engine reads; the clause is the thing that drafted them, and the two have different lifetimes. |
+| 2 | **[R2]** `lease.rent_cents` stays the base. **Steps are increases only** — `effective_from > start_date`, enforced. | Overrides the coordinator's lean, for a concrete reason: see §2.2. A mirrored base step would be a latent torn write on a driver with no interactive transactions. |
+| 3 | **[R2]** `effective_from` is stored **already snapped to a billing-period start**, and validated as one. | The R1 straddle question is resolved at *generation* time, visibly, in stored data — never re-litigated at read time. |
+| 4 | **[R2]** Steps are generated **at create**, by the contract's generator, run first in the browser. | The form must show the full editable ladder before the first save, and a draft's schedule preview must not be a lie. |
+| 5 | **[R2]** Overriding a step recomputes **later `clause` steps**, and **never** touches a later `manual` step. The diff is shown before commit. | The override *is* the rent, so the clause should carry forward from it — but a figure a landlord set by hand is a decision, not a draft. |
+| 6 | **[R2]** `rentForPeriodStart` is a **pure lookup** over sorted steps: no arithmetic, no calendar call. | The fixtures-unchanged guarantee becomes an early return on line one with literally zero maths behind it. |
+| 7 | **[R2]** `LeaseBillingTerms` gains `rentSteps` and **never carries the clause at all.** | The engine does not need to know a clause exists; removing it from the terms object makes that structural. |
+| 8 | Rate in **integer basis points** (10% = `1000`), never a float. | `7.35 * 100 === 734.9999999999999`; a rate feeding money cannot carry that. |
+| 9 | Interval in **years**, independent of `rent_frequency`. | Monthly-billed + annually-escalating is the dominant real case. |
+| 10 | **Compound by default**, `simple` recorded on the lease. | "10% every year" is normally applied to last year's rent; both must be expressible. |
+| 11 | **[R2]** The generator *proposes* a figure rounded to the whole major unit, half-up. It is a **proposal**, not a rule. | A draft of ₹5,866 is a better starting point than ₹5,866.30, and the landlord types over it if they disagree. |
+| 12 | A period takes the rent in force at its `periodStart`. **No period is ever split.** | One period = one charge = one `generationKey`; splitting breaks I3. |
+| 13 | **[R2]** `PlannedCharge` gains no field. | Byte-identical output for a lease with no steps is the hard requirement; any new field breaks it for every lease. |
+| 14 | **[R2]** A **future** step edits freely on an active lease. A step already in effect needs `/correct` with a reason, audited. | "Has it taken effect" is the line money crosses; it is one date comparison. |
+| 15 | **[R2]** The **clause** is no longer audited by a table — it is documentation and moves no money on its own. Two tracking columns on `lease` instead. | Audit what moves money. This is a net simplification R1 could not make. |
+| 16 | **Ship before Phase 3.** | Stored per-period rents are exactly what you want in place *before* a generator starts writing charges against them. |
 
 ---
 
-## 2. Data model delta
+## 2. Data model delta  **[R2 — substantially rewritten]**
 
 Conventions unchanged: `casing: 'snake_case'`, UUIDv7 PKs, money as integer minor units,
 `date` for civil dates, `timestamptz` for instants, `org_id text not null references
@@ -59,33 +91,36 @@ organization(id) on delete cascade` on every org-owned table.
 ### 2.1 New enums
 
 ```ts
-export const rentEscalationModeEnum = pgEnum('rent_escalation_mode', ['none', 'percent']);
-export const rentEscalationCompoundingEnum = pgEnum('rent_escalation_compounding', ['compound', 'simple']);
+export const rentEscalationModeEnum        = pgEnum('rent_escalation_mode',        ['none','percent']);
+export const rentEscalationCompoundingEnum = pgEnum('rent_escalation_compounding', ['compound','simple']);
+export const rentStepSourceEnum            = pgEnum('rent_step_source',            ['clause','manual']);
 ```
 
-`'none'` exists so the column can be `NOT NULL` with a default and the migration is a
+`'none'` exists so `escalation_mode` is `NOT NULL` with a default and the migration is a
 semantic no-op. **The contract does not use `'none'` on a lease response** — it uses
-`escalation: null`. The mapper translates. One nullable object beats four nullable fields
-and four "is it set" checks at every call site.
+`escalation: null`. The mapper translates.
 
-`'percent'` is the only clause type today. The enum absorbs `'fixed_amount'` (₹2,000 more
-each year, a real clause) without a schema-and-contract break. **We are not adding it.**
+`rent_step_source` is the field decision 5 turns on: `'clause'` means "the generator drafted
+this and nobody has touched it", `'manual'` means "a human set this number". A step becomes
+`'manual'` the moment a human edits it, and stays `'manual'` until an explicit *Reset to the
+agreed figure* action hands it back.
 
-### 2.2 `lease` — four new columns
+### 2.2 `lease` — the clause stays, as documentation
 
 | Column | Type | Notes |
 |---|---|---|
 | `escalation_mode` | `rent_escalation_mode` NOT NULL default `'none'` | |
 | `escalation_rate_bps` | `integer` NULL | Basis points. `1000` = 10%. NULL iff mode is `'none'`. |
-| `escalation_interval_years` | `smallint` NULL | 1 or 2 in practice; 1..10 allowed. NULL iff mode is `'none'`. |
-| `escalation_compounding` | `rent_escalation_compounding` NULL | NULL iff mode is `'none'`. |
+| `escalation_interval_years` | `smallint` NULL | 1 or 2 in practice; 1..10 allowed. |
+| `escalation_compounding` | `rent_escalation_compounding` NULL | |
+| **`escalation_updated_at`** | `timestamptz` NULL | **[R2]** decision 15 |
+| **`escalation_updated_by_user_id`** | `text` NULL FK → user | **[R2]** |
 
 ```sql
 lease_escalation_ck CHECK (
   (escalation_mode = 'none'
-     AND escalation_rate_bps       IS NULL
-     AND escalation_interval_years IS NULL
-     AND escalation_compounding    IS NULL)
+     AND escalation_rate_bps IS NULL AND escalation_interval_years IS NULL
+     AND escalation_compounding IS NULL)
   OR
   (escalation_mode = 'percent'
      AND escalation_rate_bps       BETWEEN 1 AND 5000
@@ -94,186 +129,157 @@ lease_escalation_ck CHECK (
 )
 ```
 
-One all-or-nothing CHECK, so a **half-written clause is unrepresentable**. A rate with no
-interval is the shape that would silently escalate on the wrong clock.
+One all-or-nothing CHECK, so a half-written clause is unrepresentable. Four typed columns,
+not JSONB: the range CHECK is expressible on columns, and a money-adjacent number deserves
+a typed one. No index — you never query leases *by* escalation rate.
 
-**Four typed columns, not one JSONB.** The range CHECK above is expressible on columns and
-not on JSONB without a function, and a money-adjacent number deserves a typed column.
+**`lease.rent_cents` stays, and remains the base rent at `start_date`.**
 
-**No index.** You never query leases *by* escalation rate, and a landlord has tens of
-units (PLAN-PHASE2 §3.2's own reasoning).
+> **Why the base is NOT a step — overriding the coordinator's lean.** The coordinator leaned
+> towards every rent being a step "so there is one answer to *what is the rent on this
+> date*". There is still exactly one answer — `rentForPeriodStart` — and that answer should
+> be a **function**, not a table shape. Three concrete reasons to keep the base on `lease`:
+>
+> 1. **No interactive transactions.** `db/index.ts` uses the Neon HTTP driver (PLAN-PHASE2
+>    §5.4). A base step duplicated into `lease.rent_cents` is a two-statement write with a
+>    torn state in which the two disagree about the rent — the single worst torn state this
+>    schema could have. Not duplicating it makes the drift unrepresentable.
+> 2. **`rent_cents` is already load-bearing** in `createLeaseBody`, `leaseSummary`,
+>    `portalLease`, `leaseChainEntry`, the list page and `lease_money_ck`. Demoting it to a
+>    mirror buys nothing and touches everything.
+> 3. **The branch it costs is the branch we want.** `if (steps.length === 0) return
+>    rentCents` on line one *is* the byte-identical guarantee (§3.3). Folding the base into
+>    the table would remove the very early return the fixture promise rests on.
+>
+> **The landlord-facing experience is unchanged:** the form renders the base as row 0 of one
+> editable ladder, bound to `rentCents`. *The ladder is a presentation; the base is a
+> column; the increases are rows.*
 
-### 2.3 `lease_escalation_correction` — new table, append-only
+### 2.3 `lease_rent_step` — NEW, the table the engine reads
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | `uuid` PK | |
 | `org_id` | `text` NOT NULL FK → organization, cascade | |
-| `lease_id` | `uuid` NOT NULL FK → lease, **restrict** | |
-| `old_mode` | `rent_escalation_mode` NOT NULL | |
-| `old_rate_bps`, `old_interval_years` | `integer` / `smallint` NULL | |
-| `old_compounding` | `rent_escalation_compounding` NULL | |
-| `new_mode` | `rent_escalation_mode` NOT NULL | |
-| `new_rate_bps`, `new_interval_years` | `integer` / `smallint` NULL | |
-| `new_compounding` | `rent_escalation_compounding` NULL | |
-| `reason` | `text` NOT NULL | 10..500 chars, enforced in the contract |
-| `corrected_by_user_id` | `text` NOT NULL FK → user | |
-| `created_at` | `timestamptz` NOT NULL | |
+| `lease_id` | `uuid` NOT NULL FK → lease, **cascade** | Only ever runs on the hard-delete of a `draft`/`cancelled` lease, same as `lease_tenant`. |
+| `effective_from` | `date` NOT NULL | **A billing-period start, strictly after `lease.start_date`.** |
+| `rent_cents` | `bigint` NOT NULL | The rent from this date until the next step. |
+| `source` | `rent_step_source` NOT NULL | `clause` = generator-drafted and untouched; `manual` = a human set it. |
+| `clause_expected_cents` | `bigint` NULL | What the clause *would* have said. Display only — drives the "agreed ₹5,866, you set ₹5,300" line. NULL when there was no clause. |
+| `note` | `text` NULL | Landlord-private, e.g. *"good tenant — 5% only"*. **Absent from every portal shape.** |
+| `created_at`, `updated_at` | `timestamptz` NOT NULL | |
 
 ```sql
-lease_escalation_correction_lease_idx (org_id, lease_id)
+lease_rent_step_money_ck CHECK (rent_cents >= 0)
+
+lease_rent_step_uq   UNIQUE (lease_id, effective_from)
+lease_rent_step_idx  (org_id, lease_id, effective_from)
 ```
 
-- **Append-only.** No `updated_at`, no `deleted_at`, no status. Changing the rent on a
-  signed agreement without a record of who did it and why is the thing you regret.
-- **`on delete restrict` on `lease_id`.** Unreachable in practice: the correction route
-  refuses a `draft` (PATCH handles those) and a `draft`/`cancelled` lease is the only one
-  that can be hard-deleted. Restrict is the correct posture for a financial record anyway.
-- This is deliberately a small table, not a general audit log. Phase 3 will want a sibling
-  for charge corrections; it should be a sibling, not a generalisation of this one.
+- **`lease_rent_step_uq` makes "two rents on the same day" unrepresentable.** No `org_id`
+  in it, for exactly the reason PLAN-PHASE2 §3.3 gives for `lease_unit_active_uq`:
+  `lease_id` is already the PK of an org-scoped table, so adding `org_id` widens the key
+  without changing uniqueness. Flag it in the schema comment so a reviewer does not read it
+  as a tenancy miss.
+- **`effective_from > lease.start_date` cannot be a CHECK** (it is cross-row). Enforced in
+  `validateBillingTerms`, in the repo write path, and by a route test. Say so in the schema
+  comment, because an unenforceable-looking rule with no comment invites someone to drop it.
+- **`effective_from` must be a billing-period start** — same enforcement points. Monthly
+  periods are calendar months, so that means the 1st; yearly periods are lease
+  anniversaries. Both are exactly what a landlord would pick, and the date picker offers
+  only those.
+- **No soft delete.** A future step that is removed never took effect and is simply gone. A
+  step that *has* taken effect cannot be removed at all — only corrected (§4.3).
 
-### 2.4 Migration
+### 2.4 `lease_rent_step_correction` — NEW, append-only, the money audit
+
+| Column | Type |
+|---|---|
+| `id` | `uuid` PK |
+| `org_id` | `text` NOT NULL FK → organization, cascade |
+| `lease_id` | `uuid` NOT NULL FK → lease, **restrict** |
+| `step_id` | `uuid` NOT NULL FK → lease_rent_step, **restrict** |
+| `effective_from` | `date` NOT NULL (copied, so the row reads standalone) |
+| `old_rent_cents`, `new_rent_cents` | `bigint` NOT NULL |
+| `reason` | `text` NOT NULL (10..500, enforced in the contract) |
+| `corrected_by_user_id` | `text` NOT NULL FK → user |
+| `created_at` | `timestamptz` NOT NULL |
+
+```sql
+lease_rent_step_correction_idx (org_id, lease_id, created_at)
+```
+
+Append-only: no `updated_at`, no `deleted_at`, no status. **Only ever written when a step
+that had ALREADY TAKEN EFFECT is changed** — that is the money event. Editing a future step
+writes nothing here, because nothing has been billed and nothing is owed.
+
+> **[R2] R1's `lease_escalation_correction` table is CUT.** In R1 the clause drove billing,
+> so changing it moved money and needed an audit table and a dedicated route. In R2 the
+> clause moves no money by itself — re-drafting the ladder is a separate, explicit action
+> whose *step* changes are what get audited. The principle is **audit what moves money**,
+> and it leaves R2 with one audit table where R1 had one plus a route pair.
+
+### 2.5 Migration
 
 **Entirely additive. No backfill, no multi-step migration, no data at risk, and
-semantically a no-op** — every existing lease gets `escalation_mode = 'none'` and produces
-byte-identical schedules. Two new enums, four new columns on `lease`, one new table, one
-new CHECK, one new index.
+semantically a no-op** — every existing lease gets `escalation_mode = 'none'` and zero
+steps, and produces byte-identical schedules. Three enums, six columns on `lease`, two new
+tables, one CHECK, three indexes.
 
-Same two things to verify in the generated SQL that PLAN-PHASE2 §3.5 already requires:
-
-1. enum casts in any predicate Drizzle emits untyped;
-2. that the installed `drizzle-orm` emits `check()` — if not, append the `ALTER TABLE …
-   ADD CONSTRAINT` to the *generated, uncommitted* migration.
+Same two verification steps PLAN-PHASE2 §3.5 already requires: enum casts in any predicate
+Drizzle emits untyped, and `check()` support in the installed `drizzle-orm` (otherwise
+append `ALTER TABLE … ADD CONSTRAINT` to the *generated, uncommitted* migration).
 
 ---
 
-## 3. The engine — `packages/contract/src/billing.ts`
+## 3. The engine — `packages/contract/src/billing.ts`  **[R2]**
 
-### 3.1 How the clause reaches `buildSchedule`
-
-`LeaseBillingTerms` gains **one** field:
+### 3.1 What `LeaseBillingTerms` gains, and what it deliberately does not
 
 ```ts
+export const rentStep = z.object({
+  /** A billing-period start, strictly after the lease's startDate. Already snapped —
+   *  see §3.5. The straddle is resolved at generation, never at read. */
+  effectiveFrom: isoDate,
+  rentCents: money,
+});
+export type RentStep = z.infer<typeof rentStep>;
+
 export const leaseBillingTerms = z.object({
   /* …nine existing fields, unchanged… */
-  /** NULL = a constant rent for the whole term. The no-clause fast path. */
-  escalation: rentEscalation.nullable().default(null),
+  /** Ascending by effectiveFrom, no duplicates, all > startDate, all period starts.
+   *  EMPTY = a constant rent for the whole term. */
+  rentSteps: z.array(rentStep).default([]),
 });
 ```
 
-Nested nullable object, not four nullable fields: one thing to check, one early return,
-and the DB's all-or-nothing CHECK has a direct analogue in the type.
+**The clause is not in `LeaseBillingTerms` and never will be.** The engine does not need to
+know a clause exists. Making that structural — rather than a convention — is decision 7, and
+it is what guarantees nobody reintroduces compounding at read time.
 
-### 3.2 New exported surface
+### 3.2 `rentForPeriodStart` — a lookup, not arithmetic
 
 ```ts
-/* ---------- the clause ---------- */
-export const rentEscalationMode: z.ZodEnum<['none', 'percent']>;
-export const rentEscalationCompounding: z.ZodEnum<['compound', 'simple']>;
-export const rentEscalationModeLabels: Record<RentEscalationMode, string>;
-export const rentEscalationCompoundingLabels: Record<RentEscalationCompounding, string>;
-//   compound -> 'Compounds on the previous rent'
-//   simple   -> 'Always on the original rent'
-
-export const BPS_SCALE = 10_000;                   // 100% in basis points
-export const MAX_ESCALATION_RATE_BPS = 5_000;      // 50% per step — the typo ceiling
-export const MAX_ESCALATION_INTERVAL_YEARS = 10;
-export const MAX_ESCALATION_CYCLES = 100;          // loop bound, unreachable in practice
-export const ESCALATION_ROUNDING_UNIT = 100;       // one major unit
-
-export const rentEscalation = z.object({
-  mode: z.literal('percent'),
-  rateBps: z.number().int().min(1).max(MAX_ESCALATION_RATE_BPS),
-  intervalYears: z.number().int().min(1).max(MAX_ESCALATION_INTERVAL_YEARS),
-  compounding: rentEscalationCompounding,
-});
-export type RentEscalation = z.infer<typeof rentEscalation>;
-
-/* ---------- the three functions ---------- */
-
-/** How many escalations have taken effect on or before `on`. 0 before the first
- *  anniversary. Returns 0 immediately when `terms.escalation === null`. */
-export function escalationCyclesElapsed(terms: LeaseBillingTerms, on: IsoDate): number;
-
-/** THE function. The rent in force for a period beginning on `periodStart`.
- *  Returns `terms.rentCents` by EARLY RETURN when `terms.escalation === null`. */
-export function rentForPeriodStart(terms: LeaseBillingTerms, periodStart: IsoDate): number;
-
-/** The rent ladder: `[r0, r1, … rN]`. For the lease form's live read-back and the
- *  lease detail's "what this costs over the term". `[rentCents]` when no clause. */
-export function escalationStepRents(terms: LeaseBillingTerms, cycles: number): number[];
-
-/** The next increase strictly after `from`, snapped to a period start, bounded by
- *  `effectiveBillingEnd`. `null` when no clause, or none remains in the term. */
-export function nextEscalationOnOrAfter(
-  terms: LeaseBillingTerms,
-  from: IsoDate,
-): { effectiveFrom: IsoDate; rentCents: number } | null;
+export function rentForPeriodStart(terms: LeaseBillingTerms, periodStart: IsoDate): number {
+  if (terms.rentSteps.length === 0) return terms.rentCents;   // EARLY RETURN, line 1
+  let rent = terms.rentCents;
+  for (const s of terms.rentSteps) {        // sorted ascending (I20)
+    if (compareIsoDate(s.effectiveFrom, periodStart) > 0) break;
+    rent = s.rentCents;
+  }
+  return rent;
+}
 ```
 
-### 3.3 The arithmetic, in full
+No multiplication. No rounding. No calendar call. One `compareIsoDate` per step, over a
+list whose realistic length is four. **This is strictly simpler than R1's compounding
+fold**, and it is the coordinator's point: more auditable, because the number came from a
+row somebody can look at rather than from a recurrence somebody has to re-derive.
 
-```
-escalateOnce(cents, bps):
-  raw = (cents * (BPS_SCALE + bps)) / BPS_SCALE
-  return Math.round(raw / ESCALATION_ROUNDING_UNIT) * ESCALATION_ROUNDING_UNIT
+**Beyond the last step, the rent is flat.** `rentForPeriodStart` never extrapolates. That is
+deliberate and it is a real behaviour difference from R1 — see §3.6.
 
-rentAtCycle(terms, k):
-  if terms.escalation === null  -> return terms.rentCents
-  if k === 0                    -> return terms.rentCents      # EXACT. Never rounded.
-  if compounding === 'compound':
-      r = terms.rentCents
-      repeat k times: r = escalateOnce(r, rateBps)
-      return r
-  # simple
-  return Math.round(terms.rentCents * (BPS_SCALE + k * rateBps) / BPS_SCALE
-                    / ESCALATION_ROUNDING_UNIT) * ESCALATION_ROUNDING_UNIT
-
-escalationCyclesElapsed(terms, on):
-  if terms.escalation === null -> return 0
-  calendar = calendarForSystem(terms.calendar)
-  k = 0
-  while k < MAX_ESCALATION_CYCLES:
-      try:   next = calendar.addYears(terms.startDate, (k + 1) * intervalYears)
-      catch RangeError: break      # see 3.6 — not representable means not reachable
-      if compareIsoDate(next, on) > 0: break
-      k += 1
-  return k
-
-rentForPeriodStart(terms, periodStart):
-  if terms.escalation === null -> return terms.rentCents        # EARLY RETURN, line 1
-  return rentAtCycle(terms, escalationCyclesElapsed(terms, periodStart))
-```
-
-**Worked: 10% a year, compound, from ₹5,333.00** (`533300` cents) — fixture `E-R1`:
-
-| cycle | exact | ÷100 | rounded | rent |
-|---|---|---|---|---|
-| 0 | — | — | — | `533300` (₹5,333.00, untouched) |
-| 1 | `586630` | `5866.30` | `5866` | `586600` (₹5,866) |
-| 2 | `645260` | `6452.60` | `6453` | `645300` (₹6,453) |
-| 3 | `709830` | `7098.30` | `7098` | `709800` (₹7,098) |
-| 4 | `780780` | `7807.80` | `7808` | `780800` (₹7,808) |
-| 5 | `858880` | `8588.80` | `8589` | `858900` (₹8,589) |
-
-**The no-drift claim, precisely.** Every step takes an exact integer in and returns an
-exact integer out, so the ladder is reproducible byte-for-byte from
-`(rentCents, rateBps, intervalYears, compounding, k)` alone — it does not depend on which
-periods were walked, on `through`, or on evaluation order. That is the property Phase 3's
-regeneration needs (I18). The *deviation from the ideal real-number compound* after five
-steps is `858900 − 858885 = 15` cents, ₹0.15, and it is bounded, not accumulating, because
-each step re-rounds from an exact integer rather than from a running float.
-
-**Same base, `simple`** — fixture `E-R2`: `533300, 586600, 640000, 693300, 746600, 800000`.
-Cycle 5 is `799950 → 7999.5 → 8000` and therefore **pins half-up at the exact .5
-boundary**; banker's rounding would give `799900`.
-
-**Overflow.** Worst case `1e8 × 15000 = 1.5e12` at cycle 1, and after ten 50% compounds
-`5.8e9 × 15000 ≈ 8.6e13` — still two orders of magnitude inside `Number.MAX_SAFE_INTEGER`
-(`9.007e15`), so every intermediate is exactly representable and `Math.round` is the only
-place a fraction exists. Identical guarantee to `prorate`'s, stated for the same reason.
-
-### 3.4 The one line that changes in `buildSchedule`
+### 3.3 The one line that changes in `buildSchedule`
 
 ```diff
   const daysInPeriod = daysBetweenInclusive(p.start, p.end);
@@ -284,286 +290,443 @@ place a fraction exists. Identical guarantee to `prorate`'s, stated for the same
 +   daysOccupied === daysInPeriod ? periodRent : prorate(periodRent, daysOccupied, daysInPeriod);
 ```
 
-Nothing else in the function moves. `effectiveBillingEnd`, the period walk, the due-date
-clamp, the generation key, `isProrated` — all untouched. **Proration now applies to the
-escalated rent for that period**, which is the only coherent reading and which restates
-I7 (see §3.8).
+Identical diff to R1. `effectiveBillingEnd`, the period walk, the due-date clamp, the
+generation key and `isProrated` are all untouched. Proration applies to the rent in force
+for that period, which restates I7 (§3.7).
 
-No new call to `periodsOverlapping`, no new date function, no caching layer:
-600 periods × ≤10 cycles is 6,000 integer operations, which is nothing. Do the simple
-thing; a memoised ladder would be a second implementation of the same recurrence inside
-one file, which is exactly the shape this design exists to avoid.
+### 3.4 The generator — still in the contract, and this is why
 
-### 3.5 Preserving the 53 Gregorian fixtures — stated as a contract
+```ts
+export const rentEscalationMode: z.ZodEnum<['none','percent']>;
+export const rentEscalationCompounding: z.ZodEnum<['compound','simple']>;
+export const rentEscalationModeLabels, rentEscalationCompoundingLabels;
 
-The brief's hard requirement. Three mechanisms, in order of strength:
+export const BPS_SCALE = 10_000;
+export const MAX_ESCALATION_RATE_BPS = 5_000;       // 50% per step — the typo ceiling
+export const MAX_ESCALATION_INTERVAL_YEARS = 10;
+export const MAX_GENERATED_STEPS = 30;
+export const STEP_PROPOSAL_ROUNDING_UNIT = 100;     // one major unit — a PROPOSAL (§3.8)
 
-1. **`PlannedCharge` gains no field.** The acceptance criterion the orchestrator holds the
-   task to is mechanical: **`git diff` on `billing.fixtures.ts` and `billing.bs.fixtures.ts`
-   must touch only `terms:` objects — not one character inside any `expected:` array.**
-   This is why §1 decision 11 refuses the otherwise-obviously-useful
-   `rentCentsForPeriod` field. The cost is one line in the UI (§5.2); the benefit is that
-   the 53 Gregorian and 6 Bikram Sambat fixtures become a genuine regression net rather
-   than something that had to be re-baselined.
-2. **An early return on line one.** `rentForPeriodStart` returns `terms.rentCents` before
-   any arithmetic when `escalation === null`. Not "the loop runs and multiplies by 1" — an
-   early return, so a no-clause lease executes a code path escalation cannot reach.
-3. **`escalation: null` added explicitly to all 34 existing `terms` objects**
-   (18 schedule + 5 generation + 11 billingEnd in `billing.fixtures.ts`, plus the 6 in
-   `billing.bs.fixtures.ts`). Explicit, not `.optional()` on the TS output type: a
-   mechanical diff that the suite then *proves* is behaviour-free, rather than a field
-   quietly defaulting where nobody looks.
+export const rentEscalation = z.object({
+  mode: z.literal('percent'),
+  rateBps: z.number().int().min(1).max(MAX_ESCALATION_RATE_BPS),
+  intervalYears: z.number().int().min(1).max(MAX_ESCALATION_INTERVAL_YEARS),
+  compounding: rentEscalationCompounding,
+});
 
-Wire-level, `escalation` is `.nullable().default(null)`, so no existing API caller or
-stored row is required to send it.
+/** Drafts the ladder. Snaps each effectiveFrom to a period start. Bounded by
+ *  endDate and MAX_GENERATED_STEPS. The ONLY place the clause arithmetic lives. */
+export function generateRentSteps(input: {
+  clause: RentEscalation;
+  baseRentCents: number;
+  startDate: IsoDate;
+  endDate: IsoDate | null;
+  frequency: RentFrequency;
+  calendar: CalendarSystem;
+}): DraftRentStep[];          // RentStep + { source, clauseExpectedCents }
 
-### 3.6 The Bikram Sambat range, and the guarded catch
+/** Re-drafts the ladder after a step is overridden. Later `clause` steps recompute
+ *  from the new value; later `manual` steps are preserved verbatim (decision 5). */
+export function recomputeLadderFrom(input: {
+  clause: RentEscalation | null;
+  steps: readonly DraftRentStep[];
+  index: number;
+  newRentCents: number;
+}): DraftRentStep[];
 
-`escalationCyclesElapsed` probes `addYears(startDate, (k+1) * intervalYears)` to decide
-whether to stop. Near the end of the BS table (AD 2034-04-13, per `docs/DATES.md`) that
-probe can throw `BsDateOutOfRangeError` *before* the comparison that would have terminated
-the loop. The loop therefore catches `RangeError` and breaks.
+/** What the clause alone would have said at cycle k. Display only — the
+ *  "agreed ₹5,866, you set ₹5,300" line and `clause_expected_cents`. */
+export function clauseExpectedRent(clause: RentEscalation, baseRentCents: number, cycle: number): number;
+```
 
-This is sound, not a papered-over bug: **if the next anniversary is not representable, it
-is certainly past anything the schedule can reach**, because the route already clamps the
-window with `validateEndDateSchedulable` and `buildScheduleOrThrow`
-(`apps/api/src/lib/schedule.ts`). `BsDateOutOfRangeError extends RangeError`, so the catch
-must be narrow — `if (e instanceof RangeError) break; throw e` — and commented with this
-reason. `MAX_ESCALATION_CYCLES = 100` is the belt-and-braces bound so an implementation
-bug can never hang the browser.
+**The generator stays in `packages/contract` for the same reason `buildSchedule` does:** the
+ladder the landlord previews in the browser must be byte-identical to the ladder the API
+writes when the body omits `rentSteps`. Two implementations of the drafting arithmetic would
+reintroduce exactly the divergence this design exists to prevent — one level up from where
+R1 had it.
 
-**Escalation adds no new BS failure mode.** It calls exactly the `addYears` the yearly
-cadence already calls, through exactly the same `Calendar` resolved from `terms.calendar`.
+Arithmetic, unchanged from R1 and now confined to the generator:
 
-### 3.7 The straddle, explicitly — the disputed-invoice case
+```
+proposeOnce(cents, bps) = Math.round(
+  ((cents * (BPS_SCALE + bps)) / BPS_SCALE) / STEP_PROPOSAL_ROUNDING_UNIT
+) * STEP_PROPOSAL_ROUNDING_UNIT
 
-Two equivalent statements of the same rule. The first is the explanation; the second is
-the implementation.
+compound: fold proposeOnce from the previous step's rent
+simple:   proposeOnce-style rounding of baseRentCents * (BPS_SCALE + k*rateBps) / BPS_SCALE
+```
 
-- **Explanation:** an escalation snaps forward to the first billing period that *begins*
-  on or after its raw anniversary. By construction, no period ever straddles.
-- **Implementation:** the rent for period `p` is `rentAtCycle(terms, n)` where `n` is the
-  number of raw anniversaries falling on or before `p.start`.
+10%/yr compound from ₹5,333.00 drafts `586600, 645300, 709800, 780800` — the user's own
+figures, now as four editable rows rather than an invisible recurrence.
 
-| Cadence | Raw anniversary | Lands on a period start? | Effect |
+Overflow is unchanged and bounded: worst case after ten 50% steps is ~`8.6e13`, two orders
+inside `MAX_SAFE_INTEGER`, every intermediate exactly representable.
+
+### 3.5 **[R2]** The straddle is resolved at generation, in stored data
+
+R1 resolved the mid-month anniversary at read time, by counting anniversaries `<=
+periodStart`. R2 does it once, at generation, and **stores the snapped date**:
+
+```
+rawAnniversary_k = calendar.addYears(startDate, k * intervalYears)
+effectiveFrom_k  = the first period start on or after rawAnniversary_k
+```
+
+| Cadence | Raw anniversary | Snapped? | Stored `effective_from` |
 |---|---|---|---|
-| yearly, `intervalYears` any | `addYears(startDate, k·i)` | **Always** — the period anchor is the same `addYears` from the same `startDate` | No straddle possible. The anniversary *is* a period boundary. |
-| monthly, start on the 1st | e.g. `2027-04-01` | Yes | No straddle. |
-| monthly, start mid-month | e.g. start `2026-03-15` → `2027-03-15` | **No** | March 2027 bills at the **OLD** rent; April 2027 is the first month at the new one. |
+| yearly, any interval | `addYears(startDate, k·i)` | No change needed — the period anchor is the same `addYears` from the same `startDate`, so it already *is* a period start | the anniversary |
+| monthly, start on the 1st | `2027-04-01` | No change needed | `2027-04-01` |
+| monthly, start mid-month (`2026-03-15` → `2027-03-15`) | mid-period | **Yes** | **`2027-04-01`** |
 
-**Why old and not new, and not a split** (fixture `E2`):
+**This is a genuine improvement over R1.** A landlord reading the ladder sees *"Effective
+1 Apr 2027"* — not a raw 15 March anniversary that mysteriously starts applying in April.
+The rule is visible in the data instead of implicit in read-time arithmetic, and the
+disputed-invoice case can no longer be re-litigated by a future reader of `buildSchedule`,
+because `buildSchedule` has no opinion about it.
 
-- A split would emit two charges for one period, breaking `generationKey === periodStart`
-  (I3) and doubling the invoice count at every anniversary. It also forces Phase 3's
-  charge table to carry two rows with the same natural key. Rejected.
-- Taking the new rent for the whole straddling month charges the increase for up to 30
-  days before the agreement makes it due. Over-bills.
-- Taking the old rent under-bills the landlord by a fraction of one month's *increase*,
-  once per cycle — at 10% on ₹5,333 with a mid-month anchor, that is roughly ₹270 a year.
-  Visible, small, and in the direction a dispute is survivable.
+The reasoning for *which* way it snaps is unchanged from R1: a split would emit two charges
+for one period (breaking `generationKey === periodStart`, I3) and double the anniversary
+month's invoices; taking the new rent for the whole straddling month charges the increase up
+to 30 days early. Snapping forward under-bills by a fraction of one month's *increase*, once
+per cycle — roughly ₹270/year at 10% on ₹5,333. Visible, small, survivable. **And now the
+landlord can simply override the step if they disagree**, which is the whole point of R2.
 
-The yearly-cadence row is worth re-reading: because both the period anchor and the
-escalation anchor are `calendar.addYears(startDate, n)`, they coincide exactly, including
-on a leap-day start where both clamp to Feb 28 (fixture `E6`). **`clampDayToMonth` — reached
-via `Calendar.addYears` — is the right tool, and it is already in use; escalation writes no
-new date arithmetic whatsoever.** 29 February and 32 Jestha are handled by the identical
-code path that already handles them for periods, and `E6`/`E8` pin both.
+**Calendar.** `generateRentSteps` resolves `terms.calendar`, so a Bikram Sambat property
+escalates on a BS anniversary. `clampDayToMonth` — reached through `Calendar.addYears` — is
+the right tool and is already in use; 29 February and 32 Jestha go through the identical
+path that already handles them for periods. **Escalation writes no new date arithmetic at
+all, and R2 confines even that to the generator.** The BS table's AD-2034 ceiling is handled
+by a narrow `catch (e) { if (e instanceof RangeError) break; throw e }` around the
+anniversary probe inside `generateRentSteps`: if the next anniversary is not representable
+it is certainly past anything the schedule can reach, the window already being clamped by
+`validateEndDateSchedulable`. **`buildSchedule` itself can no longer throw a BS range error
+from escalation at all**, because it never computes an anniversary — another R2 win.
 
-### 3.8 Invariants — new, and one restated
+### 3.6 **[R2]** Bounded ladders, and "flat past the last step"
 
-| # | Invariant | Asserted by |
+A rolling lease (`endDate: null`) with a clause has no natural stopping point.
+`generateRentSteps` emits at most `MAX_GENERATED_STEPS = 30` steps — 30 years at a one-year
+interval, which no real lease reaches.
+
+**Beyond the last stored step, the rent is flat.** State it loudly, because it is exactly
+the kind of silence that bites: a lease still running past its generated ladder stops
+escalating rather than extrapolating. Mitigation, which is cheap and belongs in this phase:
+the lease detail shows **"Increases scheduled through <date>"**, and surfaces an *Extend the
+ladder* action when the lease is still active and the last step is less than a year out.
+The action is just "generate more steps and PUT them" — no new route.
+
+### 3.7 Invariants — new, restated, and one dropped
+
+| # | Invariant | Status |
 |---|---|---|
-| **I7′** | **RESTATED.** `daysOccupied === daysInPeriod ⟹ amountCents === rentForPeriodStart(terms, periodStart)`, exactly. Under `escalation: null` this reduces to the old I7 verbatim. | Property test over every schedule fixture. |
-| **I15** | **No-clause identity.** Every fixture with `escalation: null` produces its committed `expected` byte-for-byte. | The existing suite, plus a CI check that no `expected:` line changed in either fixture file. |
-| **I16** | **Rent is non-decreasing in `periodStart`** for any clause. Asserted on the rent, not on `amountCents` — a prorated final period legitimately falls. | Property test over every escalation fixture. |
-| **I17** | **Cycle-0 identity.** `rentForPeriodStart(terms, d) === terms.rentCents` exactly, with no rounding, for every `d` before the first anniversary — including a non-round base like `533350`. | `E-R4`. |
-| **I18** | **Order independence.** The ladder is a function of `(rentCents, rateBps, intervalYears, compounding, k)` only. Recomputing a schedule years later with a different `through` yields the same per-period rents. | Dedicated test; this is what makes Phase 3's regeneration safe. |
-| **I19** | `billing.ts` gained no new date function. `escalationCyclesElapsed` reaches the calendar only through `Calendar.addYears`. | Source-grep test, same spirit as the existing purity guard. |
-| I1, I8, I9, I13, I14 | **Unchanged and still hold.** Adding a clause changes the *terms object*, not monotonicity in `through` — the same argument Amendment A.3 makes for a policy flip. | Existing tests. |
+| **I7′** | `daysOccupied === daysInPeriod ⟹ amountCents === rentForPeriodStart(terms, periodStart)`. With `rentSteps: []` this is the old I7 verbatim. | Carried from R1 |
+| **I15** | **No-steps identity.** Every fixture with `rentSteps: []` produces its committed `expected` byte-for-byte. | **Strengthened** — the early return now has zero arithmetic behind it |
+| **I16** | ~~Rent is non-decreasing.~~ | **[R2] DROPPED.** A landlord may *reduce* rent — a downturn renegotiation, or a concession. Nothing asserts monotonicity, and `E12` pins a decrease so nobody reintroduces it. |
+| **I17** | Rent before the first step is `terms.rentCents` **exactly**. | Carried; now trivially true |
+| **I18** | **Order independence / regeneration safety.** | **[R2] Massively strengthened.** In R1 this was a property of a recurrence. In R2 the rent for a period is *stored data*. Phase 3 regenerating a schedule in 2031 reads the same rows it read in 2026. |
+| **I20** | **NEW.** `rentSteps` is strictly ascending by `effectiveFrom`, no duplicates, every entry `> startDate` and a period start. | `validateBillingTerms` + `lease_rent_step_uq` + a property test |
+| **I21** | **NEW.** `rentForPeriodStart` performs no arithmetic and makes no calendar call. | Source-grep test over the function body |
+| **I22** | **NEW.** `generateRentSteps` is deterministic and total: same inputs → same ladder, and it never throws for any in-range lease. | Generator fixtures + a fuzz over the BS boundary |
+| I1, I8, I9, I13, I14 | Unchanged and still hold. Adding steps changes the terms object, not monotonicity in `through`. | Existing tests |
+
+### 3.8 **[R2]** Where rounding went
+
+`STEP_PROPOSAL_ROUNDING_UNIT = 100`, half-up, nearest — **but it is now the generator's
+opening offer, not a money rule the system imposes.** A draft of ₹5,866 is a better starting
+point than ₹5,866.30; a landlord who wants the paisa types `5866.30` and it is stored
+exactly. No rounding happens anywhere at read time, so the "does it drift when compounded
+five times" question has no surface left: **the five numbers are five rows.**
 
 ### 3.9 Validation — `validateBillingTerms`
 
-Gains, after the existing checks, all skipped when `escalation === null`:
+Gains, all skipped when `rentSteps` is empty:
 
-- `rateBps` integer in `1..MAX_ESCALATION_RATE_BPS`. **Zero is rejected**: a 0% clause is
-  no clause, and two representations of one state is a bug factory.
-- `intervalYears` integer in `1..MAX_ESCALATION_INTERVAL_YEARS`.
-- Nothing else. A clause on a lease shorter than one interval is harmless — it simply
-  never fires — so it is a **form warning, not a 422**.
+- strictly ascending `effectiveFrom`, no duplicates (I20);
+- every `effectiveFrom > startDate`;
+- every `effectiveFrom` is `isPeriodStart(frequency, startDate, effectiveFrom, calendar)`;
+- every `effectiveFrom <= endDate` when `endDate` is set — a step after the term ends is
+  dead data, and a `422` is kinder than a silently-ignored row;
+- `rentCents >= 0` on each.
 
-The `5000` ceiling is where the 100%-instead-of-10% typo dies: `10000` bps is refused at
-the boundary and never reaches a charge. It does not eliminate the need for §6's correction
-route (1000 vs 100 — 10% vs 1% — still passes), but it removes the most damaging case.
+Clause validation (`rateBps ∈ 1..5000`, `intervalYears ∈ 1..10`) moves to the lease
+request schemas, since the clause is no longer in `LeaseBillingTerms`. Zero bps is still
+rejected — two representations of "no clause" is a bug factory. The 5000 ceiling is still
+where the 100%-instead-of-10% typo dies, though R2 makes it far less critical: the landlord
+*sees the drafted ladder* before saving.
 
 ---
 
-## 4. API surface
+## 4. API surface  **[R2 — rewritten]**
 
-All paths under `/v1`. `401` and `500` possible everywhere, not repeated per row.
+All paths under `/v1`. `401` and `500` possible everywhere.
 
-### 4.1 New routes — landlord only (`requireAuth`)
+### 4.1 New routes — landlord only (`requireAuth`, own org)
 
-| Method | Path | Request | Response | Errors | Who |
-|---|---|---|---|---|---|
-| POST | `/v1/leases/:id/correct-escalation` | `correctEscalationBody` | `200 lease` | 404, 409, 422 | landlord, own org |
-| GET | `/v1/leases/:id/escalation-corrections` | — | `{ items: escalationCorrection[] }` | 404 | landlord, own org |
+| Method | Path | Request | Response | Errors |
+|---|---|---|---|---|
+| GET | `/v1/leases/:id/rent-steps` | — | `{ items: rentStepSummary[] }` | 404 |
+| PUT | `/v1/leases/:id/rent-steps` | `{ steps: rentStepInput[] }` | `{ items: rentStepSummary[] }` | 404, 409, 422 |
+| POST | `/v1/leases/:id/rent-steps/:stepId/correct` | `{ rentCents, reason }` | `rentStepSummary` | 404, 409, 422 |
+| GET | `/v1/leases/:id/rent-step-corrections` | — | `{ items: rentStepCorrection[] }` | 404 |
 
 ```ts
-correctEscalationBody = {
-  escalation: rentEscalation.nullable(),      // null removes the clause entirely
-  reason: z.string().trim().min(10).max(500), // REQUIRED
+rentStepInput = {
+  effectiveFrom: isoDate,
+  rentCents: money,
+  source: rentStepSource,            // the client says which; the server trusts it only
+                                     //   to the extent that it re-derives 'clause' steps
+  note: z.string().trim().max(500).optional(),
 }
-escalationCorrection = {
-  id, leaseId,
-  oldEscalation: rentEscalation.nullable(),
-  newEscalation: rentEscalation.nullable(),
-  reason, correctedByName, createdAt,
-}
+rentStepSummary = rentStepInput.extend({
+  id: uuid,
+  clauseExpectedCents: z.number().int().nullable(),
+  createdAt, updatedAt,
+})
 ```
 
-`409` cases, with their messages:
+**`PUT` replaces the whole ladder, not one step.** The client has to hold the whole ladder
+anyway to render the before/after diff (§4.4), a landlord has at most a handful of steps, and
+one endpoint with one rule beats a patch endpoint plus a cascade endpoint. No optimistic
+`expectedVersion` column: a landlord editing their own lease in two tabs is not a scenario
+worth a column at tens-of-units scale.
 
-| Attempt | Message |
+**`PUT` 409s, with their messages:**
+
+| Condition | Message |
 |---|---|
-| lease is `draft` | *"This lease is still a draft. Edit the escalation clause directly."* (PATCH already allows it) |
-| lease is `cancelled` | *"A cancelled lease cannot be corrected."* |
+| the body changes or removes a step with `effective_from <= localToday(property.timezone)` | *"This increase has already taken effect. Use Correct, and tell us why."* |
+| the body adds a step with `effective_from <= today` | *"A rent increase cannot be backdated. Correct the step that is in force instead."* |
+| the lease is `cancelled` | *"A cancelled lease cannot be changed."* |
 
-Unpaginated list, by design: a lease has at most a handful of corrections, ever.
+`422`: anything `validateBillingTerms` rejects (I20's ordering, a non-period-start date, a
+step past `endDate`, a step at or before `startDate`).
+
+**`/correct` 409s:** the step is in the future (*"This increase has not taken effect yet —
+edit it directly."*); the lease is `cancelled`.
+
+**`/correct` always writes a `lease_rent_step_correction` row.** `reason` is required,
+10..500 characters. In Phase 3 the response gains the affected `generationKey`s (§6.5).
+
+> **R1's `/correct-escalation` and `/escalation-corrections` are CUT** (decision 15). The
+> clause now edits through the ordinary `PATCH /v1/leases/:id`, on any status but
+> `cancelled`, writing `escalation_updated_at` / `escalation_updated_by_user_id`. It is
+> documentation; editing it changes no rent until somebody re-drafts the ladder and PUTs it.
 
 ### 4.2 Existing routes — new fields, no shape changes
 
 | Route | Change |
 |---|---|
-| `POST /v1/leases` | `createLeaseBody` accepts `escalation` (nullable, defaults `null`). |
-| `PATCH /v1/leases/:id` | Accepts `escalation` **on a `draft` only**. On anything else, `409` naming `/correct-escalation`. |
-| `POST /v1/leases/:id/renew` | `escalation` optional; **defaults to the predecessor's clause**, matching how `rentFrequency` defaults. The renewal re-anchors on its own `start_date` and its own `rentCents` — correct, it is a new agreement. |
-| `GET /v1/leases`, `GET /v1/leases/:id` | `leaseSummary` carries `escalation`. |
-| `GET /v1/leases/:id/schedule` | **Shape unchanged. Numbers change.** |
-| `GET /v1/portal/leases*` | `portalLease` carries `escalation`. |
+| `POST /v1/leases` | `createLeaseBody` gains `escalation` (nullable, default `null`) **and `rentSteps` (optional array)**. See §4.3. |
+| `PATCH /v1/leases/:id` | **`escalation` is editable on any status but `cancelled`** — it moves no money. `rentCents` stays frozen on an active lease, unchanged. |
+| `POST /v1/leases/:id/renew` | `escalation` optional, defaults to the predecessor's; `rentSteps` optional, otherwise generated from the renewal's own clause and base. |
+| `GET /v1/leases`, `/v1/leases/:id` | `leaseSummary` gains `escalation`; `leaseDetail` gains `rentSteps`. Keeps the list light. |
+| `GET /v1/leases/:id/schedule` | **Shape unchanged. Numbers come from stored steps.** |
+| `GET /v1/portal/leases*` | `portalLease` gains `escalation`; `portalLeaseDetail` gains `rentSteps`. |
 
-### 4.3 Mutability, revised
+### 4.3 **[R2]** When steps are generated — at create, drafted in the browser
 
-`illegalUpdateField`'s `RENEW_FIELDS` currently names `/renew`. **Escalation needs its own
-message**, because the user explicitly rejected renewal as the model for this clause —
-pointing a landlord at `/renew` to fix a typo would push them into creating the fabricated
-tenancy this whole design refuses.
+Decision 4, in full:
+
+1. The lease form calls **`generateRentSteps`** as soon as a clause, a base rent, a start
+   date and a cadence exist. The full ladder renders immediately, **editable**.
+2. The landlord adjusts any row. Edited rows flip to `source: 'manual'`.
+3. `POST /v1/leases` carries `rentSteps` in the body. The server validates and writes them
+   verbatim.
+4. **If the body omits `rentSteps` and a clause is present, the server generates them with
+   the same contract function.** Identical ladder either way — that is why the generator
+   lives in `packages/contract`.
+5. Write order, per PLAN-PHASE2 §5.4: lease row → `lease_rent_step` rows → `lease_tenant`
+   rows. Torn state is a draft with a base rent and no ladder — visible, harmless, and
+   fixed by one `PUT /rent-steps`. **Activation does not depend on steps existing**, so a
+   torn create cannot block the lifecycle.
+
+Not at activation: PLAN-PHASE2 §10 makes create always-draft, and a draft's schedule preview
+must show the real ladder rather than a lie it will become later. Not lazily: materialising
+rows on a `GET` is a write on a read.
+
+### 4.4 **[R2]** The cascade — what happens to later steps, and how it is made visible
+
+Decision 5, in full. `recomputeLadderFrom` is pure and runs **client-side first**, so the
+diff shown is the exact ladder that will be stored.
+
+| Later step's `source` | On overriding an earlier step |
+|---|---|
+| `clause` | **Recomputed** by applying the clause to the new value. The override *is* the rent now, so the agreement carries forward from it. |
+| `manual` | **Preserved verbatim.** A figure a landlord set by hand is a decision, not a draft, and must never move underneath them. |
+
+The dialog, before anything is submitted:
 
 ```
-status draft      -> escalation freely editable via PATCH
-status active     -> PATCH 409: "The escalation clause is part of the signed agreement.
-                     Use /correct-escalation to fix a mistake."
-ended/terminated  -> same 409, same message. The route itself still works: a clause
-                     mis-entered on a lease that has since ended still needs fixing.
-cancelled         -> 409 on both paths.
+Change 1 Apr 2028 from ₹6,453.00 to ₹5,300.00
+
+  This also updates, because the agreement carries forward from the new figure:
+    1 Apr 2029   ₹7,098.00  ->  ₹5,830.00
+    1 Apr 2030   ₹7,808.00  ->  ₹6,413.00
+
+  Unchanged, because you set it by hand:
+    1 Apr 2031   ₹8,000.00
+
+  [ Also update later years ]  (on)        [ Cancel ]  [ Apply ]
 ```
 
-**A correction is retroactive to cycle 0.** It replaces the clause as though it had always
-been that — 100% → 10% re-prices every cycle. That is the only coherent reading of "I
-typo'd". A landlord who wants a genuine mid-term *change* of clause is amending the
-agreement, which is a new signed document and out of scope. Say so in the dialog copy.
+Turning the toggle off writes only the one step and leaves the rest alone. **Nothing is ever
+recomputed server-side without the landlord having seen the diff** — the server writes the
+array it is given.
 
-### 4.4 Tenant isolation walk — "I am landlord B holding landlord A's UUID"
+An override **above** the clause's figure is allowed, with an inline warning (*"This is more
+than the 10% in the agreement."*). Not blocked: the app does not know what side agreements
+exist, and blocking would make a legitimate renegotiation impossible. An override **below**
+the previous step is also allowed, unremarked — that is I16's removal, and the whole
+"good relations" case.
+
+### 4.5 **[R2]** Mutability after activation
+
+| Lease status | Step with `effective_from > today` | Step with `effective_from <= today` |
+|---|---|---|
+| `draft` | free (`PUT`) | n/a — a draft has no past |
+| `active` | **free (`PUT`), unaudited** — this is the requirement | `/correct` + reason, **audited** |
+| `ended`, `terminated` | free (`PUT`) — dead data, harmless | `/correct` + reason, audited |
+| `cancelled` | `409` | `409` |
+
+"Today" is `localToday(property.timezone)` — never the browser's clock, never the server's
+default. One date comparison, using the pattern PLAN-PHASE2 §5.5 already established for
+`removedOn`.
+
+A future step edits freely and unaudited because **nothing has been billed and nothing is
+owed** — auditing every keystroke on a figure that has not taken effect is noise that makes
+the real audit trail harder to read. The line money crosses is "has it taken effect", and
+that is the line the audit table sits on.
+
+### 4.6 Tenant isolation walk — "I am landlord B holding landlord A's UUID"
 
 | Attempt | Result | Why |
 |---|---|---|
-| `POST /v1/leases/{A_lease}/correct-escalation` | `404` | `getLease(orgId = B, …)` returns nothing. The route resolves the lease before reading the body. Identical resolver to every other lease route — no new reach. |
-| `GET /v1/leases/{A_lease}/escalation-corrections` | `404` | Same resolver, called first. |
-| `POST /v1/leases/{own lease}/correct-escalation` with a forged `orgId` in the body | ignored | No route reads an org id from a request. Grep-checkable, already on the reviewer checklist. |
-| Reads a correction row by id | no route accepts one | Corrections are only ever reached through a resolved lease. |
-| Tenant hits either route | `404` from the router | Neither path is under `/v1/portal`; `requireTenant` never sees them. |
-| Tenant reads the correction *history* | **structurally absent** | `portalLease` carries the current clause only. `reason` is landlord-written free text and belongs with `lease.notes` in the landlord-private set. |
+| `GET` / `PUT /v1/leases/{A_lease}/rent-steps` | `404` | `getLease(orgId = B, …)` resolves **before** the body is read. Identical resolver to every other lease route — no new reach. |
+| `POST /v1/leases/{own lease}/rent-steps/{A_step_id}/correct` | `404` | **The one genuinely new cross-org shape in R2.** `stepId` comes from the path, so the repo must resolve it as `WHERE org_id = $B AND lease_id = $resolved AND id = $stepId` — never by `id` alone. **Requires a dedicated test**, the same way PLAN-PHASE2 §7.1 singles out the foreign-`tenantId` roster insert. |
+| `PUT /rent-steps` with a forged `orgId` in the body | ignored | No route reads an org id from a request. Grep-checkable, already on the reviewer checklist. |
+| `GET /v1/leases/{A_lease}/rent-step-corrections` | `404` | Same resolver, called first. |
+| Tenant hits any of the four | `404` from the router | None is under `/v1/portal`; `requireTenant` never sees them. |
+| Tenant reads a step's `note` or the correction history | **structurally absent** | `portalRentStep` has no `note`, no `source`, no `clauseExpectedCents`. Separate type, not the landlord shape with fields removed. |
 
-`lease_escalation_correction` carries `org_id` and every repo function takes `orgId` first
-and filters on it, per ARCHITECTURE §5. **The correction functions live in the existing
-`db/repo/lease.ts`** — no new repo file, so `MIN_LANDLORD_REPO_FILES` and
-`MIN_PORTAL_REPO_FILES` are **not** bumped.
+Both new tables carry `org_id`; every repo function takes `orgId` first and filters on it,
+per ARCHITECTURE §5. **All step functions live in the existing `db/repo/lease.ts`** — no new
+repo file, so `MIN_LANDLORD_REPO_FILES` and `MIN_PORTAL_REPO_FILES` are **not** bumped.
 
-### 4.5 What the tenant sees, and why
+### 4.7 What the tenant sees
 
-`portalLease` gains `escalation`. **Yes, the tenant sees the clause** — identical reasoning
-to Amendment A.5's `moveOutBillingPolicy`: it is a term of their tenancy, it is the single
-thing they most need to see coming, and withholding it would be worse than showing it. It
-also lets the portal preview its own schedule through the same `billingTermsFor` +
-`buildSchedule`.
+`portalLease` gains `escalation` (what was agreed) and `portalLeaseDetail` gains
+**`rentSteps`** as `portalRentStep = { effectiveFrom, rentCents }` — **the actual ladder,
+the real numbers they will pay.** Same reasoning as Amendment A.5's `moveOutBillingPolicy`:
+it is a term of their tenancy and the thing they most need to see coming.
+
+Deliberately **not** shown: `note` (landlord-private), `source`, `clauseExpectedCents`, and
+the correction history. We show the tenant what they will pay and what was agreed. We do not
+editorialise about the gap between them — if the landlord took 5% instead of 10%, the tenant
+can see both numbers and draw their own conclusion.
 
 ---
 
-## 5. Contract additions — file by file, named
+## 5. Contract additions — file by file, named  **[R2]**
 
-**Four files extended. None new. Nothing rewritten.**
+Five files extended, none new.
 
-### 5.1 `packages/contract/src/billing.ts` — EXTENDED
+### 5.1 `packages/contract/src/billing.ts`
 
-Everything in §3.2: `rentEscalationMode`, `rentEscalationCompounding`, their label maps,
+`rentStep`, `draftRentStep` (`rentStep` + `source` + `clauseExpectedCents`),
+`rentStepSource`, `rentEscalationMode`, `rentEscalationCompounding` + label maps,
 `rentEscalation`, `BPS_SCALE`, `MAX_ESCALATION_RATE_BPS`, `MAX_ESCALATION_INTERVAL_YEARS`,
-`MAX_ESCALATION_CYCLES`, `ESCALATION_ROUNDING_UNIT`, `escalationCyclesElapsed`,
-`rentForPeriodStart`, `escalationStepRents`, `nextEscalationOnOrAfter`. Plus
-`leaseBillingTerms.escalation` and the one-line change inside `buildSchedule`.
+`MAX_GENERATED_STEPS`, `STEP_PROPOSAL_ROUNDING_UNIT`, `rentForPeriodStart`,
+`generateRentSteps`, `recomputeLadderFrom`, `clauseExpectedRent`, plus
+`leaseBillingTerms.rentSteps` and the one-line `buildSchedule` change.
 
 Still imports `common.ts` and `./calendar/*` only. No cycle.
 
-### 5.2 `packages/contract/src/billing.fixtures.ts` — EXTENDED
+### 5.2 `packages/contract/src/billing.fixtures.ts`
 
-- `escalation: null` on all 34 existing `terms` objects. **No `expected` array changes.**
-- `export interface EscalationRentFixture { name; terms; cycles; expected: number[] }`
-- `export const escalationRentFixtures: readonly EscalationRentFixture[]` — `E-R1`..`E-R5`.
-- Eight new entries in `scheduleFixtures` — `E1`..`E7`, `E9`.
+- **`rentSteps: []` on all 34 existing `terms` objects. No `expected` array changes.**
+- `export interface GeneratorFixture { name; input; expected: DraftRentStep[] }` and
+  `export const generatorFixtures` — `G1`..`G6`.
+- `export interface LadderFixture { name; clause; steps; index; newRentCents; expected }`
+  and `export const ladderFixtures` — `L1`..`L3`.
+- New entries in `scheduleFixtures` — `E1`, `E2b`, `E3`, `E5`, `E6`, `E7`, `E9`..`E13`.
 
-### 5.3 `packages/contract/src/billing.bs.fixtures.ts` — EXTENDED
+### 5.3 `packages/contract/src/billing.bs.fixtures.ts`
 
-`escalation: null` on its 6 `terms`; one new BS escalation schedule fixture, `E8`.
+`rentSteps: []` on its 6 `terms`; one BS generator fixture (`G6`) and one BS schedule
+fixture (`E8`).
 
-### 5.4 `packages/contract/src/lease.ts` — EXTENDED
+### 5.4 `packages/contract/src/lease.ts`
 
-- `createLeaseBodyShape` gains `escalation: rentEscalation.nullable().default(null)`;
-  `updateLeaseBody` inherits it through `.partial()`.
-- `renewLeaseBody` gains `escalation: rentEscalation.nullable().optional()`.
-- `leaseSummary` gains `escalation: rentEscalation.nullable()`.
-- `billingTermsFor`'s `Pick<…>` gains `'escalation'`; the returned object gains it.
-- `billingTermsFromCreateBody` gains `escalation: data.escalation ?? null`.
-- NEW `correctEscalationBody`, `escalationCorrection` (§4.1).
-- Re-export `rentEscalation`, `rentEscalationMode`, `rentEscalationCompounding` and their
-  label maps — same one-import convenience as `rentFrequency`.
+- `createLeaseBodyShape` gains `escalation: rentEscalation.nullable().default(null)` and
+  `rentSteps: z.array(rentStepInput).max(MAX_GENERATED_STEPS).optional()`.
+- `updateLeaseBody` inherits `escalation`; **`rentSteps` is omitted from it** — the `PUT`
+  route owns the ladder, so a PATCH can never half-write it.
+- `renewLeaseBody` gains both, optional.
+- `leaseSummary` gains `escalation: rentEscalation.nullable()`; `leaseDetail` gains
+  `rentSteps: rentStepSummary[]`.
+- `billingTermsFor`'s `Pick<…>` gains `'rentSteps'`; its argument type widens to accept a
+  shape carrying the steps.
+- `billingTermsFromCreateBody` gains `rentSteps: data.rentSteps ?? []`.
+- NEW `rentStepInput`, `rentStepSummary`, `putRentStepsBody`, `correctRentStepBody`,
+  `rentStepCorrection`.
+- Re-export `rentEscalation`, `rentEscalationMode`, `rentEscalationCompounding`,
+  `rentStepSource` and their label maps.
 
-### 5.5 `packages/contract/src/portal.ts` — EXTENDED
+### 5.5 `packages/contract/src/portal.ts`
 
-`portalLease` gains `escalation: rentEscalation.nullable()`.
+`portalRentStep = { effectiveFrom, rentCents }`. `portalLease` gains `escalation`;
+`portalLeaseDetail` gains `rentSteps: portalRentStep[]`.
 
-### 5.6 `packages/contract/src/routes.ts` — EXTENDED
+### 5.6 `packages/contract/src/routes.ts`
 
 ```ts
 leases: {
   ...existing,
-  correctEscalation:     (id) => `/v1/leases/${id}/correct-escalation`,
-  escalationCorrections: (id) => `/v1/leases/${id}/escalation-corrections`,
+  rentSteps:           (id)         => `/v1/leases/${id}/rent-steps`,
+  correctRentStep:     (id, stepId) => `/v1/leases/${id}/rent-steps/${stepId}/correct`,
+  rentStepCorrections: (id)         => `/v1/leases/${id}/rent-step-corrections`,
 },
 ```
 
-### 5.7 Fixtures to pin — every figure computed
+### 5.7 Fixtures to pin — every figure computed  **[R2]**
 
-**Rent ladders** (`escalationRentFixtures`):
+**Generator** (`generatorFixtures`) — these replace R1's `E-R*` rent ladders:
 
-| # | base | rate | mode | ladder | what it pins |
-|---|---|---|---|---|---|
-| `E-R1` | `533300` | 1000 | compound | `533300, 586600, 645300, 709800, 780800, 858900` | the user's own number; the five-step no-drift claim |
-| `E-R2` | `533300` | 1000 | simple | `533300, 586600, 640000, 693300, 746600, 800000` | **half-up at exactly `.5`** (`799950 → 800000`) |
-| `E-R3` | `150000` | 1000 | compound | `150000, 165000, 181500, 199700, 219700` | half-up mid-ladder (`199650 → 199700`) |
-| `E-R4` | `533350` | 1000 | compound | cycle 0 is `533350` **exactly** | **I17 — the base rent is never rounded** |
-| `E-R5` | `533300` | — | `escalation: null` | every cycle `533300` | the no-clause fast path |
-
-**Schedules** (added to `scheduleFixtures`):
-
-| # | Lease | What it pins |
+| # | Input | Expected ladder |
 |---|---|---|
-| `E1` | monthly, rent `533300`, start `2026-04-01`, end `2031-03-31`, billingDay 1, 10%/1yr compound, through `2031-04-01` | **The requirement, end to end.** 60 entries, five runs of 12 at `533300 / 586600 / 645300 / 709800 / 780800`. Matches `E-R1` exactly. |
-| `E2` | monthly, rent `100000`, start `2026-03-15`, end null, billingDay 1, 10%/1yr compound, through `2027-06-01` | **The straddle.** Period `2027-03-01` (which *contains* the `2027-03-15` anniversary) is `100000`; `2027-04-01` is the first at `110000`. 16 entries; the first is the `17/31 → 54839` stub from F3. |
-| `E3` | yearly, rent `2400000`, start `2026-04-01`, 10%/**2**yr compound, through `2031-04-01` | **"every two year".** 6 entries: `2400000, 2400000, 2640000, 2640000, 2904000, 2904000`. |
-| `E4` | `E1`'s terms with `compounding: 'simple'` | The two modes diverging from cycle 2 (`645300` vs `640000`). |
-| `E5` | monthly, rent `100000`, start `2023-06-15`, ledgerStart `2026-07-01`, 10%/1yr compound, through `2026-12-01` | **Onboarding an in-flight escalating tenancy.** First generated period is `2026-07-01` at cycle 3 → `133100`, `periodIndex: 37`. Pins both the ledger-start interaction and "`rentCents` is the rent at *start*". |
-| `E6` | yearly, rent `1200000`, start **`2028-02-29`**, 10%/1yr compound, through `2031-01-01` | **Leap-day anniversary.** Anniversaries clamp to `2029-02-28` and `2030-02-28` — the same dates F8's periods already start on. Rents `1200000, 1320000, 1452000`. |
-| `E7` | monthly, rent `100000`, start `2026-01-01`, end `2027-06-10`, billingDay 5, 10%/1yr compound | **Proration on the escalated rent.** 18 entries: 12 at `100000`, 5 at `110000`, then June 2027 `10/30` days → `round(110000 × 10/30) = 36667`, due `2027-06-05`. This is what proves I7′. |
-| `E8` | Bikram Sambat monthly lease, 10%/1yr compound (`billing.bs.fixtures.ts`) | The anniversary is a **BS** anniversary, landing on a Gregorian date that is not start+365. Proves the calendar seam carries through. |
-| `E9` | `E1`'s terms with `escalation: null` | One flat run of 60. The regression net, at the cost of one fixture. |
+| `G1` | base `533300`, 10%, 1yr, compound, start `2026-04-01`, end `2031-03-31`, monthly | `2027-04-01: 586600`, `2028-04-01: 645300`, `2029-04-01: 709800`, `2030-04-01: 780800` — **the user's own numbers, as four rows** |
+| `G2` | same, `simple` | `586600, 640000, 693300, 746600`. **`G2b` extends it one cycle** to `800000` — `533300 × 1.5 = 799950 → 7999.5 → 8000`, which pins half-up at exactly the `.5` boundary; banker's rounding gives `799900` |
+| `G3` | base `533350` (non-round), 10%, compound | the base is **untouched**; the first step is `586700`. Pins "we never rewrite the base". |
+| `G4` | **start `2026-03-15`, monthly** | **first step is `2027-04-01`, not `2027-03-15`** — §3.5's snap, pinned in the generator where it now lives |
+| `G5` | yearly, 10% every **2** years, start `2026-04-01` | steps at `2028-04-01`, `2030-04-01` — and each lands exactly on a period start with no snapping, because both anchors are the same `addYears` |
+| `G6` | Bikram Sambat monthly, 10%/1yr | anniversaries are **BS** anniversaries landing on Gregorian dates that are not start+365, each snapped to a BS month start |
+| `G7` | leap-day start `2028-02-29`, yearly | steps at `2029-02-28`, `2030-02-28` — the same clamping F8's periods already use |
+| `G8` | rolling lease, `endDate: null` | exactly `MAX_GENERATED_STEPS` steps, no more (§3.6) |
+
+**Ladder recompute** (`ladderFixtures`):
+
+| # | Scenario | Expected |
+|---|---|---|
+| `L1` | `G1`'s ladder; override index 1 (`2028-04-01`) to `530000`; all later steps are `clause` | `586600`, **`530000`**, `583000`, `641300` |
+| `L2` | same, but the `2031-04-01` step was already `manual` at `800000` | `586600`, **`530000`**, `583000`, `641300`, **`800000` unchanged** — decision 5, pinned |
+| `L3` | `clause: null` (the commercial case), override index 1 | only index 1 changes; nothing cascades |
+
+**Schedules** (added to `scheduleFixtures`) — `terms.rentSteps` is the stored ladder:
+
+| # | What it pins |
+|---|---|
+| `E1` | **The requirement, end to end.** `G1`'s ladder over 60 monthly periods: five runs of 12 at `533300 / 586600 / 645300 / 709800 / 780800`, total ₹3,90,696.00 |
+| `E2b` | `G4`'s snapped step applied: period `2027-03-01` is at `100000`, `2027-04-01` is the first at `110000`. **Now a consequence of stored data, not of read-time counting.** |
+| `E3` | `G5`'s two-yearly ladder: `2400000, 2400000, 2640000, 2640000, 2904000, 2904000` |
+| `E5` | **Onboarding an in-flight escalating tenancy.** start `2023-06-15`, ledgerStart `2026-07-01`, steps at the 2024/2025/2026 anniversaries. First generated period `2026-07-01` at `133100`, `periodIndex: 37`. |
+| `E6` | `G7`'s leap-day ladder: `1200000, 1320000, 1452000` |
+| `E7` | **Proration on the stepped rent.** end `2027-06-10`: 12 at `100000`, 5 at `110000`, then `round(110000 × 10/30) = 36667` due `2027-06-05`. Proves I7′. |
+| `E8` | Bikram Sambat, `G6`'s ladder |
+| `E9` | `E1`'s terms with **`rentSteps: []`** — one flat run of 60. The regression net. |
+| `E10` | **The override.** `L1`'s ladder: `533300, 586600, 530000, 583000, 641300`. **The "good relations" case, end to end.** |
+| `E11` | `L2`'s ladder, proving a `manual` step survives a cascade through a schedule |
+| `E12` | **A decrease.** A step below its predecessor. Pins I16's removal so nobody reintroduces monotonicity. |
+| `E13` | **Explicit ladder, no clause.** `escalation: null`, four hand-entered steps. Proves the engine never needs a clause — the commercial case, free. |
 
 ---
 
@@ -571,256 +734,302 @@ leases: {
 
 ### 6.1 The schedule summary — the collapse finally earns its keep
 
-`apps/web/src/features/leases/schedule-summary.ts` already collapses consecutive
-equal-amount periods, and its own comment anticipates this exactly: *"a rent change
-mid-term that produces two different-amount runs … collapses and expands correctly too."*
-It does. The **labelling** does not: `labelForGroup` returns `'Rent'` for index 0 and
-`'Then'` for everything after, so `E1` renders *Rent / Then / Then / Then / Then*.
+Unchanged from R1, and now driven by stored steps. `groupScheduleByAmount` already handles
+multiple runs; its own comment anticipates exactly this. The **labelling** does not:
+`labelForGroup` returns `'Rent'` then `'Then'` forever, so `E1` renders *Rent / Then / Then
+/ Then / Then*.
 
-**Change `labelForGroup` to return a descriptor, not a string**, and let
-`LeaseScheduleSummary` format it with `formatCivilDate` (which needs the calendar, and the
-calendar does not belong in `schedule-summary.ts`):
-
-```ts
-export type GroupLabel =
-  | { kind: 'rent' }            // single-rate lease, or the first run
-  | { kind: 'from'; date: IsoDate }   // a later run — "From 1 Apr 2027"
-  | { kind: 'firstPeriod' }
-  | { kind: 'finalPeriod' }
-  | { kind: 'proratedPeriod' };
-```
-
-`E1` then reads:
+**Change `labelForGroup` to return a descriptor, not a string** — `{kind:'rent'} |
+{kind:'from', date} | {kind:'firstPeriod'} | {kind:'finalPeriod'} |
+{kind:'proratedPeriod'}` — and let `LeaseScheduleSummary` format it with `formatCivilDate`
+(which needs the calendar, and the calendar does not belong in `schedule-summary.ts`). Both
+files are `apps/web`, so no contract change. `E1` reads:
 
 ```
-Rent              ₹5,333.00 / month   ·  12 periods  ·  Apr 2026 – Mar 2027
-From Apr 2027     ₹5,866.00 / month   ·  12 periods  ·  Apr 2027 – Mar 2028
-From Apr 2028     ₹6,453.00 / month   ·  12 periods  ·  Apr 2028 – Mar 2029
-From Apr 2029     ₹7,098.00 / month   ·  12 periods  ·  Apr 2029 – Mar 2030
-From Apr 2030     ₹7,808.00 / month   ·  12 periods  ·  Apr 2030 – Mar 2031
-Total over the term                                            ₹3,90,696.00
-          [ Show every period (60) ]
+Rent            ₹5,333.00 / month  ·  12 periods  ·  Apr 2026 – Mar 2027
+From Apr 2027   ₹5,866.00 / month  ·  12 periods  ·  Apr 2027 – Mar 2028
+From Apr 2028   ₹6,453.00 / month  ·  12 periods  ·  Apr 2028 – Mar 2029
+From Apr 2029   ₹7,098.00 / month  ·  12 periods  ·  Apr 2029 – Mar 2030
+From Apr 2030   ₹7,808.00 / month  ·  12 periods  ·  Apr 2030 – Mar 2031
+Total over the term                                       ₹3,90,696.00
+        [ Show every period (60) ]
 ```
 
-Five lines instead of sixty, and **"Total over the term" stops being obvious arithmetic and
-starts being the number a landlord actually wants.** Both files are `apps/web`, so the
-signature change is clean and needs no contract change.
+Five lines instead of sixty, and "Total over the term" stops being obvious arithmetic.
+**The preview window must grow:** `defaultPreviewThrough` runs 366×3 days, so a five-year
+lease previews three of its five rates — when steps exist and `endDate` is set, run to the
+full term, still clamped by `SCHEDULE_SANITY_DAYS`.
 
-**The preview window must grow.** `defaultPreviewThrough` runs `366 × 3` days forward, so a
-five-year lease previews three of its five rates. **When a clause is present and `endDate`
-is set, run the wizard's and the lease detail's preview to the full term** (still clamped
-by the existing `SCHEDULE_SANITY_DAYS = 3653`). The review step exists to show the landlord
-what they just agreed to, and a five-year clause is precisely the thing you review once.
-60 rows is fine — it collapses to 5.
+### 6.2 **[R2]** The lease form — the ladder editor is the feature
 
-### 6.2 The lease form
+The terms step gains a **Rent ladder** panel, closed by default so a single-rate lease is
+visually unchanged.
 
-A closed-by-default disclosure on the terms step, **"Rent increases over the term"**, so a
-single-rate lease is visually unchanged:
+1. **Clause fields** — mode (*No increase* / *Percentage*), rate, interval, compounding.
+   Rate is entered as a **percentage** and converted at the form edge with
+   `Math.round(pct * 100)`. That `Math.round` is load-bearing: `7.35 * 100 ===
+   734.9999999999999`, and a truncating conversion stores `734` bps. Test it with `7.35`.
+   Compounding reads as *"Compounds on the previous rent"* / *"Always on the original
+   rent"*, never "compound/simple".
+2. **The ladder renders immediately** from `generateRentSteps`, **with the base as row 0**
+   (bound to `rentCents`, editable) and each step below it:
 
-- **Mode:** *No increase* (default) / *Percentage*.
-- **Rate:** entered as a **percentage with up to 2 decimals** (`10`, `7.5`, `10.25`) and
-  converted at the form edge — `Math.round(pct * 100)` in, `bps / 100` out. The landlord
-  never types `1000`. **The `Math.round` is load-bearing: `7.35 * 100 === 734.9999999999999`
-  in IEEE754**, and a truncating conversion would store `734` bps. Test it with `7.35`.
-- **Interval:** *Every year* (default) / *Every 2 years*, with 3..10 available but not
-  prominent.
-- **Compounding:** *Compounds on the previous rent* (default) / *Always on the original
-  rent*. Landlord language, never "compound/simple".
-- **The live ladder read-back**, from `escalationStepRents`:
-  *₹5,333 → ₹5,866 → ₹6,453 → ₹7,098 → ₹7,808*.
-  **This is the single best defence against the 100%-vs-10% typo** — a landlord who meant
-  10% sees `₹10,666` and stops, which no server-side validation can do as well.
-- A soft warning, not a 422, when the term is shorter than one interval: *"This lease ends
-  before the first increase would apply."*
+   ```
+   From 1 Apr 2026   ₹5,333.00     (base)
+   From 1 Apr 2027   ₹5,866.00     agreed 10%              [edit]
+   From 1 Apr 2028   ₹5,300.00     agreed ₹6,453  −17.9%   [edit] [reset]
+   From 1 Apr 2029   ₹5,830.00     agreed 10%              [edit]
+   From 1 Apr 2030   ₹6,413.00     agreed 10%              [edit]
+   ```
 
-### 6.3 The in-flight onboarding trap — the likeliest data-entry error in the feature
+   The *agreed* column is `clauseExpectedRent`; `[reset]` returns a `manual` step to
+   `clause`. **This is the honesty win** — all five numbers on screen before the first save.
+3. **Editing the base, the rate or the interval re-drafts every `clause` step** and leaves
+   `manual` ones alone, through `recomputeLadderFrom` — same rule as the cascade, same diff
+   preview (§4.4).
+4. **Adding a step by hand** is allowed, with the date picker offering only period starts.
+   That is `E13`'s case, and it means a commercial lease with explicit per-year amounts needs
+   no clause at all.
+5. A soft warning, not a `422`, when the term ends before the first increase would apply.
 
-`rentCents` is **the rent at `start_date`**, not today's rent. A landlord onboarding a
-tenancy that began in 2023 and has already escalated twice must enter the *original* rent.
-Entering today's rent silently re-prices the whole remaining term.
+### 6.3 The in-flight onboarding trap — mitigated, and now visible
 
-Why not redefine `rentCents` as "rent at `ledgerStartDate`"? Because the anniversary clock
-is anchored on `start_date`; anchoring the amount and the clock to different dates is
-incoherent and would make `escalationCyclesElapsed` meaningless.
+`rentCents` is the rent at `start_date`, not today. Entering today's rent silently re-prices
+the term. **R2 softens this considerably**: the ladder is on screen, so a landlord entering
+today's ₹6,453 as the base sees the ladder start at ₹6,453 and run to ₹9,445 — obviously
+wrong at a glance, where R1's invisible recurrence was not.
 
-**The UI carries the whole mitigation.** When a clause is set and `startDate` is in the past
-(`localToday(propertyTimezone)`, never the browser clock):
-
-- relabel the field **"Rent at lease start"**;
-- show **"Current rent: ₹1,331.00"** beside it, from `rentForPeriodStart(terms, today)`;
-- repeat the current rent on the review step.
-
-`E5` pins the behaviour; this copy is what makes it discoverable.
+Keep the rest of the mitigation anyway. When steps exist and `startDate` is in the past
+(`localToday(propertyTimezone)`, never the browser clock): relabel the field **"Rent at
+lease start"**, show **"Rent today: ₹6,453.00"** beside it from `rentForPeriodStart`, and
+repeat it on review. `E5` pins the behaviour.
 
 ### 6.4 Lease detail and the portal
 
-- **Terms panel** gains an *Escalation* row: *"10% every year, compounding — next increase
-  1 Apr 2027 → ₹6,453.00"*, from `nextEscalationOnOrAfter`. **No date arithmetic in the
-  component**: the anniversary day-and-month is just `startDate` rendered through
-  `formatCivilDate`, and the next-increase date comes from the contract.
-- **A corrections list** on the detail page when `escalationCorrections` is non-empty:
-  old → new, reason, who, when.
-- **Portal lease** shows the same escalation line and next-increase line. **No history** —
-  `reason` is landlord-private.
+- **Terms panel** gains a *Rent ladder* section: the same table as the form, read-only until
+  edited, with `[Edit]` opening the `PUT` flow and `[Correct]` on any step already in force.
+  Below it: **"Increases scheduled through 1 Apr 2030"** and, when §3.6's condition is met,
+  *Extend the ladder*.
+- **"Next increase: 1 Apr 2027 → ₹5,866.00"**, read straight off the first step whose
+  `effectiveFrom > localToday(propertyTimezone)`. **No contract function needed** — R1's
+  `nextEscalationOnOrAfter` is **cut**, because finding the next row in a sorted array is
+  not date arithmetic.
+- **Corrections list** when `rentStepCorrections` is non-empty: old → new, reason, who, when.
+- **Portal lease detail** shows the ladder as plain rows and the agreed clause as one line.
+  No `note`, no `source`, no variance, no history (§4.7).
 
 ### 6.5 Phase 3 — what to write into that task file now
 
-1. **The generator reads `rentForPeriodStart`, never `lease.rent_cents`.** Nothing in
-   `apps/api` may multiply a rent by a rate.
-2. **A clause correction is a correction trigger**, identical in kind to Amendment A.5's
-   `moveOutDate` edit. Already-written charges are **never silently re-priced**. The
-   correction route gains a response field listing the `generationKey`s whose computed
-   amount now differs from what was written, and the UI surfaces *"N charges were written
-   under the old clause and need review"* with a void-and-supersede link each. **The
-   generator never un-writes.**
-3. **I18 is the licence to regenerate.** Because the ladder depends only on
-   `(rentCents, rateBps, intervalYears, compounding, k)`, a self-healing cron run years
-   later computes the same per-period rents it would have computed on day one.
-4. Any Phase 3 text assuming a constant rent — a balance projection, an "expected annual
-   income" report, a reminder template quoting "your rent of X" — must take the rent from
-   the **charge row**, which is the materialised truth, not from `lease.rent_cents`.
+1. **The generator reads `rentForPeriodStart` over stored steps, never
+   `lease.rent_cents`, and never the clause.** Nothing in `apps/api` may multiply a rent by
+   a rate; the clause arithmetic exists only inside `generateRentSteps`.
+2. **`POST /rent-steps/:stepId/correct` is a correction trigger**, identical in kind to
+   Amendment A.5's `moveOutDate` edit. Already-written charges are **never silently
+   re-priced**. The route's response gains the affected `generationKey`s, and the UI surfaces
+   *"N charges were written at the old rent and need review"* with a void-and-supersede link
+   each. **The generator never un-writes.**
+3. **`PUT /rent-steps` cannot touch a charged period**, because it already refuses any step
+   with `effective_from <= today`, and Phase 3 only writes charges for periods that have
+   started or are within the 31-day lookahead. **Phase 3 must tighten that bound**: the
+   refusal becomes "effective_from is at or before the start of the latest period that has a
+   written charge", which is strictly wider than `today` by up to the lookahead. Write it
+   into the task file; it is a one-line change to an existing guard, and discovering it later
+   means discovering it as a mis-billed period.
+4. **I18 is the licence to regenerate.** The rent for a period is a stored row, so a
+   self-healing cron run in 2031 computes what it would have computed in 2026.
+5. Any report, projection or reminder quoting "your rent of X" takes it from the **charge
+   row**, which is the materialised truth.
 
 ---
 
 ## 7. Task split
 
 Contract frozen first, then both agents dispatched at once. **The only shared surface is
-`packages/contract/**`.** No file outside it is touched by both. Neither agent edits the
-contract; if it is wrong, stop and report upward.
+`packages/contract/**`.** Neither agent edits it; if it is wrong, stop and report upward.
 
-### 7.1 The paragraph that goes verbatim in both task files
+### 7.1 The paragraph that goes verbatim in both task files  **[R2]**
 
-> *A lease's rent is no longer a constant. `terms.rentCents` is the rent for cycle 0 only.
-> The rent for any period is `rentForPeriodStart(terms, periodStart)` — in the contract,
-> pure, fixture-pinned. If you find yourself multiplying a rent by a percentage, or
-> converting a percentage to basis points anywhere except the lease form's input edge, you
-> are writing the second implementation this whole design exists to prevent.*
+> *A lease's rent is no longer a constant, and it is no longer a formula. It is a list of
+> stored steps. The rent for any period is `rentForPeriodStart(terms, periodStart)` — a pure
+> lookup in the contract, fixture-pinned. The clause is only a generator:
+> `generateRentSteps` drafts a ladder the landlord then edits, and the stored steps are the
+> truth from that moment on. If you find yourself multiplying a rent by a percentage
+> anywhere outside `generateRentSteps`, or converting a percentage to basis points anywhere
+> except the lease form's input edge, you are writing the second implementation this whole
+> design exists to prevent.*
 
 ### 7.2 backend-dev — `apps/api/**` only
 
-1. **Schema**: `rentEscalationModeEnum`, `rentEscalationCompoundingEnum`, four `lease`
-   columns, `lease_escalation_ck`, `lease_escalation_correction` + its index. One generated
-   migration; verify the enum casts and `check()` support before committing it.
-2. **`db/repo/lease.ts`**: select / insert / update the four columns on every existing
-   query; `correctEscalation(orgId, db, userId, id, body)`;
-   `listEscalationCorrections(orgId, db, leaseId)`. `orgId` first, filtered in every
-   `WHERE`. **No new repo file — do not bump the guard floors.**
-3. **`lib/mappers.ts`**: `mapLeaseSummary` / `mapPortalLease` assemble
-   `escalation: mode === 'none' ? null : { mode, rateBps, intervalYears, compounding }`.
-   New `mapEscalationCorrection`. Never spread a row.
-4. **`illegalUpdateField`**: the four escalation fields are illegal on a non-draft, with
-   the `/correct-escalation` message — **not** the `/renew` one (§4.3).
-5. **`renewLease`**: carries the predecessor's clause when the body omits `escalation`.
-6. **`routes/leases.ts`**: the two new routes. Resolve the lease *before* reading the body.
-7. **Extend the source-grep guard**: `rateBps` / `escalation_rate_bps` may not appear in an
-   arithmetic expression anywhere in `apps/api/src`; `BPS_SCALE` and
-   `ESCALATION_ROUNDING_UNIT` may not be referenced outside `packages/contract`.
-8. **Tests**:
-   - `E1`..`E9` asserted **through `GET /v1/leases/:id/schedule`** — the fixture's exact
-     `amountCents` and `dueDate`;
-   - cross-org `404` on both new routes (§4.4);
-   - `409` on `correct-escalation` against a `draft` and against a `cancelled`;
-   - `409` on `PATCH` of `escalation` on an `active` lease, message naming
-     `/correct-escalation`;
-   - `422` on `rateBps: 10000` and on `rateBps: 0`;
-   - the DB CHECK rejecting a half-written clause (rate with no interval);
-   - a correction re-prices `GET /schedule` on the next call, and writes exactly one
-     correction row.
+1. **Schema**: three enums, six `lease` columns, `lease_escalation_ck`, `lease_rent_step`,
+   `lease_rent_step_correction`, their CHECK and three indexes. One generated migration;
+   verify enum casts and `check()` support before committing.
+2. **`db/repo/lease.ts`** (no new repo file, **do not bump the guard floors**):
+   `listRentSteps`, `replaceRentSteps`, `correctRentStep`, `listRentStepCorrections`;
+   `createLease` writes the ladder (generating it when the body omits it);
+   `renewLease` carries or regenerates. `orgId` first, filtered in every `WHERE`.
+   **`correctRentStep` resolves `stepId` by `(org_id, lease_id, id)` — never by `id`
+   alone** (§4.6).
+3. **`lib/mappers.ts`**: `mapRentStep`, `mapPortalRentStep`, `mapRentStepCorrection`;
+   `mapLeaseSummary` assembles `escalation: mode === 'none' ? null : {…}`;
+   `mapLeaseDetail` attaches `rentSteps`. Never spread a row.
+4. **`routes/leases.ts`**: the four new routes, each resolving the lease **before** reading
+   the body. `PATCH` allows `escalation` on any status but `cancelled`, writing the two
+   tracking columns.
+5. **Schedule routes**: `billingTermsFor` now needs `rentSteps`, so both schedule routes
+   load them alongside the lease. One extra query on the lease-detail and schedule paths;
+   the list route does **not** load steps.
+6. **Extend the source-grep guard**: `rateBps` / `escalation_rate_bps` may not appear in any
+   arithmetic expression in `apps/api/src`; `BPS_SCALE` and `STEP_PROPOSAL_ROUNDING_UNIT`
+   may not be referenced outside `packages/contract`.
+7. **Tests**: `E1`..`E13` through `GET /schedule`; `G1`..`G8` through `POST /v1/leases` with
+   `rentSteps` omitted, asserting the server-generated ladder equals the fixture; cross-org
+   `404` on all four routes **plus the dedicated foreign-`stepId` test**; every `PUT` and
+   `/correct` 409; `422` on each I20 violation; the unique index firing on a duplicate
+   `effective_from`; a correction writing exactly one audit row and re-pricing
+   `GET /schedule` on the next call.
 
 ### 7.3 frontend-dev — `apps/web/**` only
 
-1. **Terms step**: the escalation disclosure, percent↔bps at the input edge with
-   `Math.round`, the live ladder read-back from `escalationStepRents` (§6.2).
-2. **"Rent at lease start" relabel + "Current rent" read-back** when a clause is set and
-   `startDate < localToday(propertyTimezone)` (§6.3).
-3. **`schedule-summary.ts`**: `labelForGroup` returns `GroupLabel`, not a string;
-   `LeaseScheduleSummary` formats it via `formatCivilDate`. Update
-   `schedule-summary.test.ts` and `LeaseScheduleSummary.test.tsx`.
-4. **`schedule-preview.ts`**: extend the preview runway to the full term when a clause is
-   present and `endDate` is set, still clamped by `SCHEDULE_SANITY_DAYS`.
-5. **Lease detail**: the *Escalation* terms row with next-increase, and the corrections
-   list.
-6. **Correction dialog**: reason required (min 10 chars), an explicit *"this re-prices
-   every period, including ones already shown"* warning, and a before/after ladder.
-7. **Portal lease**: the escalation line and the next-increase line. No history.
-8. **Tests**: `E1`..`E7`, `E9` asserted against `previewSchedule` — **the same fixtures the
-   backend asserts**; the percent↔bps round-trip including `7.35`; the summary labelling
-   with five runs; the ladder read-back rendering `₹10,666` for a 100% entry (the typo
-   defence, asserted).
+1. **The ladder editor** on the terms step (§6.2): clause fields, percent↔bps with
+   `Math.round`, the live ladder with the base as row 0, per-row edit and reset, the
+   *agreed* variance column.
+2. **The cascade diff dialog** (§4.4), driven by `recomputeLadderFrom` client-side so the
+   preview is the exact ladder that will be stored.
+3. **"Rent at lease start" relabel + "Rent today"** when steps exist and `startDate <
+   localToday(propertyTimezone)` (§6.3).
+4. **`schedule-summary.ts`**: `labelForGroup` returns `GroupLabel`; `LeaseScheduleSummary`
+   formats it. Update `schedule-summary.test.ts` and `LeaseScheduleSummary.test.tsx`.
+5. **`schedule-preview.ts`**: extend the runway to the full term when steps exist and
+   `endDate` is set, still clamped by `SCHEDULE_SANITY_DAYS`.
+6. **Lease detail**: the rent-ladder section, *Next increase*, *Increases scheduled
+   through*, *Extend the ladder*, the corrections list, and the correct-step dialog (reason
+   ≥ 10 chars, explicit *"this changes a rent that is already in force"* warning).
+7. **Portal lease detail**: the ladder rows and the agreed-clause line. No note, no source,
+   no variance, no history.
+8. **Tests**: `E1`..`E13` against `previewSchedule` and `G1`..`G8` against
+   `generateRentSteps` — **the same fixtures the backend asserts**; the `7.35` round-trip;
+   the cascade dialog listing exactly the steps that change and exactly the `manual` ones
+   that do not (`L2`); five-run summary labelling.
 
 ### 7.4 What they share — stated explicitly
 
-`packages/contract/**`, frozen, and nothing else. Within it, the shared *executable*
-surface is now `buildSchedule`, `effectiveBillingEnd`, `billingTermsFor`,
-**`rentForPeriodStart`**, **`escalationStepRents`** and **`nextEscalationOnOrAfter`**.
+`packages/contract/**`, frozen. The shared **executable** surface is now `buildSchedule`,
+`effectiveBillingEnd`, `billingTermsFor`, **`rentForPeriodStart`**, **`generateRentSteps`**,
+**`recomputeLadderFrom`** and **`clauseExpectedRent`**.
 
 ---
 
-## 8. Phasing — ship this before Phase 3
+## 8. Phasing — ship before Phase 3
 
-**Recommendation: land escalation now, as its own task, before Phase 3 starts.**
+Unchanged from R1, and stronger.
 
-1. **It is a pure-function change today and a data migration later.** `buildSchedule` is
-   the file Phase 3's generator is built on. Change the rent-per-period rule *after* charge
-   rows exist and you are re-pricing written history; change it now and zero rows are at
-   risk.
-2. **Phase 3's hardest question is "did we write the right amount."** Writing the generator
-   once, against the final rule, with the escalation fixtures already green, is strictly
-   cheaper than writing it twice.
-3. **`PlannedCharge` is unchanged**, so Phase 3's charge table design is unaffected either
-   way. The only thing it inherits is a richer set of amounts — which it already has to
-   handle, because proration already produces them.
-4. The only piece that genuinely must wait is the correction route's Phase 3 half
-   (re-flagging already-written charges), and that is purely additive.
+1. **It is a pure-function-plus-two-tables change today and a data migration later.** Change
+   the rent-per-period rule after charge rows exist and you are re-pricing written history.
+2. Phase 3's hardest question is "did we write the right amount". Writing the generator once
+   against the final rule, with these fixtures green, is strictly cheaper than twice.
+3. `PlannedCharge` is unchanged, so Phase 3's charge table design is unaffected either way.
+4. **R2 adds a reason R1 did not have:** Phase 3's guard on editing a charged period
+   (§6.5 item 3) only makes sense once steps exist. Landing steps first means that guard is
+   written against real rows rather than designed in the abstract.
 
 Cost: one task of delay to Phase 3. Take it.
 
 ---
 
-## 9. Risks, assumptions, and the one thing worth confirming
+## 9. Risks, assumptions, and what is left to ask
 
-### 9.1 Risks
+### 9.1 Risks  **[R2]**
 
 | Risk | Mitigation |
 |---|---|
-| **The in-flight onboarding trap** — a landlord enters today's rent where `rentCents` means the rent at `start_date`, silently re-pricing the term. **Highest-likelihood error in the feature.** | The "Rent at lease start" relabel + live "Current rent" read-back (§6.3); `E5` pins the semantics. |
-| **Someone later adds `rentCentsForPeriod` to `PlannedCharge`** and quietly re-baselines the 53 fixtures. | Decision 11's reason goes in the zod schema's own comment, plus the CI check that no `expected:` line changes. |
-| **Float sneaks in at the percent→bps conversion.** `7.35 * 100 === 734.9999999999999`. | `Math.round` at the form edge, tested with `7.35`; bps is the only representation stored or transported. |
-| **Rounding to a whole major unit is wrong for a zero-decimal currency** (JPY, KRW). | Not in the `currency` enum today. `ESCALATION_ROUNDING_UNIT` is a named constant so the grep hits one place, plus a test asserting every member of the `currency` enum has 100 minor units. That test uses `Intl`, so it lives outside `billing.ts`. |
-| **Compound vs simple mis-set**, producing a rent nobody expects by year 3. | Stored on the lease, shown in the terms panel, shown in the portal, and the live ladder makes the difference visible before save. |
-| **`BsDateOutOfRangeError` from the anniversary probe** near the end of the BS table. | The narrow guarded `catch (RangeError) → break` in §3.6, with its justification commented. `E8` plus the existing `validateEndDateSchedulable` cover the path. |
-| **`labelForGroup`'s signature change** breaks two existing web tests. | Both files are `apps/web`; frontend-dev owns both and the change is listed as task work, not discovered mid-flight. |
-| A rolling lease (`endDate: null`) with a clause compounds for as long as `through` reaches. | Bounded by the route's 10-year sanity cap and `MAX_SCHEDULE_PERIODS`; 10 compounds at the 50% ceiling is `8.6e13`, two orders inside `MAX_SAFE_INTEGER`. |
-| A correction on a long-ended lease re-prices a decade of history. | Allowed deliberately (a mis-entered clause on an ended lease still needs fixing), always audited, and in Phase 3 it surfaces as a review queue rather than a silent re-bill. |
+| **A foreign `stepId` replayed against your own lease.** The one genuinely new cross-org shape R2 introduces. | Resolve by `(org_id, lease_id, id)`, never by `id` alone; a dedicated route test, called out in §7.2 the way PLAN-PHASE2 §7.1 calls out the roster insert. |
+| **A step edited after Phase 3 has billed it.** | `PUT` refuses anything at or before today; Phase 3 tightens that to "at or before the latest charged period start" (§6.5 item 3). Named now so it is a one-line change, not a mis-billed period. |
+| **A torn create** leaves a draft with a base rent and no ladder. | Harmless and visible; activation does not depend on steps. One `PUT /rent-steps` fixes it. Write order fixed in §4.3. |
+| **"Flat past the last step"** — a rolling lease silently stops escalating at step 30. | Stated explicitly in §3.6, surfaced as *"Increases scheduled through <date>"* plus an *Extend the ladder* action. |
+| **The cascade surprising a landlord.** | `recomputeLadderFrom` runs client-side, the diff is rendered before submit, `manual` steps are listed as explicitly unchanged, and the server only ever writes the array it was given. |
+| **`lease.rent_cents` and the first step disagreeing about day one.** | Unrepresentable: steps are strictly `> start_date`, enforced in `validateBillingTerms`, the repo and a route test. The base is not duplicated anywhere. |
+| Float at the percent→bps edge (`7.35 * 100`). | `Math.round` at the form edge, tested with `7.35`; bps is the only form stored or transported. |
+| Someone later adds a field to `PlannedCharge` and re-baselines the fixtures. | Decision 13's reason goes in the zod schema's own comment, plus the CI check that no `expected:` line changes in either fixture file. |
+| `labelForGroup`'s signature change breaks two existing web tests. | Both files are `apps/web`; listed as task work, not discovered mid-flight. |
+| An override set **above** the clause, i.e. more than the agreement allows. | Allowed with an inline warning, not blocked — the app cannot know what side agreements exist, and blocking would make a legitimate renegotiation impossible. |
 
-### 9.2 Assumptions made without being told
+### 9.2 Assumptions  **[R2]**
 
-1. The interval is a whole number of **years**. "Every six months" was not described and is
-   not supported; adding it later means a `escalation_interval_months` column and a
-   `Calendar.addMonths` anchor, which the design already accommodates.
-2. The clause applies from the lease's own start, not from a separate "first increase date".
-   A clause whose first increase is deliberately deferred (common in some markets) is not
-   expressible today.
+1. Whole-year intervals only. "Every six months" was not described; adding it means an
+   `escalation_interval_months` column and an `addMonths` anchor, which the generator already
+   accommodates.
+2. The clause applies from the lease's own start. A deliberately deferred first increase is
+   expressible **by hand** — delete the first generated step — which is a real R2 win over
+   R1, where it was impossible.
 3. A renewal carries the predecessor's clause by default and re-anchors on its own start.
-4. All six currencies in the enum have 100 minor units, so `ESCALATION_ROUNDING_UNIT = 100`
-   is safe without putting `currency` into `LeaseBillingTerms`.
-5. Corrections are not paginated and are not shown to tenants.
+4. `MAX_GENERATED_STEPS = 30` is beyond any real lease.
+5. Corrections are unpaginated and not shown to tenants.
+6. Last-writer-wins on `PUT /rent-steps`. No version column; two tabs is not a scenario worth
+   one at this scale.
 
-### 9.3 The one question worth asking — non-blocking, one sentence
+### 9.3 **[R2]** The open question R1 had is now closed
 
-Everything above is decided and buildable as written. One thing genuinely changes the
-money and is cheap to confirm, so ask it as a single question rather than a batch:
+R1 ended by asking whether an escalated rent should round to whole rupees or keep the paisa.
+**That question dissolves.** The generator *proposes* whole rupees because a proposal should
+look like a number a landlord would ask for; the landlord types over it if they disagree, and
+whatever they type is stored exactly. There is no rounding rule left for the system to
+impose and therefore nothing to confirm.
 
-> **"When the 10% lands, should the new rent round to whole rupees — ₹5,333 → ₹5,866 — or
-> keep the exact paisa, ₹5,866.30?"**
+**No open questions. This is buildable as written.**
 
-**Default, already built into this plan: round to whole rupees** (nearest, half-up,
-compounding from the rounded value). If they prefer exact minor units it is a
-one-constant change — `ESCALATION_ROUNDING_UNIT = 1` — plus re-pinning `E-R1`, `E-R2`,
-`E-R3` and the three schedule fixtures that quote a rounded figure. Do not hold the task on
-the answer; build the default and change the constant if they say otherwise.
 
-The straddle rule (§3.7) and compound-by-default (§1.4) are decided and do **not** need
-confirming — they are documented, fixture-pinned, and reversible at the cost of one
-fixture each.
+---
+
+# Revision 3 — the schedule preview is a rent ladder, not a charge table
+
+User feedback, after seeing R2's summary rendered:
+
+> "I think we need to remove the originally computed table altogether for now. I dont
+> think we need Total over the term ₹181,935.48 and also the table entirely can be
+> hidden that displays every period. Period, due date, days, amount. that table is not
+> needed and should not be computed at the beginning, should not be there as well."
+
+**Decided, and it simplifies R2 further.**
+
+## What the lease form shows
+
+1. **The prorated first period**, when there is one — its dates, its due date and its
+   amount. This was always the part carrying information, and the user confirmed it
+   twice ("its good to have a prorated period duedate and price shown").
+2. **The rent ladder** — the base and each increase with the date it takes effect,
+   editable. Which is the thing R2 made the landlord-facing truth anyway.
+
+Nothing else. No per-period table, no disclosure to one, and no term total.
+
+## What is removed
+
+- `LeaseScheduleTable` as a preview surface, and the `Collapsible` that revealed it.
+- `scheduleTotalCents` and the "Total over the term" row.
+- **The full-term `buildSchedule` call in the wizard.** Not merely hidden — not
+  computed. A five-year monthly lease was building sixty `PlannedCharge` objects to
+  render four numbers, on every keystroke in the terms step.
+
+## Why this is right rather than merely smaller
+
+A charge table in the lease form was answering a question nobody asked there. A
+landlord drafting a lease wants to know the rent, when it rises, and what the odd
+first month costs. The month-by-month ledger is a **Phase 3 question about real
+charges**, and Phase 3 will answer it from written rows rather than a projection —
+which is the honest source, since by then the rows exist and a projection could
+disagree with them.
+
+The total has the same problem: over a five-year term it is a number no landlord
+reconciles against anything, computed from a forecast that escalation overrides can
+change at any point.
+
+## Consequences
+
+- `buildSchedule` keeps every caller it has on the API side. The wizard stops being
+  one of them; the prorated first period comes from a single-period call.
+- R2 §6's claim that the collapse "finally earns its keep" with multi-rate ladders is
+  **withdrawn** — there is no collapse, because there is no table. The ladder is the
+  display, and it was always going to be.
+- `schedule-summary.ts`'s grouping and `labelForGroup` lose their purpose in the
+  wizard. Keep them only if the lease detail page still wants a schedule view; decide
+  that when Phase 3 replaces it with real charges.
+- One fewer thing for a Bikram Sambat lease to render per period.
