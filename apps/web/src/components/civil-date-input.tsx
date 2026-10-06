@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { X } from 'lucide-react';
 import {
   BS_MAX_YEAR,
   BS_MIN_YEAR,
@@ -8,6 +9,7 @@ import {
   type CalendarSystem,
   type IsoDate,
 } from '@rms/contract';
+import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { formatCivilDate } from '@/lib/format-civil-date';
@@ -38,6 +40,18 @@ export interface CivilDateInputProps {
    *  the native input's `onChange={(e) => ...(e.target.value)}` already emitted,
    *  so every existing caller stays unchanged but for the component swap. */
   onChange: (value: string) => void;
+  /**
+   * Whether `''` (nothing entered) is itself a valid, submittable end state —
+   * e.g. a rolling lease with no end date. Defaults to `false` (required):
+   * the field must end up with a real date, so no clear affordance is offered.
+   *
+   * When `true` and a date (or, on the Bikram Sambat path, any part of one)
+   * is currently picked, a labelled "Clear {label}" control is rendered so the
+   * field can always get back to `''` — on both calendars, the same way. Without
+   * this, Bikram Sambat's three Radix `Select`s have no empty-value item to pick
+   * (Radix forbids one), so once set they could never be unset again.
+   */
+  optional?: boolean;
   disabled?: boolean;
   'aria-invalid'?: boolean;
   'aria-describedby'?: string;
@@ -69,24 +83,52 @@ export function CivilDateInput(props: CivilDateInputProps) {
   return <BikramSambatDateInput {...props} />;
 }
 
+/**
+ * The clear control both calendar branches share: a labelled (never bare-"×")
+ * button that emits `''`. Native `<input type="date">` clearing is inconsistent
+ * across browsers — some show a mouse-only, unlabelled "x" in the UA shadow DOM,
+ * some show nothing at all — so Gregorian gets this same affordance rather than
+ * relying on that. One way to clear a date, on either calendar.
+ */
+function ClearDateButton({ label, onClear, disabled }: { label: string; onClear: () => void; disabled?: boolean }) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      aria-label={`Clear ${label.toLowerCase()}`}
+      onClick={onClear}
+      disabled={disabled}
+    >
+      <X aria-hidden="true" />
+    </Button>
+  );
+}
+
 function GregorianDateInput({
   id,
+  label,
   value,
   onChange,
   disabled,
+  optional,
   'aria-invalid': ariaInvalid,
   'aria-describedby': ariaDescribedBy,
 }: CivilDateInputProps) {
   return (
-    <Input
-      id={id}
-      type="date"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      disabled={disabled}
-      aria-invalid={ariaInvalid}
-      aria-describedby={ariaDescribedBy}
-    />
+    <div className="flex items-center gap-2">
+      <Input
+        id={id}
+        type="date"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        aria-invalid={ariaInvalid}
+        aria-describedby={ariaDescribedBy}
+        className="w-auto"
+      />
+      {optional && value !== '' && <ClearDateButton label={label} onClear={() => onChange('')} disabled={disabled} />}
+    </div>
   );
 }
 
@@ -107,6 +149,7 @@ function BikramSambatDateInput({
   value,
   onChange,
   disabled,
+  optional,
   'aria-invalid': ariaInvalid,
   'aria-describedby': ariaDescribedBy,
 }: CivilDateInputProps) {
@@ -181,6 +224,11 @@ function BikramSambatDateInput({
   const errorId = `${id}-bs-error`;
   const hintId = `${id}-bs-hint`;
   const describedBy = [ariaDescribedBy, outOfRange ? errorId : hintId].filter(Boolean).join(' ');
+  // Anything to clear: a full date, a partial pick the landlord wants to abandon,
+  // or an out-of-range stored value (selects are back at their placeholders, but
+  // `value` itself is still non-empty) — `commit(EMPTY_PICKED)` already handles
+  // all three identically via its own "any field null -> emit ''" branch above.
+  const showClear = !!optional && (picked.year !== null || picked.month !== null || picked.day !== null || outOfRange);
 
   return (
     <div className="space-y-1.5">
@@ -251,6 +299,10 @@ function BikramSambatDateInput({
             ))}
           </SelectContent>
         </Select>
+
+        {/* Last in both visual and tab order — year, month, day, then clear —
+           since it acts on whatever the three selects together currently hold. */}
+        {showClear && <ClearDateButton label={label} onClear={() => commit(EMPTY_PICKED)} disabled={disabled} />}
       </div>
 
       {/* The Gregorian cross-reference, live — same purpose `formatCivilDate`

@@ -16,10 +16,12 @@ function Harness({
   calendar,
   initial = '',
   onChange,
+  optional,
 }: {
   calendar: CalendarSystem;
   initial?: string;
   onChange?: (value: string) => void;
+  optional?: boolean;
 }) {
   const [value, setValue] = useState(initial);
   return (
@@ -32,9 +34,104 @@ function Harness({
         setValue(v);
         onChange?.(v);
       }}
+      optional={optional}
     />
   );
 }
+
+describe('CivilDateInput — clearing (optional fields)', () => {
+  it('a required field offers no clear affordance, on either calendar', () => {
+    render(<CivilDateInput id="d" label="Start date" calendar="gregorian" value="2026-10-05" onChange={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: /clear/i })).not.toBeInTheDocument();
+
+    render(<Harness calendar="bikram_sambat" initial="2026-10-05" />);
+    expect(screen.queryByRole('button', { name: /clear/i })).not.toBeInTheDocument();
+  });
+
+  it('Gregorian: an optional field with a value offers a labelled, keyboard-reachable clear control that emits \'\'', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <CivilDateInput
+        id="d"
+        label="End date"
+        calendar="gregorian"
+        value="2026-10-05"
+        onChange={onChange}
+        optional
+      />,
+    );
+
+    const clearButton = screen.getByRole('button', { name: 'Clear end date' });
+    // Not a bare "×" — it has a real accessible name an assistive tech user can hear.
+    expect(clearButton).toHaveAccessibleName('Clear end date');
+
+    const dateInput = document.querySelector('input[type="date"]') as HTMLInputElement;
+    await user.tab();
+    expect(document.activeElement).toBe(dateInput);
+    await user.tab();
+    expect(document.activeElement).toBe(clearButton);
+
+    await user.keyboard('{Enter}');
+    expect(onChange).toHaveBeenLastCalledWith('');
+  });
+
+  it('Gregorian: an optional, empty field offers no clear control', () => {
+    render(<CivilDateInput id="d" label="End date" calendar="gregorian" value="" onChange={vi.fn()} optional />);
+    expect(screen.queryByRole('button', { name: /clear/i })).not.toBeInTheDocument();
+  });
+
+  it('Bikram Sambat: setting an end date then clearing it returns the selects to their placeholders and emits \'\'', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness calendar="bikram_sambat" onChange={onChange} optional />);
+
+    await user.click(screen.getByRole('combobox', { name: 'Start date — year' }));
+    await user.click(await screen.findByRole('option', { name: '2083' }));
+    await user.click(screen.getByRole('combobox', { name: 'Start date — month' }));
+    await user.click(await screen.findByRole('option', { name: 'Ashwin' }));
+    await user.click(screen.getByRole('combobox', { name: 'Start date — day' }));
+    await user.click(await screen.findByRole('option', { name: '19' }));
+    expect(onChange).toHaveBeenLastCalledWith('2026-10-05');
+
+    const clearButton = screen.getByRole('button', { name: 'Clear start date' });
+    expect(clearButton).toHaveAccessibleName('Clear start date');
+    await user.click(clearButton);
+
+    expect(onChange).toHaveBeenLastCalledWith('');
+    expect(screen.getByRole('combobox', { name: 'Start date — year' })).toHaveTextContent('Year');
+    expect(screen.getByRole('combobox', { name: 'Start date — month' })).toHaveTextContent('Month');
+    expect(screen.getByRole('combobox', { name: 'Start date — day' })).toHaveTextContent('Day');
+    expect(screen.queryByRole('button', { name: /clear/i })).not.toBeInTheDocument();
+  });
+
+  it('Bikram Sambat: the clear control sits last in tab order, after year, month and day', async () => {
+    const user = userEvent.setup();
+    render(<Harness calendar="bikram_sambat" initial="2026-10-05" optional />);
+
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('combobox', { name: 'Start date — year' }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('combobox', { name: 'Start date — month' }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('combobox', { name: 'Start date — day' }));
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Clear start date' }));
+  });
+
+  it('Bikram Sambat: an out-of-range stored value can still be cleared', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness calendar="bikram_sambat" initial="1900-01-01" onChange={onChange} optional />);
+
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    const clearButton = screen.getByRole('button', { name: 'Clear start date' });
+    await user.click(clearButton);
+
+    expect(onChange).toHaveBeenLastCalledWith('');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});
 
 describe('CivilDateInput — Gregorian', () => {
   it('renders the native date input and forwards its value verbatim', () => {

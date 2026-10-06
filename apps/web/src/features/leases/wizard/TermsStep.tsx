@@ -152,6 +152,7 @@ export function TermsStep({ form, property, unit }: TermsStepProps) {
             calendar={calendar}
             value={form.watch('endDate') ?? ''}
             onChange={(value) => form.setValue('endDate', value === '' ? null : value, { shouldValidate: true })}
+            optional
             aria-invalid={!!errors.endDate}
             aria-describedby="wizard-endDate-help"
           />
@@ -203,6 +204,7 @@ export function TermsStep({ form, property, unit }: TermsStepProps) {
                     shouldValidate: true,
                   })
                 }
+                optional
                 aria-invalid={!!errors.ledgerStartDate}
                 aria-describedby="wizard-ledgerStartDate-help"
               />

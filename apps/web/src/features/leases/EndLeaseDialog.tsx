@@ -132,6 +132,7 @@ export function EndLeaseDialog({ open, onOpenChange, lease }: EndLeaseDialogProp
                 calendar={lease.calendar}
                 value={moveOutDate}
                 onChange={setMoveOutDate}
+                optional
               />
             </div>
           </div>

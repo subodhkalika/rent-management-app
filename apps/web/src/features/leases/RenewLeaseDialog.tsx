@@ -99,6 +99,7 @@ export function RenewLeaseDialog({ open, onOpenChange, lease }: RenewLeaseDialog
                 calendar={lease.calendar}
                 value={endDate}
                 onChange={setEndDate}
+                optional
               />
             </div>
           </div>
