@@ -520,6 +520,17 @@ function insertableRowsFor(orgId: string, leaseId: string, resolved: StepsToWrit
  * Pure: every reason `PUT /rent-steps` 409s or 422s, before any query runs.
  * `today` is the caller's `localToday(property.timezone)` — never computed here.
  * Exported so the route/repo split stays testable without a database.
+ *
+ * PLAN-ESCALATION.md §4.5's table: a `draft` lease has no past — it has never
+ * billed anything, so there is no money a correction could protect, and a step
+ * dated behind `today` is exactly as free to replace as one ahead of it. This
+ * is also what makes onboarding a backdated tenancy (§4.3) workable: a draft's
+ * ladder can include already-past steps without forcing `/correct` for an event
+ * that never happened. The date-based restriction below is unchanged for every
+ * OTHER status — `active`, `ended`, `terminated` all still require `/correct`
+ * for a step at or before `today`. The moment a lease activates it has a real
+ * past; see `activateLease`'s comment for why activation itself needs no extra
+ * guard here.
  */
 export function validateStepReplacement(input: {
   leaseStatus: LeaseStatusValue;
@@ -529,6 +540,9 @@ export function validateStepReplacement(input: {
 }): { kind: 'conflict'; message: string } | null {
   if (input.leaseStatus === 'cancelled') {
     return { kind: 'conflict', message: 'A cancelled lease cannot be changed.' };
+  }
+  if (input.leaseStatus === 'draft') {
+    return null;
   }
 
   const existingByDate = new Map(input.existing.map((s) => [s.effectiveFrom, s.rentCents]));
@@ -1187,6 +1201,17 @@ export async function updateLease(
  * lifecycle transitions (§5)
  * ======================================================================== */
 
+/**
+ * Needs no rent-step guard for already-past `effectiveFrom` values. A draft is
+ * allowed (§4.3, §4.5) to hold steps dated behind `today` — the backdated-
+ * onboarding case — and this transition only flips `lease.status`; it never
+ * touches `lease_rent_step` rows, so no step's date or source changes here.
+ * Once this UPDATE commits, those same rows are read by the now-`active`
+ * lease's `validateStepReplacement`, whose date-based rule (unchanged for
+ * every non-draft status) immediately requires `/correct` for any of them —
+ * which is correct: the moment a lease is active, a step at or before `today`
+ * is money that was or will be billed, regardless of when the row was written.
+ */
 export async function activateLease(orgId: string, db: Database, id: string): Promise<LeaseRow | null> {
   const current = await getLease(orgId, db, id);
   if (!current) return null;

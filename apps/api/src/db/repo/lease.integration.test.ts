@@ -765,6 +765,30 @@ describe.skipIf(!DATABASE_URL)('lease.ts orchestration functions — live Postgr
         });
       }
 
+      // §4.5's table makes the date-based "has it taken effect" guard apply to
+      // every status EXCEPT `draft` — a draft has never billed anything, so a
+      // past step is exactly as free as a future one. These helpers push the
+      // SAME lease through activation (and, for `ended`/`terminated`, through
+      // `endLease`) so the boundary tests below exercise the real transitions,
+      // not a hand-set status column.
+      async function createActiveLeaseWithPastAndFutureStep() {
+        const created = await createLeaseWithPastAndFutureStep();
+        await leaseRepo.activateLease(orgId, db, created.id);
+        return (await leaseRepo.getLease(orgId, db, created.id))!;
+      }
+
+      async function createEndedLeaseWithPastAndFutureStep(reason: 'mutual' | 'breach') {
+        const created = await createLeaseWithPastAndFutureStep();
+        await leaseRepo.activateLease(orgId, db, created.id);
+        await leaseRepo.endLease(orgId, db, created.id, { endDate: '2031-01-01', reason });
+        return (await leaseRepo.getLease(orgId, db, created.id))!;
+      }
+
+      async function createCancelledLeaseWithPastAndFutureStep() {
+        const created = await createLeaseWithPastAndFutureStep();
+        return (await leaseRepo.cancelLease(orgId, db, created.id))!;
+      }
+
       it('PUT freely edits a FUTURE step, unaudited', async () => {
         const created = await createLeaseWithPastAndFutureStep();
         const existing = await leaseRepo.listRentSteps(orgId, db, created.id);
@@ -782,38 +806,115 @@ describe.skipIf(!DATABASE_URL)('lease.ts orchestration functions — live Postgr
         expect(existing.length).toBe(2); // sanity: both steps were actually there beforehand
       });
 
-      it('PUT changing a PAST step 409s — "already taken effect"', async () => {
-        const created = await createLeaseWithPastAndFutureStep();
-        await expect(
-          leaseRepo.replaceRentSteps(orgId, db, created.id, {
+      describe('§4.5 — a DRAFT lease has no past', () => {
+        it('PUT freely REPLACES a PAST step on a draft lease, unaudited', async () => {
+          const created = await createLeaseWithPastAndFutureStep();
+          expect(created.status).toBe('draft');
+
+          const replaced = await leaseRepo.replaceRentSteps(orgId, db, created.id, {
             steps: [
               { effectiveFrom: '2020-06-01', rentCents: 999999, source: 'manual' },
               { effectiveFrom: '2030-06-01', rentCents: 120000, source: 'manual' },
             ],
-          }),
-        ).rejects.toMatchObject({ code: 'conflict' });
-      });
+          });
 
-      it('PUT removing a PAST step 409s — same guard', async () => {
-        const created = await createLeaseWithPastAndFutureStep();
-        await expect(
-          leaseRepo.replaceRentSteps(orgId, db, created.id, {
+          expect(replaced?.find((s) => s.effectiveFrom === '2020-06-01')?.rentCents).toBe(999999);
+          const corrections = await leaseRepo.listRentStepCorrections(orgId, db, created.id);
+          expect(corrections).toEqual([]); // nothing billed, nothing audited
+        });
+
+        it('PUT freely REMOVES a PAST step on a draft lease', async () => {
+          const created = await createLeaseWithPastAndFutureStep();
+          const replaced = await leaseRepo.replaceRentSteps(orgId, db, created.id, {
             steps: [{ effectiveFrom: '2030-06-01', rentCents: 120000, source: 'manual' }],
-          }),
-        ).rejects.toMatchObject({ code: 'conflict' });
-      });
+          });
+          expect(replaced?.map((s) => s.effectiveFrom)).toEqual(['2030-06-01']);
+        });
 
-      it('PUT adding a BACKDATED step 409s — "cannot be backdated"', async () => {
-        const created = await createLeaseWithPastAndFutureStep();
-        await expect(
-          leaseRepo.replaceRentSteps(orgId, db, created.id, {
+        it('PUT freely ADDS a BACKDATED step on a draft lease — onboarding a tenancy already in progress (§4.3)', async () => {
+          const created = await createLeaseWithPastAndFutureStep();
+          const replaced = await leaseRepo.replaceRentSteps(orgId, db, created.id, {
             steps: [
               { effectiveFrom: '2020-06-01', rentCents: 110000, source: 'manual' },
               { effectiveFrom: '2021-06-01', rentCents: 115000, source: 'manual' },
               { effectiveFrom: '2030-06-01', rentCents: 120000, source: 'manual' },
             ],
-          }),
-        ).rejects.toMatchObject({ code: 'conflict' });
+          });
+          expect(replaced?.map((s) => s.effectiveFrom)).toEqual(['2020-06-01', '2021-06-01', '2030-06-01']);
+        });
+      });
+
+      describe('§4.5 — the status boundary, once a lease has a real past', () => {
+        it('ACTIVE: PUT changing a PAST step still 409s — "already taken effect"', async () => {
+          const created = await createActiveLeaseWithPastAndFutureStep();
+          expect(created.status).toBe('active');
+          await expect(
+            leaseRepo.replaceRentSteps(orgId, db, created.id, {
+              steps: [
+                { effectiveFrom: '2020-06-01', rentCents: 999999, source: 'manual' },
+                { effectiveFrom: '2030-06-01', rentCents: 120000, source: 'manual' },
+              ],
+            }),
+          ).rejects.toMatchObject({ code: 'conflict' });
+        });
+
+        it('ACTIVE: PUT removing a PAST step still 409s — same guard', async () => {
+          const created = await createActiveLeaseWithPastAndFutureStep();
+          await expect(
+            leaseRepo.replaceRentSteps(orgId, db, created.id, {
+              steps: [{ effectiveFrom: '2030-06-01', rentCents: 120000, source: 'manual' }],
+            }),
+          ).rejects.toMatchObject({ code: 'conflict' });
+        });
+
+        it('ACTIVE: PUT adding a BACKDATED step still 409s — "cannot be backdated"', async () => {
+          const created = await createActiveLeaseWithPastAndFutureStep();
+          await expect(
+            leaseRepo.replaceRentSteps(orgId, db, created.id, {
+              steps: [
+                { effectiveFrom: '2020-06-01', rentCents: 110000, source: 'manual' },
+                { effectiveFrom: '2021-06-01', rentCents: 115000, source: 'manual' },
+                { effectiveFrom: '2030-06-01', rentCents: 120000, source: 'manual' },
+              ],
+            }),
+          ).rejects.toMatchObject({ code: 'conflict' });
+        });
+
+        it('ENDED: PUT changing a PAST step still 409s — dead data, but still audited through /correct', async () => {
+          const created = await createEndedLeaseWithPastAndFutureStep('mutual');
+          expect(created.status).toBe('ended');
+          await expect(
+            leaseRepo.replaceRentSteps(orgId, db, created.id, {
+              steps: [
+                { effectiveFrom: '2020-06-01', rentCents: 999999, source: 'manual' },
+                { effectiveFrom: '2030-06-01', rentCents: 120000, source: 'manual' },
+              ],
+            }),
+          ).rejects.toMatchObject({ code: 'conflict' });
+        });
+
+        it('TERMINATED: PUT changing a PAST step still 409s', async () => {
+          const created = await createEndedLeaseWithPastAndFutureStep('breach');
+          expect(created.status).toBe('terminated');
+          await expect(
+            leaseRepo.replaceRentSteps(orgId, db, created.id, {
+              steps: [
+                { effectiveFrom: '2020-06-01', rentCents: 999999, source: 'manual' },
+                { effectiveFrom: '2030-06-01', rentCents: 120000, source: 'manual' },
+              ],
+            }),
+          ).rejects.toMatchObject({ code: 'conflict' });
+        });
+
+        it('CANCELLED: PUT 409s regardless of past or future — "A cancelled lease cannot be changed."', async () => {
+          const created = await createCancelledLeaseWithPastAndFutureStep();
+          expect(created.status).toBe('cancelled');
+          await expect(
+            leaseRepo.replaceRentSteps(orgId, db, created.id, {
+              steps: [{ effectiveFrom: '2030-06-01', rentCents: 999999, source: 'manual' }],
+            }),
+          ).rejects.toMatchObject({ code: 'conflict', message: 'A cancelled lease cannot be changed.' });
+        });
       });
 
       it('PUT with an out-of-order effectiveFrom 422s (I20, via validateBillingTerms)', async () => {
