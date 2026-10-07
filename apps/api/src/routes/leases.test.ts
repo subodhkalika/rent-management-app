@@ -41,6 +41,15 @@ const leaseRepoMock = {
   addLeaseTenant: vi.fn(),
   removeLeaseTenant: vi.fn(),
   setPrimaryTenant: vi.fn(),
+  listRentSteps: vi.fn(),
+  replaceRentSteps: vi.fn(),
+  correctRentStep: vi.fn(),
+  listRentStepCorrections: vi.fn(),
+  // Pure reshape (db/repo/lease.ts's own implementation) — not mocked away, just
+  // reimplemented here, since `vi.mock(..., () => leaseRepoMock)` replaces the
+  // WHOLE module and this one is a plain function the route calls directly.
+  toRentSteps: (rows: readonly { effectiveFrom: string; rentCents: number }[]) =>
+    rows.map((r) => ({ effectiveFrom: r.effectiveFrom, rentCents: r.rentCents })),
 };
 vi.mock('../db/repo/lease.js', () => leaseRepoMock);
 
@@ -88,6 +97,10 @@ function leaseRow(overrides: Partial<LeaseRow> = {}): LeaseRow {
     depositCents: 0,
     openingBalanceCents: 0,
     ledgerStartDate: '2026-01-01',
+    escalationMode: 'none',
+    escalationRateBps: null,
+    escalationIntervalYears: null,
+    escalationCompounding: null,
     tenantCount: 1,
     primaryTenantName: 'Dana Lee',
     renewedFromLeaseId: null,
@@ -102,6 +115,10 @@ beforeEach(() => {
   currentOrgId = 'org_A';
   currentUserId = 'user_1';
   vi.clearAllMocks();
+  // Safe default for every route that now loads the stored ladder alongside the
+  // lease (the schedule routes, §7.2 item 5) — individual tests override this
+  // when the fixture under test carries real steps.
+  leaseRepoMock.listRentSteps.mockResolvedValue([]);
 });
 
 async function post(path: string, json: unknown) {
@@ -355,6 +372,9 @@ describe('GET /v1/leases/:id/schedule — scheduleFixtures through the HTTP rout
           moveOutBillingPolicy: fixture.terms.moveOutBillingPolicy,
         }),
       );
+      leaseRepoMock.listRentSteps.mockResolvedValue(
+        fixture.terms.rentSteps.map((s) => ({ effectiveFrom: s.effectiveFrom, rentCents: s.rentCents })),
+      );
 
       const res = await get(`/v1/leases/${LEASE_ID}/schedule?through=${fixture.through}`);
       expect(res.status).toBe(200);
@@ -389,6 +409,9 @@ describe('GET /v1/leases/:id/schedule — scheduleFixtures through the HTTP rout
           moveOutDate: fixture.terms.moveOutDate,
           moveOutBillingPolicy: fixture.terms.moveOutBillingPolicy,
         }),
+      );
+      leaseRepoMock.listRentSteps.mockResolvedValue(
+        fixture.terms.rentSteps.map((s) => ({ effectiveFrom: s.effectiveFrom, rentCents: s.rentCents })),
       );
 
       const res = await get(`/v1/leases/${LEASE_ID}/schedule?through=${fixture.through}`);

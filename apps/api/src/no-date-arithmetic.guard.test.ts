@@ -69,6 +69,27 @@ import { listSourceFiles, readSource } from '../test/support/repoGuard.js';
  * Neither rule has a violation to catch today (confirmed before writing this) —
  * they exist so one introduced later fails loudly instead of shipping. The
  * apps/web half of this same amendment is frontend-dev's guard, in its own tree.
+ *
+ * Two more rules, from docs/PLAN-ESCALATION.md §7.2 item 6 (the rent escalation
+ * clause): the clause's rate/interval arithmetic lives ONLY inside
+ * `generateRentSteps` / `clauseExpectedRent` / `recomputeLadderFrom`, all three
+ * confined to `packages/contract`. `apps/api` reads and writes the STORED
+ * `lease_rent_step` rows — it never re-derives a rent from a rate.
+ *
+ * 6. `BPS_SCALE` or `STEP_PROPOSAL_ROUNDING_UNIT` referenced anywhere in
+ *    `apps/api/src`. Both are the generator's own constants (billing.ts's own
+ *    comment on them); importing either here is itself the tell that someone is
+ *    about to multiply a rent by a rate outside the one function allowed to.
+ *
+ * 7. `rateBps` / `escalationRateBps` appearing in an arithmetic expression
+ *    (adjacent to `*`, `/`, `+` or `-`). Reading it — to display it, to persist
+ *    it as a column, to pass it whole into `generateRentSteps` — is fine; doing
+ *    arithmetic ON it here is a second escalation engine, which is exactly the
+ *    bug this whole design exists to prevent (PLAN-ESCALATION.md §7.1's verbatim
+ *    paragraph).
+ *
+ * Neither rule has a violation to catch today either (confirmed before writing
+ * this) — same reasoning as rules 4/5 above.
  */
 
 const DIR = dirname(fileURLToPath(import.meta.url));
@@ -166,6 +187,23 @@ function passesMoveOutDateToComparisonHelper(src: string): string | null {
   return null;
 }
 
+/** PLAN-ESCALATION.md §7.2 rule 6: the generator's own rounding/scale constants,
+ *  never needed outside `packages/contract`. */
+const FORBIDDEN_CONTRACT_ONLY_IDENTIFIERS = ['BPS_SCALE', 'STEP_PROPOSAL_ROUNDING_UNIT'];
+
+function referencesIdentifier(src: string, name: string): boolean {
+  return new RegExp(`\\b${name}\\b`).test(src);
+}
+
+/** PLAN-ESCALATION.md §7.2 rule 7: `rateBps`/`escalationRateBps` adjacent to an
+ *  arithmetic operator on EITHER side — reading/passing it whole is fine, doing
+ *  maths on it is the second-engine bug. */
+const RATE_BPS_ARITHMETIC = /(?:rateBps|escalationRateBps)\s*[*/+-]|[*/+-]\s*(?:rateBps|escalationRateBps)\b/;
+
+function usesRateBpsArithmetically(src: string): boolean {
+  return RATE_BPS_ARITHMETIC.test(src);
+}
+
 describe('no-date-arithmetic guard (docs/DATES.md)', () => {
   const files = listSourceFiles(DIR);
 
@@ -233,6 +271,26 @@ describe('no-date-arithmetic guard (docs/DATES.md)', () => {
             'fine; reasoning about it — comparing it, clamping to it — is effectiveBillingEnd\'s job ' +
             'alone, inside the contract.',
         ).toBeNull();
+      });
+
+      for (const name of FORBIDDEN_CONTRACT_ONLY_IDENTIFIERS) {
+        it(`never references ${name} (PLAN-ESCALATION.md §7.2) — the generator's own constant`, () => {
+          expect(
+            referencesIdentifier(src, name),
+            `${file} references \`${name}\`. It is the generator's own constant, confined to ` +
+              '`packages/contract` — importing it here is the tell that a rent is about to be ' +
+              'multiplied by a rate outside `generateRentSteps`, the one function allowed to.',
+          ).toBe(false);
+        });
+      }
+
+      it('never puts rateBps/escalationRateBps in an arithmetic expression (PLAN-ESCALATION.md §7.2)', () => {
+        expect(
+          usesRateBpsArithmetically(src),
+          `${file} does arithmetic on \`rateBps\`/\`escalationRateBps\`. Reading or persisting the ` +
+            'whole value is fine; the clause\'s rate/interval arithmetic lives ONLY inside ' +
+            '`generateRentSteps`/`clauseExpectedRent`/`recomputeLadderFrom`, all in the contract.',
+        ).toBe(false);
       });
     });
   }
@@ -415,5 +473,47 @@ describe('no-date-arithmetic guard — detectors proven against deliberate viola
     const src = readSource(fixtureRoot, 'bad-effective-billing-end.ts');
     expect(callsEffectiveBillingEnd(src)).toBe(true);
     expect(passesMoveOutDateToComparisonHelper(src)).toBe('compareIsoDate');
+  });
+
+  it('flags a reference to BPS_SCALE or STEP_PROPOSAL_ROUNDING_UNIT', () => {
+    expect(referencesIdentifier('const scaled = cents * BPS_SCALE;', 'BPS_SCALE')).toBe(true);
+    expect(referencesIdentifier('import { STEP_PROPOSAL_ROUNDING_UNIT } from "@rms/contract";', 'STEP_PROPOSAL_ROUNDING_UNIT')).toBe(
+      true,
+    );
+  });
+
+  it('does not flag an unrelated identifier that merely contains the same substring', () => {
+    expect(referencesIdentifier('const BPS_SCALE_FACTOR = 1;', 'BPS_SCALE')).toBe(false);
+  });
+
+  it('flags rateBps/escalationRateBps used in arithmetic on either side', () => {
+    expect(usesRateBpsArithmetically('const pct = rateBps / 100;')).toBe(true);
+    expect(usesRateBpsArithmetically('const x = 1 + escalationRateBps;')).toBe(true);
+    expect(usesRateBpsArithmetically('const proposed = base * (1 + rateBps);')).toBe(true);
+  });
+
+  it('does not flag merely reading, destructuring or passing rateBps whole', () => {
+    expect(usesRateBpsArithmetically('const { rateBps } = clause;')).toBe(false);
+    expect(usesRateBpsArithmetically('generateRentSteps({ clause: { rateBps }, baseRentCents });')).toBe(false);
+    expect(usesRateBpsArithmetically('patch.escalationRateBps = data.escalation?.rateBps ?? null;')).toBe(false);
+  });
+
+  it('a deliberate PLAN-ESCALATION.md §7.2 violation, written to disk, is caught end to end', () => {
+    const badFile = join(fixtureRoot, 'bad-escalation-arithmetic.ts');
+    writeFileSync(
+      badFile,
+      [
+        "import { BPS_SCALE } from '@rms/contract';",
+        'export function proposeOnceAgain(cents: number, rateBps: number): number {',
+        '  return (cents * (BPS_SCALE + rateBps)) / BPS_SCALE;',
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const src = readSource(fixtureRoot, 'bad-escalation-arithmetic.ts');
+    expect(referencesIdentifier(src, 'BPS_SCALE')).toBe(true);
+    expect(usesRateBpsArithmetically(src)).toBe(true);
   });
 });

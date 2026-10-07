@@ -9,6 +9,8 @@ import {
   removeLeaseTenantBody,
   leaseListQuery,
   scheduleQuery,
+  putRentStepsBody,
+  correctRentStepBody,
   billingTermsFor,
   compareIsoDate,
   type CreateLeaseBody,
@@ -20,12 +22,14 @@ import {
   type LeaseListQuery,
   type ScheduleQuery,
   type LeaseSchedule,
+  type PutRentStepsBody,
+  type CorrectRentStepBody,
 } from '@rms/contract';
 import { validateBody, validateQuery, parsedBody, parsedQuery } from '../middleware/validate.js';
 import { conflict, notFound, validationFailed } from '../lib/errors.js';
 import { requireUuidParam } from '../lib/params.js';
 import { encodeCursor } from '../lib/pagination.js';
-import { mapLeaseSummary, mapLeaseDetail, mapLeaseTenant } from '../lib/mappers.js';
+import { mapLeaseSummary, mapLeaseDetail, mapLeaseTenant, mapRentStep, mapRentStepCorrection } from '../lib/mappers.js';
 import { scheduleSanityMaxThrough, buildScheduleOrThrow } from '../lib/schedule.js';
 import * as leaseRepo from '../db/repo/lease.js';
 import type { AppBindings } from '../types.js';
@@ -144,6 +148,11 @@ leases.get('/v1/leases/:id/schedule', validateQuery(scheduleQuery), async (c) =>
   const row = await leaseRepo.getLease(orgId, db, id);
   if (!row) throw notFound('Lease');
 
+  // The stored ladder, loaded alongside the lease (escalation plan §7.2 item 5)
+  // — one extra query on this path only, never on the list route. The schedule
+  // reads `rentForPeriodStart` over these rows; it never reads the clause.
+  const rentSteps = await leaseRepo.listRentSteps(orgId, db, id);
+
   // Keeps buildSchedule's MAX_SCHEDULE_PERIODS RangeError unreachable in practice
   // (packages/contract's billing.ts §1.5). This bound is an INPUT SANITY check,
   // not a billing computation — lib/schedule.ts's scheduleSanityMaxThrough is pure
@@ -158,7 +167,7 @@ leases.get('/v1/leases/:id/schedule', validateQuery(scheduleQuery), async (c) =>
   // both this route and the portal's equivalent, and the browser's live preview,
   // call this and pass the result straight to buildSchedule. No local date
   // arithmetic anywhere in this file.
-  const terms = billingTermsFor(row);
+  const terms = billingTermsFor({ ...row, rentSteps: leaseRepo.toRentSteps(rentSteps) });
 
   // buildScheduleOrThrow turns a Bikram Sambat lease running past the calendar's
   // data table into a 422 naming the real limit, never a 500 (lib/schedule.ts).
@@ -205,4 +214,62 @@ leases.post('/v1/leases/:id/tenants/:tenantId/primary', async (c) => {
   const updated = await leaseRepo.setPrimaryTenant(orgId, db, id, tenantId);
   if (!updated) throw notFound('Tenant');
   return c.json(mapLeaseTenant(updated));
+});
+
+/* ======================================================================== *
+ * rent steps — the stored ladder (escalation plan §4.1/§4.6). Every route
+ * resolves the lease BEFORE anything else — the same resolver every other lease
+ * route uses — so a foreign lease id 404s before a body is ever read.
+ * ======================================================================== */
+
+leases.get('/v1/leases/:id/rent-steps', async (c) => {
+  const orgId = c.get('orgId');
+  const db = c.get('db');
+  const id = requireUuidParam(c.req.param('id'), 'Lease');
+
+  const current = await leaseRepo.getLease(orgId, db, id);
+  if (!current) throw notFound('Lease');
+
+  const rows = await leaseRepo.listRentSteps(orgId, db, id);
+  return c.json({ items: rows.map(mapRentStep) });
+});
+
+leases.put('/v1/leases/:id/rent-steps', validateBody(putRentStepsBody), async (c) => {
+  const orgId = c.get('orgId');
+  const db = c.get('db');
+  const id = requireUuidParam(c.req.param('id'), 'Lease');
+  const body = parsedBody<PutRentStepsBody>(c);
+
+  const rows = await leaseRepo.replaceRentSteps(orgId, db, id, body);
+  if (!rows) throw notFound('Lease');
+  return c.json({ items: rows.map(mapRentStep) });
+});
+
+leases.post('/v1/leases/:id/rent-steps/:stepId/correct', validateBody(correctRentStepBody), async (c) => {
+  const orgId = c.get('orgId');
+  const userId = c.get('userId');
+  const db = c.get('db');
+  const id = requireUuidParam(c.req.param('id'), 'Lease');
+  // THE one genuinely new cross-org shape (escalation plan §4.6): `correctRentStep`
+  // resolves `stepId` by `(org_id, lease_id, id)`, never by `id` alone, so a
+  // foreign step id reads identically to one that simply does not exist — 404
+  // either way.
+  const stepId = requireUuidParam(c.req.param('stepId'), 'Rent step');
+  const body = parsedBody<CorrectRentStepBody>(c);
+
+  const updated = await leaseRepo.correctRentStep(orgId, db, id, stepId, userId, body);
+  if (!updated) throw notFound('Rent step');
+  return c.json(mapRentStep(updated));
+});
+
+leases.get('/v1/leases/:id/rent-step-corrections', async (c) => {
+  const orgId = c.get('orgId');
+  const db = c.get('db');
+  const id = requireUuidParam(c.req.param('id'), 'Lease');
+
+  const current = await leaseRepo.getLease(orgId, db, id);
+  if (!current) throw notFound('Lease');
+
+  const rows = await leaseRepo.listRentStepCorrections(orgId, db, id);
+  return c.json({ items: rows.map(mapRentStepCorrection) });
 });

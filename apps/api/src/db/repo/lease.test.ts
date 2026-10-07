@@ -236,6 +236,7 @@ const createBody = {
   depositCents: 0,
   openingBalanceCents: 0,
   notes: undefined,
+  escalation: null,
 };
 
 describe('createLeaseQuery', () => {

@@ -1,10 +1,28 @@
 import { describe, it, expect } from 'vitest';
-import { property as propertySchema, unit as unitSchema, tenant as tenantSchema, portalProfile as portalProfileSchema } from '@rms/contract';
+import {
+  property as propertySchema,
+  unit as unitSchema,
+  tenant as tenantSchema,
+  portalProfile as portalProfileSchema,
+  rentStepSummary,
+  rentStepCorrection,
+  portalRentStep,
+} from '@rms/contract';
 import type { PropertyRow } from '../db/repo/property.js';
 import type { UnitRow } from '../db/repo/unit.js';
 import type { TenantRow } from '../db/repo/tenant.js';
 import type { PortalProfileRow } from '../db/repo/portal/profile.js';
-import { mapProperty, mapUnit, mapTenant, mapPortalProfile, derivePortalAccess } from './mappers.js';
+import { escalationFromRow, type RentStepRow, type RentStepCorrectionRow } from '../db/repo/lease.js';
+import {
+  mapProperty,
+  mapUnit,
+  mapTenant,
+  mapPortalProfile,
+  derivePortalAccess,
+  mapRentStep,
+  mapRentStepCorrection,
+  mapPortalRentStep,
+} from './mappers.js';
 
 const propertyRow: PropertyRow = {
   id: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e0f',
@@ -234,5 +252,119 @@ describe('mapPortalProfile', () => {
   it('never leaks notes — there is no such field to leak (the row has none to map)', () => {
     const mapped = mapPortalProfile(portalProfileRow) as Record<string, unknown>;
     expect(mapped.notes).toBeUndefined();
+  });
+});
+
+/* ======================================================================== *
+ * rent escalation — PLAN-ESCALATION.md §2.3/§2.4. `escalationFromRow` and the
+ * three new row-to-contract mappers it feeds and sits alongside.
+ * ======================================================================== */
+
+describe('escalationFromRow', () => {
+  it("'none' maps to null — the contract never surfaces the no-op enum value", () => {
+    expect(
+      escalationFromRow({
+        escalationMode: 'none',
+        escalationRateBps: null,
+        escalationIntervalYears: null,
+        escalationCompounding: null,
+      }),
+    ).toBeNull();
+  });
+
+  it("'percent' maps to the full clause object", () => {
+    expect(
+      escalationFromRow({
+        escalationMode: 'percent',
+        escalationRateBps: 1000,
+        escalationIntervalYears: 1,
+        escalationCompounding: 'compound',
+      }),
+    ).toEqual({ mode: 'percent', rateBps: 1000, intervalYears: 1, compounding: 'compound' });
+  });
+});
+
+const rentStepRow: RentStepRow = {
+  id: '0191c2e4-4d5e-7f6a-8b9c-0d1e2f3a4b5c',
+  leaseId: '0191c2e4-5e6f-7a8b-9c0d-1e2f3a4b5c6d',
+  effectiveFrom: '2027-04-01',
+  rentCents: 586600,
+  source: 'clause',
+  clauseExpectedCents: 586600,
+  note: null,
+  createdAt: new Date('2026-04-01T00:00:00.000Z'),
+  updatedAt: new Date('2026-04-01T00:00:00.000Z'),
+};
+
+describe('mapRentStep', () => {
+  it('produces a value matching the contract schema', () => {
+    expect(rentStepSummary.safeParse(mapRentStep(rentStepRow)).success).toBe(true);
+  });
+
+  it('converts a null note to undefined (rentStepInput.note is .optional(), not .nullable())', () => {
+    expect(mapRentStep(rentStepRow).note).toBeUndefined();
+  });
+
+  it('preserves a present note — landlord-private, but present on the landlord shape', () => {
+    const mapped = mapRentStep({ ...rentStepRow, note: 'Good tenant — 5% only' });
+    expect(mapped.note).toBe('Good tenant — 5% only');
+  });
+
+  it('formats timestamps as ISO strings', () => {
+    expect(mapRentStep(rentStepRow).createdAt).toBe('2026-04-01T00:00:00.000Z');
+  });
+
+  it('preserves a null clauseExpectedCents (the commercial, hand-entered case)', () => {
+    const mapped = mapRentStep({ ...rentStepRow, source: 'manual', clauseExpectedCents: null });
+    expect(mapped.clauseExpectedCents).toBeNull();
+    expect(rentStepSummary.safeParse(mapped).success).toBe(true);
+  });
+
+  it('never leaks leaseId — not part of rentStepSummary', () => {
+    const mapped = mapRentStep(rentStepRow) as Record<string, unknown>;
+    expect(mapped.leaseId).toBeUndefined();
+  });
+});
+
+const rentStepCorrectionRow: RentStepCorrectionRow = {
+  id: '0191c2e4-6f7a-8b9c-8d1e-2f3a4b5c6d7e',
+  leaseId: '0191c2e4-5e6f-7a8b-9c0d-1e2f3a4b5c6d',
+  stepId: rentStepRow.id,
+  effectiveFrom: '2020-06-01',
+  oldRentCents: 110000,
+  newRentCents: 105000,
+  reason: 'Good tenant, 5% only instead of 10%.',
+  correctedByUserId: 'user_1',
+  correctedByName: 'Alice Landlord',
+  createdAt: new Date('2026-06-01T00:00:00.000Z'),
+};
+
+describe('mapRentStepCorrection', () => {
+  it('produces a value matching the contract schema', () => {
+    expect(rentStepCorrection.safeParse(mapRentStepCorrection(rentStepCorrectionRow)).success).toBe(true);
+  });
+
+  it('preserves a null correctedByName (a deleted user account must never break rendering an old correction)', () => {
+    const mapped = mapRentStepCorrection({ ...rentStepCorrectionRow, correctedByName: null });
+    expect(mapped.correctedByName).toBeNull();
+    expect(rentStepCorrection.safeParse(mapped).success).toBe(true);
+  });
+
+  it('formats createdAt as an ISO string', () => {
+    expect(mapRentStepCorrection(rentStepCorrectionRow).createdAt).toBe('2026-06-01T00:00:00.000Z');
+  });
+});
+
+describe('mapPortalRentStep', () => {
+  it('produces ONLY effectiveFrom and rentCents — no note, no source, no clauseExpectedCents', () => {
+    const mapped = mapPortalRentStep(rentStepRow) as Record<string, unknown>;
+    expect(Object.keys(mapped).sort()).toEqual(['effectiveFrom', 'rentCents']);
+    expect(portalRentStep.safeParse(mapped).success).toBe(true);
+  });
+
+  it("never leaks the landlord-private note, even when the source row carries one", () => {
+    const sourceRow: RentStepRow = { ...rentStepRow, note: 'Good tenant — 5% only' };
+    const mapped = mapPortalRentStep(sourceRow) as Record<string, unknown>;
+    expect(mapped.note).toBeUndefined();
   });
 });

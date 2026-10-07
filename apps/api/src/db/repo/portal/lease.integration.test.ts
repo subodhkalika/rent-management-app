@@ -102,6 +102,7 @@ describe.skipIf(!DATABASE_URL)('portal/lease.ts — live Postgres', () => {
       ledgerStartDate: undefined,
       openingBalanceCents: 0,
       notes: undefined,
+      escalation: null,
     });
     // Unit can only have one ACTIVE lease at a time — leave most leases as
     // draft (resolveLease/listLeases do not filter by status, see §6.3).

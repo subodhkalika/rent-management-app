@@ -2,6 +2,7 @@ import { and, asc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import type { Database } from '../../index.js';
 import { lease, leaseTenant, unit, property, organization, tenant } from '../../schema.js';
 import type { TenantScope } from '../../../types.js';
+import { listRentStepsQuery, type RentStepRow } from '../lease.js';
 
 /**
  * Tenant-facing lease reads. Every exported query-building function here takes
@@ -43,6 +44,14 @@ export interface PortalLeaseRow {
   billingDay: number;
   depositCents: number;
   moveOutBillingPolicy: (typeof property.$inferSelect)['moveOutBillingPolicy'];
+  // The escalation CLAUSE — what was agreed. Documentation only; the actual
+  // ladder the tenant is charged is `rentSteps`, on the detail row only (the
+  // escalation plan §4.7). Mapped via `escalationFromRow` — same function the
+  // landlord side uses, since these are the SAME `lease` columns.
+  escalationMode: (typeof lease.$inferSelect)['escalationMode'];
+  escalationRateBps: number | null;
+  escalationIntervalYears: number | null;
+  escalationCompounding: (typeof lease.$inferSelect)['escalationCompounding'];
   /** NULL = current. Non-null = former — §5.6: a removed tenant still reads
    *  everything on the lease, read-only, forever. */
   removedOn: string | null;
@@ -75,6 +84,10 @@ function portalLeaseColumns() {
     billingDay: lease.billingDay,
     depositCents: lease.depositCents,
     moveOutBillingPolicy: property.moveOutBillingPolicy,
+    escalationMode: lease.escalationMode,
+    escalationRateBps: lease.escalationRateBps,
+    escalationIntervalYears: lease.escalationIntervalYears,
+    escalationCompounding: lease.escalationCompounding,
     removedOn: leaseTenant.removedOn,
   };
 }
@@ -169,6 +182,9 @@ export async function listCoTenants(
 export interface PortalLeaseDetailRow extends PortalLeaseRow {
   ledgerStartDate: string;
   coTenants: PortalCoTenantRow[];
+  /** Ascending by `effectiveFrom`. The real numbers they will pay — see
+   *  `portalRentStep` in `packages/contract/src/portal.ts`. */
+  rentSteps: RentStepRow[];
 }
 
 /**
@@ -215,8 +231,16 @@ export async function resolveLease(
   if (!row) return null;
 
   const { callerTenantId, ...rest } = row;
-  const coTenants = await listCoTenants(scope, db, leaseId, callerTenantId);
-  return { ...rest, coTenants };
+  // `row.orgId` is TRUSTED here — it came from the pair-filtered resolve above,
+  // never from request input — so the landlord side's own query builder
+  // (already `WHERE org_id = $1 AND lease_id = $2`) is reused rather than
+  // duplicated. §4.6 of the escalation plan: the portal ladder is the real
+  // ladder, not a re-derivation of it.
+  const [coTenants, rentStepRows] = await Promise.all([
+    listCoTenants(scope, db, leaseId, callerTenantId),
+    listRentStepsQuery(row.orgId, db, leaseId),
+  ]);
+  return { ...rest, coTenants, rentSteps: rentStepRows };
 }
 
 /**

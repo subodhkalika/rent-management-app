@@ -27,6 +27,7 @@ const bsTerms = (overrides: Partial<LeaseBillingTerms>): LeaseBillingTerms => ({
   moveOutDate: null,
   moveOutBillingPolicy: 'bill_full_term',
   calendar: 'bikram_sambat',
+  rentSteps: [],
   ...overrides,
 });
 
@@ -165,6 +166,7 @@ describe('buildScheduleOrThrow', () => {
       moveOutDate: null,
       moveOutBillingPolicy: 'bill_full_term',
       calendar: 'gregorian',
+      rentSteps: [],
     };
 
     let caught: unknown;

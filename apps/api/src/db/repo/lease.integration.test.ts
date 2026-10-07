@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { uuidv7 } from '@rms/contract';
+import { uuidv7, generatorFixtures } from '@rms/contract';
 import { createDb, type Database } from '../index.js';
-import { organization, user, property, unit, tenant, lease, leaseTenant } from '../schema.js';
+import { organization, user, property, unit, tenant, lease, leaseTenant, leaseRentStepCorrection } from '../schema.js';
 import { ApiException } from '../../lib/errors.js';
 import { isUniqueViolation } from '../../lib/db-errors.js';
 import * as leaseRepo from './lease.js';
@@ -83,6 +83,7 @@ describe.skipIf(!DATABASE_URL)('lease.ts orchestration functions — live Postgr
     ledgerStartDate: undefined,
     openingBalanceCents: 0,
     notes: undefined,
+    escalation: null,
   });
 
   beforeAll(() => {
@@ -142,6 +143,13 @@ describe.skipIf(!DATABASE_URL)('lease.ts orchestration functions — live Postgr
   afterEach(async () => {
     for (const orgToClean of [orgId, otherOrgId]) {
       await db.delete(leaseTenant).where(eq(leaseTenant.orgId, orgToClean));
+      // `lease_rent_step_correction` FKs `lease_id` with `on delete restrict` —
+      // deliberately, per schema.ts's own comment: a correction is a permanent
+      // financial record that must outlive the ordinary lease lifecycle. The
+      // test teardown has to respect that same constraint `correctRentStep`'s
+      // own tests now exercise. `lease_rent_step` itself cascades, so it needs
+      // no explicit delete here, but it is harmless to be explicit about it.
+      await db.delete(leaseRentStepCorrection).where(eq(leaseRentStepCorrection.orgId, orgToClean));
       await db.delete(lease).where(eq(lease.orgId, orgToClean));
       await db.delete(unit).where(eq(unit.orgId, orgToClean));
       await db.delete(property).where(eq(property.orgId, orgToClean));
@@ -692,6 +700,210 @@ describe.skipIf(!DATABASE_URL)('lease.ts orchestration functions — live Postgr
       // Confirm it is STILL draft under its real org — org B's call had zero effect.
       const stillDraft = await leaseRepo.getLease(orgId, db, created.id);
       expect(stillDraft?.status).toBe('draft');
+    });
+  });
+
+  /* ======================================================================== *
+   * rent steps — PLAN-ESCALATION.md §2.3/§4. The stored ladder the schedule
+   * reads, the PUT-replaces-the-whole-ladder rule, and the one genuinely new
+   * cross-org shape (§4.6): a foreign stepId resolved by (org_id, lease_id, id).
+   * ======================================================================== */
+
+  describe('rent steps', () => {
+    it('createLease with a clause and no rentSteps generates the SAME ladder generateRentSteps would (byte-identical, G1)', async () => {
+      const g1 = generatorFixtures.find((f) => f.name.startsWith('G1'))!;
+      const created = await leaseRepo.createLease(orgId, db, userId, {
+        ...baseCreateBody(),
+        startDate: g1.input.startDate,
+        endDate: g1.input.endDate,
+        rentCents: g1.input.baseRentCents,
+        rentFrequency: g1.input.frequency,
+        escalation: g1.input.clause,
+        // rentSteps OMITTED — the server must draft it with generateRentSteps.
+      });
+
+      const steps = await leaseRepo.listRentSteps(orgId, db, created.id);
+      expect(steps.map((s) => ({ effectiveFrom: s.effectiveFrom, rentCents: s.rentCents, source: s.source, clauseExpectedCents: s.clauseExpectedCents }))).toEqual(
+        g1.expected.map((s) => ({
+          effectiveFrom: s.effectiveFrom,
+          rentCents: s.rentCents,
+          source: s.source,
+          clauseExpectedCents: s.clauseExpectedCents,
+        })),
+      );
+    });
+
+    it('createLease with an explicit rentSteps array writes it VERBATIM, never regenerating it', async () => {
+      const created = await leaseRepo.createLease(orgId, db, userId, {
+        ...baseCreateBody(),
+        startDate: '2020-01-01',
+        escalation: null,
+        rentSteps: [
+          { effectiveFrom: '2020-06-01', rentCents: 110000, source: 'manual' },
+          { effectiveFrom: '2030-06-01', rentCents: 120000, source: 'manual' },
+        ],
+      });
+
+      const steps = await leaseRepo.listRentSteps(orgId, db, created.id);
+      expect(steps.map((s) => s.effectiveFrom)).toEqual(['2020-06-01', '2030-06-01']);
+      expect(steps.map((s) => s.rentCents)).toEqual([110000, 120000]);
+      expect(steps.every((s) => s.source === 'manual')).toBe(true);
+    });
+
+    describe('replaceRentSteps / correctRentStep — the mutability line is "has it taken effect"', () => {
+      async function createLeaseWithPastAndFutureStep() {
+        return leaseRepo.createLease(orgId, db, userId, {
+          ...baseCreateBody(),
+          startDate: '2020-01-01',
+          escalation: null,
+          rentSteps: [
+            // Long past "today" under any real clock this suite runs against.
+            { effectiveFrom: '2020-06-01', rentCents: 110000, source: 'manual' },
+            // Far enough out to stay future for a long time.
+            { effectiveFrom: '2030-06-01', rentCents: 120000, source: 'manual' },
+          ],
+        });
+      }
+
+      it('PUT freely edits a FUTURE step, unaudited', async () => {
+        const created = await createLeaseWithPastAndFutureStep();
+        const existing = await leaseRepo.listRentSteps(orgId, db, created.id);
+
+        const replaced = await leaseRepo.replaceRentSteps(orgId, db, created.id, {
+          steps: [
+            { effectiveFrom: '2020-06-01', rentCents: 110000, source: 'manual' },
+            { effectiveFrom: '2030-06-01', rentCents: 999999, source: 'manual' },
+          ],
+        });
+
+        expect(replaced?.find((s) => s.effectiveFrom === '2030-06-01')?.rentCents).toBe(999999);
+        const corrections = await leaseRepo.listRentStepCorrections(orgId, db, created.id);
+        expect(corrections).toEqual([]);
+        expect(existing.length).toBe(2); // sanity: both steps were actually there beforehand
+      });
+
+      it('PUT changing a PAST step 409s — "already taken effect"', async () => {
+        const created = await createLeaseWithPastAndFutureStep();
+        await expect(
+          leaseRepo.replaceRentSteps(orgId, db, created.id, {
+            steps: [
+              { effectiveFrom: '2020-06-01', rentCents: 999999, source: 'manual' },
+              { effectiveFrom: '2030-06-01', rentCents: 120000, source: 'manual' },
+            ],
+          }),
+        ).rejects.toMatchObject({ code: 'conflict' });
+      });
+
+      it('PUT removing a PAST step 409s — same guard', async () => {
+        const created = await createLeaseWithPastAndFutureStep();
+        await expect(
+          leaseRepo.replaceRentSteps(orgId, db, created.id, {
+            steps: [{ effectiveFrom: '2030-06-01', rentCents: 120000, source: 'manual' }],
+          }),
+        ).rejects.toMatchObject({ code: 'conflict' });
+      });
+
+      it('PUT adding a BACKDATED step 409s — "cannot be backdated"', async () => {
+        const created = await createLeaseWithPastAndFutureStep();
+        await expect(
+          leaseRepo.replaceRentSteps(orgId, db, created.id, {
+            steps: [
+              { effectiveFrom: '2020-06-01', rentCents: 110000, source: 'manual' },
+              { effectiveFrom: '2021-06-01', rentCents: 115000, source: 'manual' },
+              { effectiveFrom: '2030-06-01', rentCents: 120000, source: 'manual' },
+            ],
+          }),
+        ).rejects.toMatchObject({ code: 'conflict' });
+      });
+
+      it('PUT with an out-of-order effectiveFrom 422s (I20, via validateBillingTerms)', async () => {
+        const created = await createLeaseWithPastAndFutureStep();
+        await expect(
+          leaseRepo.replaceRentSteps(orgId, db, created.id, {
+            steps: [
+              { effectiveFrom: '2030-06-01', rentCents: 120000, source: 'manual' },
+              { effectiveFrom: '2020-06-01', rentCents: 110000, source: 'manual' },
+            ],
+          }),
+        ).rejects.toMatchObject({ code: 'validation_failed' });
+      });
+
+      it('correctRentStep on a PAST step writes exactly one audit row and updates the step', async () => {
+        const created = await createLeaseWithPastAndFutureStep();
+        const [pastStep] = await leaseRepo.listRentSteps(orgId, db, created.id);
+        expect(pastStep?.effectiveFrom).toBe('2020-06-01');
+
+        const corrected = await leaseRepo.correctRentStep(orgId, db, created.id, pastStep!.id, userId, {
+          rentCents: 105000,
+          reason: 'Good tenant, only a 5% increase instead of 10%.',
+        });
+
+        expect(corrected?.rentCents).toBe(105000);
+        expect(corrected?.source).toBe('manual');
+
+        const corrections = await leaseRepo.listRentStepCorrections(orgId, db, created.id);
+        expect(corrections).toHaveLength(1);
+        expect(corrections[0]).toMatchObject({
+          stepId: pastStep!.id,
+          oldRentCents: 110000,
+          newRentCents: 105000,
+          reason: 'Good tenant, only a 5% increase instead of 10%.',
+          correctedByUserId: userId,
+        });
+      });
+
+      it('correctRentStep on a FUTURE step 409s — "has not taken effect yet"', async () => {
+        const created = await createLeaseWithPastAndFutureStep();
+        const steps = await leaseRepo.listRentSteps(orgId, db, created.id);
+        const futureStep = steps.find((s) => s.effectiveFrom === '2030-06-01')!;
+
+        await expect(
+          leaseRepo.correctRentStep(orgId, db, created.id, futureStep.id, userId, {
+            rentCents: 130000,
+            reason: 'Trying to correct a step that has not taken effect yet.',
+          }),
+        ).rejects.toMatchObject({ code: 'conflict' });
+      });
+
+      it('§4.6 THE dedicated test: a stepId from ANOTHER of this org\'s own leases 404s against this lease — resolved by (org_id, lease_id, id), never id alone', async () => {
+        const leaseA = await createLeaseWithPastAndFutureStep();
+        const leaseB = await createLeaseWithPastAndFutureStep();
+        const [stepOnA] = await leaseRepo.listRentSteps(orgId, db, leaseA.id);
+
+        // Same org, but stepOnA belongs to leaseA — calling it against leaseB must
+        // read as "not found", never silently correct the wrong lease's step.
+        const result = await leaseRepo.correctRentStep(orgId, db, leaseB.id, stepOnA!.id, userId, {
+          rentCents: 130000,
+          reason: 'Should never apply — foreign step id for this lease.',
+        });
+        expect(result).toBeNull();
+
+        // leaseB's own step is untouched.
+        const stillThere = await leaseRepo.listRentSteps(orgId, db, leaseB.id);
+        expect(stillThere.find((s) => s.id === stepOnA!.id)).toBeUndefined();
+      });
+
+      it("cross-org: org B's correctRentStep for org A's (lease, step) returns null, never reaching the UPDATE", async () => {
+        const created = await createLeaseWithPastAndFutureStep();
+        const [pastStep] = await leaseRepo.listRentSteps(orgId, db, created.id);
+
+        const result = await leaseRepo.correctRentStep(otherOrgId, db, created.id, pastStep!.id, userId, {
+          rentCents: 999999,
+          reason: 'Should never apply — wrong org entirely.',
+        });
+        expect(result).toBeNull();
+
+        const stillOriginal = await leaseRepo.listRentSteps(orgId, db, created.id);
+        expect(stillOriginal.find((s) => s.id === pastStep!.id)?.rentCents).toBe(110000);
+      });
+
+      it("cross-org: org B's replaceRentSteps for org A's lease id returns null", async () => {
+        const created = await createLeaseWithPastAndFutureStep();
+        const result = await leaseRepo.replaceRentSteps(otherOrgId, db, created.id, {
+          steps: [{ effectiveFrom: '2030-06-01', rentCents: 1, source: 'manual' }],
+        });
+        expect(result).toBeNull();
+      });
     });
   });
 });

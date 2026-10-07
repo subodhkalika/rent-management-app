@@ -9,12 +9,22 @@ import type {
   LeaseTenantSummary,
   PortalLease,
   PortalLeaseDetail,
+  RentStepSummary,
+  RentStepCorrection,
+  PortalRentStep,
 } from '@rms/contract';
 import type { PropertyRow } from '../db/repo/property.js';
 import type { UnitRow } from '../db/repo/unit.js';
 import type { TenantRow } from '../db/repo/tenant.js';
 import type { PortalProfileRow } from '../db/repo/portal/profile.js';
-import type { LeaseRow, LeaseDetailRow, LeaseTenantRow } from '../db/repo/lease.js';
+import {
+  escalationFromRow,
+  type LeaseRow,
+  type LeaseDetailRow,
+  type LeaseTenantRow,
+  type RentStepRow,
+  type RentStepCorrectionRow,
+} from '../db/repo/lease.js';
 import type { PortalLeaseRow, PortalLeaseDetailRow } from '../db/repo/portal/lease.js';
 
 /**
@@ -168,12 +178,59 @@ export function mapLeaseSummary(row: LeaseRow): LeaseSummary {
     openingBalanceCents: row.openingBalanceCents,
     ledgerStartDate: row.ledgerStartDate,
     moveOutBillingPolicy: row.moveOutBillingPolicy,
+    // Documentation only — moves no money by itself. See the module comment on
+    // `db/repo/lease.ts`'s rent-step section: the stored `rentSteps` (below, on
+    // `leaseDetail` only) are what the schedule reads.
+    escalation: escalationFromRow(row),
     tenantCount: row.tenantCount,
     primaryTenantName: row.primaryTenantName,
     renewedFromLeaseId: row.renewedFromLeaseId,
     endReason: row.endReason as LeaseSummary['endReason'],
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/** `lease_rent_step` row -> the landlord-facing `rentStepSummary` (packages/
+ *  contract/src/lease.ts). `note` is `undefined`, never `null`, when absent —
+ *  `rentStepInput.note` is `.optional()`, not `.nullable()`. */
+export function mapRentStep(row: RentStepRow): RentStepSummary {
+  return {
+    id: row.id,
+    effectiveFrom: row.effectiveFrom,
+    rentCents: row.rentCents,
+    source: row.source,
+    note: row.note ?? undefined,
+    clauseExpectedCents: row.clauseExpectedCents,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/** `lease_rent_step_correction` row -> the landlord-only audit entry. Never on
+ *  any portal shape (escalation plan §4.7). */
+export function mapRentStepCorrection(row: RentStepCorrectionRow): RentStepCorrection {
+  return {
+    id: row.id,
+    leaseId: row.leaseId,
+    stepId: row.stepId,
+    effectiveFrom: row.effectiveFrom,
+    oldRentCents: row.oldRentCents,
+    newRentCents: row.newRentCents,
+    reason: row.reason,
+    correctedByUserId: row.correctedByUserId,
+    correctedByName: row.correctedByName,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+/** The actual ladder a tenant will be charged — `{ effectiveFrom, rentCents }`
+ *  and NOTHING else (escalation plan §4.7 / `portal.ts`'s own comment on
+ *  `portalRentStep`). No `note`, no `source`, no `clauseExpectedCents`. */
+export function mapPortalRentStep(row: { effectiveFrom: string; rentCents: number }): PortalRentStep {
+  return {
+    effectiveFrom: row.effectiveFrom,
+    rentCents: row.rentCents,
   };
 }
 
@@ -198,6 +255,8 @@ export function mapLeaseDetail(row: LeaseDetailRow): LeaseDetail {
       endDate: c.endDate,
       rentCents: c.rentCents,
     })),
+    // Ascending by effectiveFrom (the repo's own `listRentSteps` ordering, I20).
+    rentSteps: row.rentSteps.map(mapRentStep),
   };
 }
 
@@ -235,6 +294,9 @@ export function mapPortalLease(row: PortalLeaseRow): PortalLease {
     billingDay: row.billingDay,
     depositCents: row.depositCents,
     moveOutBillingPolicy: row.moveOutBillingPolicy,
+    // What was agreed — documentation only. The actual ladder the tenant will be
+    // charged is `portalLeaseDetail.rentSteps` below (escalation plan §4.7).
+    escalation: escalationFromRow(row),
     yourRole: portalYourRole(row.removedOn),
     removedOn: row.removedOn,
   };
@@ -250,5 +312,9 @@ export function mapPortalLeaseDetail(row: PortalLeaseDetailRow): PortalLeaseDeta
       isCurrent: c.isCurrent,
     })),
     ledgerStartDate: row.ledgerStartDate,
+    // The real numbers they will pay. No note, no source, no clauseExpectedCents
+    // — a separate type from the landlord shape, not the landlord shape with
+    // fields removed (portal.ts's own comment on `portalRentStep`).
+    rentSteps: row.rentSteps.map(mapPortalRentStep),
   };
 }

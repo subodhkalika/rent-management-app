@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, isNull, ne, notInArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, ne, notInArray, sql } from 'drizzle-orm';
 import {
   uuidv7,
   addDays,
@@ -6,6 +6,7 @@ import {
   localToday,
   statusForEndReason,
   validateBillingTerms,
+  generateRentSteps,
   type CreateLeaseBody,
   type UpdateLeaseBody,
   type EndLeaseBody,
@@ -13,9 +14,15 @@ import {
   type AddLeaseTenantBody,
   type RemoveLeaseTenantBody,
   type LeaseBillingTerms,
+  type RentEscalation,
+  type RentStep,
+  type RentStepInput,
+  type PutRentStepsBody,
+  type CorrectRentStepBody,
+  type DraftRentStep,
 } from '@rms/contract';
 import type { Database } from '../index.js';
-import { lease, leaseTenant, unit, property, tenant } from '../schema.js';
+import { lease, leaseTenant, leaseRentStep, leaseRentStepCorrection, unit, property, tenant, user } from '../schema.js';
 import { conflict, notFound, validationFailed } from '../../lib/errors.js';
 import { decodeCursor } from '../../lib/pagination.js';
 import { isUniqueViolation } from '../../lib/db-errors.js';
@@ -62,6 +69,13 @@ export interface LeaseRow {
   depositCents: number;
   openingBalanceCents: number;
   ledgerStartDate: string;
+  // The escalation CLAUSE — raw columns, mapped to `escalation: RentEscalation |
+  // null` by `escalationFromRow` below / `mapLeaseSummary`. Never the schedule's
+  // source of truth — see the module comment on the rent-step section.
+  escalationMode: (typeof lease.$inferSelect)['escalationMode'];
+  escalationRateBps: number | null;
+  escalationIntervalYears: number | null;
+  escalationCompounding: (typeof lease.$inferSelect)['escalationCompounding'];
   tenantCount: number;
   primaryTenantName: string | null;
   renewedFromLeaseId: string | null;
@@ -130,12 +144,37 @@ function leaseColumns(orgId: string) {
     depositCents: lease.depositCents,
     openingBalanceCents: lease.openingBalanceCents,
     ledgerStartDate: lease.ledgerStartDate,
+    escalationMode: lease.escalationMode,
+    escalationRateBps: lease.escalationRateBps,
+    escalationIntervalYears: lease.escalationIntervalYears,
+    escalationCompounding: lease.escalationCompounding,
     tenantCount: tenantCountColumn(orgId),
     primaryTenantName: primaryTenantNameColumn(orgId),
     renewedFromLeaseId: lease.renewedFromLeaseId,
     endReason: lease.endReason,
     createdAt: lease.createdAt,
     updatedAt: lease.updatedAt,
+  };
+}
+
+/**
+ * Raw `lease.escalation_*` columns -> the contract's `RentEscalation | null`. Pure
+ * reshaping, no query — shared by every mapper and by `renewLease` (which carries
+ * the predecessor's clause forward by default). `'none'` is never a value of
+ * `RentEscalation`; it is the absence of one (packages/contract/src/billing.ts).
+ */
+export function escalationFromRow(row: {
+  escalationMode: (typeof lease.$inferSelect)['escalationMode'];
+  escalationRateBps: number | null;
+  escalationIntervalYears: number | null;
+  escalationCompounding: (typeof lease.$inferSelect)['escalationCompounding'];
+}): RentEscalation | null {
+  if (row.escalationMode === 'none') return null;
+  return {
+    mode: 'percent',
+    rateBps: row.escalationRateBps!,
+    intervalYears: row.escalationIntervalYears!,
+    compounding: row.escalationCompounding!,
   };
 }
 
@@ -282,6 +321,7 @@ export interface LeaseDetailRow extends LeaseRow {
   country: string;
   tenants: LeaseTenantRow[];
   chain: LeaseChainEntryRow[];
+  rentSteps: RentStepRow[];
 }
 
 export function getLeaseDetailQuery(orgId: string, db: Database, id: string) {
@@ -308,12 +348,390 @@ export async function getLeaseDetail(orgId: string, db: Database, id: string): P
   const [row] = await getLeaseDetailQuery(orgId, db, id);
   if (!row) return null;
 
-  const [tenants, chain] = await Promise.all([
+  const [tenants, chain, rentSteps] = await Promise.all([
     listLeaseTenants(orgId, db, id),
     getChain(orgId, db, row.chainId),
+    listRentSteps(orgId, db, id),
   ]);
 
-  return { ...row, tenants, chain };
+  return { ...row, tenants, chain, rentSteps };
+}
+
+/* ======================================================================== *
+ * rent steps — the stored ladder (PLAN-ESCALATION.md §2.3, §5). Every function
+ * here lives in THIS file, not a new repo module — the escalation plan §4.6/§7.2
+ * is explicit that `MIN_LANDLORD_REPO_FILES` must not be bumped for this feature.
+ * ======================================================================== */
+
+export interface RentStepRow {
+  id: string;
+  leaseId: string;
+  effectiveFrom: string;
+  rentCents: number;
+  source: (typeof leaseRentStep.$inferSelect)['source'];
+  clauseExpectedCents: number | null;
+  note: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+function rentStepColumns() {
+  return {
+    id: leaseRentStep.id,
+    leaseId: leaseRentStep.leaseId,
+    effectiveFrom: leaseRentStep.effectiveFrom,
+    rentCents: leaseRentStep.rentCents,
+    source: leaseRentStep.source,
+    clauseExpectedCents: leaseRentStep.clauseExpectedCents,
+    note: leaseRentStep.note,
+    createdAt: leaseRentStep.createdAt,
+    updatedAt: leaseRentStep.updatedAt,
+  };
+}
+
+/** Ascending by `effectiveFrom` — the order `rentForPeriodStart` (and I20) require. */
+export function listRentStepsQuery(orgId: string, db: Database, leaseId: string) {
+  return db
+    .select(rentStepColumns())
+    .from(leaseRentStep)
+    .where(and(eq(leaseRentStep.orgId, orgId), eq(leaseRentStep.leaseId, leaseId)))
+    .orderBy(asc(leaseRentStep.effectiveFrom));
+}
+
+export async function listRentSteps(orgId: string, db: Database, leaseId: string): Promise<RentStepRow[]> {
+  return listRentStepsQuery(orgId, db, leaseId);
+}
+
+/**
+ * `RentStepRow[]` narrowed to exactly what `billingTermsFor`/`buildSchedule` need
+ * (`RentStep = { effectiveFrom, rentCents }`) — a plain reshape, not a query.
+ */
+export function toRentSteps(rows: readonly RentStepRow[]): RentStep[] {
+  return rows.map((r) => ({ effectiveFrom: r.effectiveFrom, rentCents: r.rentCents }));
+}
+
+/**
+ * What gets WRITTEN to `lease_rent_step` for one incoming step, at create or via
+ * `PUT /rent-steps`. `clauseExpectedCents` is not part of `rentStepInput` (the
+ * client's wire shape never carries it — see lease.ts's contract comment on
+ * `rentStepSummary`), so it is derived here: a `'clause'`-sourced step has nothing
+ * else to show — "what it says IS what was agreed" (the same rule
+ * `recomputeLadderFrom` documents for a step still driven by the clause) — so its
+ * `clauseExpectedCents` is its own `rentCents`. A `'manual'` step carries `null`
+ * unless it was generated as `'clause'` and later edited IN THE SAME REQUEST
+ * (never true for a verbatim client-supplied array, since the client sends only
+ * the FINAL source/value pair) — the frozen "agreed X" figure from an earlier save
+ * is intentionally not reconstructed here; see this agent's final report for why.
+ */
+function toInsertableStep(
+  orgId: string,
+  leaseId: string,
+  step: RentStepInput,
+): typeof leaseRentStep.$inferInsert {
+  return {
+    id: uuidv7(),
+    orgId,
+    leaseId,
+    effectiveFrom: step.effectiveFrom,
+    rentCents: step.rentCents,
+    source: step.source,
+    clauseExpectedCents: step.source === 'clause' ? step.rentCents : null,
+    note: step.note ?? null,
+  };
+}
+
+/** Same shape, for steps the GENERATOR drafted (`generateRentSteps`) rather than
+ *  ones a client posted — `clauseExpectedCents` comes straight from the draft. */
+function toInsertableDraftStep(
+  orgId: string,
+  leaseId: string,
+  step: { effectiveFrom: string; rentCents: number; source: 'clause' | 'manual'; clauseExpectedCents: number | null },
+): typeof leaseRentStep.$inferInsert {
+  return {
+    id: uuidv7(),
+    orgId,
+    leaseId,
+    effectiveFrom: step.effectiveFrom,
+    rentCents: step.rentCents,
+    source: step.source,
+    clauseExpectedCents: step.clauseExpectedCents,
+    note: null,
+  };
+}
+
+/** `rows` are already fully-formed inserts (`toInsertableStep`/`toInsertableDraftStep`
+ *  set `orgId`/`leaseId` themselves) — `orgId`/`leaseId` params exist so this
+ *  function's own signature still reads `orgId` first and references it, per the
+ *  tenancy guard's convention for every write on an org-owned table. */
+export function insertRentStepsQuery(
+  orgId: string,
+  db: Database,
+  leaseId: string,
+  rows: readonly (typeof leaseRentStep.$inferInsert)[],
+) {
+  return db.insert(leaseRentStep).values(rows.map((r) => ({ ...r, orgId, leaseId })));
+}
+
+/**
+ * Resolves what to write at CREATE (and RENEW) time, per the escalation plan §4.3:
+ * a client-supplied `rentSteps` array is written VERBATIM; an omitted one, with a
+ * clause present, is drafted by the contract's own `generateRentSteps` — the same
+ * function the browser calls, so the ladder is byte-identical either way. Pure —
+ * no query — so it is independently testable without a database.
+ */
+export type StepsToWrite =
+  | { from: 'verbatim'; steps: readonly RentStepInput[] }
+  | { from: 'generated'; steps: readonly DraftRentStep[] }
+  | { from: 'none' };
+
+export function resolveStepsToWrite(input: {
+  rentSteps: readonly RentStepInput[] | undefined;
+  escalation: RentEscalation | null;
+  baseRentCents: number;
+  startDate: string;
+  endDate: string | null;
+  frequency: LeaseBillingTerms['frequency'];
+  calendar: LeaseBillingTerms['calendar'];
+}): StepsToWrite {
+  if (input.rentSteps !== undefined) {
+    return { from: 'verbatim', steps: input.rentSteps };
+  }
+  if (input.escalation !== null) {
+    const drafted = generateRentSteps({
+      clause: input.escalation,
+      baseRentCents: input.baseRentCents,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      frequency: input.frequency,
+      calendar: input.calendar,
+    });
+    return { from: 'generated', steps: drafted };
+  }
+  return { from: 'none' };
+}
+
+function insertableRowsFor(orgId: string, leaseId: string, resolved: StepsToWrite): (typeof leaseRentStep.$inferInsert)[] {
+  if (resolved.from === 'verbatim') return resolved.steps.map((s) => toInsertableStep(orgId, leaseId, s));
+  if (resolved.from === 'generated') return resolved.steps.map((s) => toInsertableDraftStep(orgId, leaseId, s));
+  return [];
+}
+
+/**
+ * Pure: every reason `PUT /rent-steps` 409s or 422s, before any query runs.
+ * `today` is the caller's `localToday(property.timezone)` — never computed here.
+ * Exported so the route/repo split stays testable without a database.
+ */
+export function validateStepReplacement(input: {
+  leaseStatus: LeaseStatusValue;
+  existing: readonly { effectiveFrom: string; rentCents: number }[];
+  incoming: readonly RentStepInput[];
+  today: string;
+}): { kind: 'conflict'; message: string } | null {
+  if (input.leaseStatus === 'cancelled') {
+    return { kind: 'conflict', message: 'A cancelled lease cannot be changed.' };
+  }
+
+  const existingByDate = new Map(input.existing.map((s) => [s.effectiveFrom, s.rentCents]));
+  const incomingByDate = new Map(input.incoming.map((s) => [s.effectiveFrom, s.rentCents]));
+
+  for (const [effectiveFrom, oldRentCents] of existingByDate) {
+    if (compareIsoDate(effectiveFrom, input.today) > 0) continue; // a future step — free to edit/remove
+    const newRentCents = incomingByDate.get(effectiveFrom);
+    if (newRentCents === undefined || newRentCents !== oldRentCents) {
+      return {
+        kind: 'conflict',
+        message: 'This increase has already taken effect. Use Correct, and tell us why.',
+      };
+    }
+  }
+
+  for (const [effectiveFrom] of incomingByDate) {
+    if (compareIsoDate(effectiveFrom, input.today) > 0) continue;
+    if (!existingByDate.has(effectiveFrom)) {
+      return {
+        kind: 'conflict',
+        message: 'A rent increase cannot be backdated. Correct the step that is in force instead.',
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * `PUT /v1/leases/:id/rent-steps` — replaces the WHOLE ladder (decision 4.1: one
+ * endpoint, one rule). Mutability is `validateStepReplacement` above; ordering/
+ * period-start/>-startDate validity is the contract's `validateBillingTerms` —
+ * both of I20's cross-row rules live there, never as a DB CHECK (schema.ts's own
+ * comment on `lease_rent_step` explains why neither half can be one).
+ *
+ * No interactive transaction (the Neon HTTP driver has none — PLAN-PHASE2.md
+ * §5.4): delete-then-insert is two statements. A failure between them leaves a
+ * lease with zero steps — visible and harmless (the base rent still applies via
+ * `rentForPeriodStart`'s early return), fixed by retrying the PUT, the same
+ * tolerance this codebase already accepts for `createLease`'s own roster insert.
+ */
+export async function replaceRentSteps(
+  orgId: string,
+  db: Database,
+  leaseId: string,
+  body: PutRentStepsBody,
+): Promise<RentStepRow[] | null> {
+  const current = await getLease(orgId, db, leaseId);
+  if (!current) return null;
+
+  const today = localToday(current.propertyTimezone);
+  const existing = await listRentSteps(orgId, db, leaseId);
+
+  const replacementIssue = validateStepReplacement({
+    leaseStatus: current.status,
+    existing,
+    incoming: body.steps,
+    today,
+  });
+  if (replacementIssue) throw conflict(replacementIssue.message);
+
+  const terms: LeaseBillingTerms = {
+    frequency: current.rentFrequency,
+    rentCents: current.rentCents,
+    billingDay: current.billingDay,
+    startDate: current.startDate,
+    endDate: current.endDate,
+    ledgerStartDate: current.ledgerStartDate,
+    moveOutDate: current.moveOutDate,
+    moveOutBillingPolicy: current.moveOutBillingPolicy,
+    calendar: current.calendar,
+    rentSteps: body.steps.map((s) => ({ effectiveFrom: s.effectiveFrom, rentCents: s.rentCents })),
+  };
+  const billingError = validateBillingTerms(terms);
+  if (billingError) throw validationFailed({ _: [billingError] });
+
+  await db.delete(leaseRentStep).where(and(eq(leaseRentStep.orgId, orgId), eq(leaseRentStep.leaseId, leaseId)));
+  if (body.steps.length > 0) {
+    await insertRentStepsQuery(orgId, db, leaseId, body.steps.map((s) => toInsertableStep(orgId, leaseId, s)));
+  }
+
+  return listRentSteps(orgId, db, leaseId);
+}
+
+/**
+ * `POST /v1/leases/:id/rent-steps/:stepId/correct` — THE one genuinely new
+ * cross-org shape in the escalation plan (§4.6). `stepId` arrives on the PATH, so
+ * it is resolved by `(org_id, lease_id, id)` — never by `id` alone — in the SAME
+ * query that reads the row, so a foreign step id can never be distinguished from
+ * one that simply does not exist. Both read as "not found" to the caller.
+ */
+export function resolveRentStepQuery(orgId: string, db: Database, leaseId: string, stepId: string) {
+  return db
+    .select(rentStepColumns())
+    .from(leaseRentStep)
+    .where(
+      and(eq(leaseRentStep.orgId, orgId), eq(leaseRentStep.leaseId, leaseId), eq(leaseRentStep.id, stepId)),
+    )
+    .limit(1);
+}
+
+export async function resolveRentStep(
+  orgId: string,
+  db: Database,
+  leaseId: string,
+  stepId: string,
+): Promise<RentStepRow | null> {
+  const [row] = await resolveRentStepQuery(orgId, db, leaseId, stepId);
+  return row ?? null;
+}
+
+/**
+ * Corrects a step that has ALREADY taken effect, writing exactly one
+ * `lease_rent_step_correction` row (the money audit — schema.ts's own comment).
+ * A future step 409s here and must go through `PUT /rent-steps` instead, per the
+ * escalation plan §4.1 — "has it taken effect" is the one date comparison that
+ * decides which route a landlord uses.
+ */
+export async function correctRentStep(
+  orgId: string,
+  db: Database,
+  leaseId: string,
+  stepId: string,
+  userId: string,
+  data: CorrectRentStepBody,
+): Promise<RentStepRow | null> {
+  const current = await getLease(orgId, db, leaseId);
+  if (!current) return null;
+  if (current.status === 'cancelled') throw conflict('A cancelled lease cannot be changed.');
+
+  // THE cross-org-safe resolve — (org_id, lease_id, id), never id alone.
+  const step = await resolveRentStep(orgId, db, leaseId, stepId);
+  if (!step) return null;
+
+  const today = localToday(current.propertyTimezone);
+  if (compareIsoDate(step.effectiveFrom, today) > 0) {
+    throw conflict('This increase has not taken effect yet — edit it directly.');
+  }
+
+  const oldRentCents = step.rentCents;
+
+  await db
+    .update(leaseRentStep)
+    .set({ rentCents: data.rentCents, source: 'manual', updatedAt: new Date() })
+    .where(and(eq(leaseRentStep.orgId, orgId), eq(leaseRentStep.leaseId, leaseId), eq(leaseRentStep.id, stepId)));
+
+  await db.insert(leaseRentStepCorrection).values({
+    id: uuidv7(),
+    orgId,
+    leaseId,
+    stepId,
+    effectiveFrom: step.effectiveFrom,
+    oldRentCents,
+    newRentCents: data.rentCents,
+    reason: data.reason,
+    correctedByUserId: userId,
+  });
+
+  return resolveRentStep(orgId, db, leaseId, stepId);
+}
+
+export interface RentStepCorrectionRow {
+  id: string;
+  leaseId: string;
+  stepId: string;
+  effectiveFrom: string;
+  oldRentCents: number;
+  newRentCents: number;
+  reason: string;
+  correctedByUserId: string;
+  correctedByName: string | null;
+  createdAt: Date;
+}
+
+export function listRentStepCorrectionsQuery(orgId: string, db: Database, leaseId: string) {
+  return db
+    .select({
+      id: leaseRentStepCorrection.id,
+      leaseId: leaseRentStepCorrection.leaseId,
+      stepId: leaseRentStepCorrection.stepId,
+      effectiveFrom: leaseRentStepCorrection.effectiveFrom,
+      oldRentCents: leaseRentStepCorrection.oldRentCents,
+      newRentCents: leaseRentStepCorrection.newRentCents,
+      reason: leaseRentStepCorrection.reason,
+      correctedByUserId: leaseRentStepCorrection.correctedByUserId,
+      // Nullable so a deleted user account never breaks rendering an old
+      // correction (rentStepCorrection's own contract comment).
+      correctedByName: user.name,
+      createdAt: leaseRentStepCorrection.createdAt,
+    })
+    .from(leaseRentStepCorrection)
+    .leftJoin(user, eq(user.id, leaseRentStepCorrection.correctedByUserId))
+    .where(and(eq(leaseRentStepCorrection.orgId, orgId), eq(leaseRentStepCorrection.leaseId, leaseId)))
+    .orderBy(desc(leaseRentStepCorrection.createdAt));
+}
+
+export async function listRentStepCorrections(
+  orgId: string,
+  db: Database,
+  leaseId: string,
+): Promise<RentStepCorrectionRow[]> {
+  return listRentStepCorrectionsQuery(orgId, db, leaseId);
 }
 
 /* ======================================================================== *
@@ -468,6 +886,10 @@ export function createLeaseQuery(
     status: 'draft',
     notes: data.notes ?? null,
     createdByUserId: userId,
+    escalationMode: data.escalation ? 'percent' : 'none',
+    escalationRateBps: data.escalation?.rateBps ?? null,
+    escalationIntervalYears: data.escalation?.intervalYears ?? null,
+    escalationCompounding: data.escalation?.compounding ?? null,
   });
 }
 
@@ -511,6 +933,24 @@ export async function createLease(
 
   const ledgerStartDate = data.ledgerStartDate ?? data.startDate;
 
+  // THE MODEL (escalation plan §4.3): a client-supplied `rentSteps` is written
+  // VERBATIM; an omitted one, with a clause present, is drafted by the contract's
+  // own `generateRentSteps` — the same function the browser calls, so the ladder
+  // is byte-identical either way. `data.rentSteps` is undefined vs. present is
+  // exactly createLeaseBody's own distinction (it has no default, unlike
+  // `escalation`), so no body-inspection workaround is needed here.
+  const stepsToWrite = resolveStepsToWrite({
+    rentSteps: data.rentSteps,
+    escalation: data.escalation,
+    baseRentCents: data.rentCents,
+    startDate: data.startDate,
+    endDate: data.endDate ?? null,
+    frequency: data.rentFrequency,
+    calendar: propertyRow.calendar,
+  });
+  const rentStepsForValidation: RentStep[] =
+    stepsToWrite.from === 'none' ? [] : stepsToWrite.steps.map((s) => ({ effectiveFrom: s.effectiveFrom, rentCents: s.rentCents }));
+
   // createLeaseBody's shared superRefine can only validate against a default
   // Gregorian calendar (it has no property to consult). This is the one place
   // that can re-validate against the lease's REAL calendar and move-out policy.
@@ -524,6 +964,7 @@ export async function createLease(
     moveOutDate: null,
     moveOutBillingPolicy: propertyRow.moveOutBillingPolicy,
     calendar: propertyRow.calendar,
+    rentSteps: rentStepsForValidation,
   };
   const billingError = validateBillingTerms(terms);
   if (billingError) throw validationFailed({ _: [billingError] });
@@ -534,7 +975,16 @@ export async function createLease(
   if (rangeError) throw validationFailed({ endDate: [rangeError] });
 
   const id = uuidv7();
+  // Write order (PLAN-PHASE2.md §5.4 / escalation plan §4.3): lease row -> steps
+  // -> roster. A torn failure between these leaves a draft with a base rent and no
+  // ladder (or no roster) — visible, harmless, and activation never depends on
+  // either existing.
   await createLeaseQuery(orgId, db, id, userId, data.unitId, unitRow.currency, ledgerStartDate, data);
+
+  const stepRows = insertableRowsFor(orgId, id, stepsToWrite);
+  if (stepRows.length > 0) {
+    await insertRentStepsQuery(orgId, db, id, stepRows);
+  }
 
   if (resolvedTenantIds.length > 0) {
     await insertLeaseTenantsQuery(orgId, db, id, resolvedTenantIds, data.primaryTenantId, data.startDate);
@@ -560,8 +1010,30 @@ export function illegalUpdateField(
   status: LeaseStatusValue,
   patch: UpdateLeaseBody,
   current: { endDate: string | null },
+  /**
+   * Whether the CLIENT actually included `escalation` in the request — NOT
+   * `patch.escalation !== undefined`. `updateLeaseBody`'s `escalation` field
+   * carries `.default(null)` (inherited from `createLeaseBodyShape`), so
+   * `zod.parse` fills it in as `null` on every PATCH that never mentions it —
+   * `patch.escalation` is therefore defined on EVERY real HTTP request regardless
+   * of client intent. The route computes this from the raw pre-parse body (see
+   * `middleware/validate.ts`'s `rawBody`) and passes it in; direct repo callers
+   * (tests, scripts) building a plain `UpdateLeaseBody` object may omit this
+   * parameter — it then falls back to `patch.escalation !== undefined`, which is
+   * correct for a hand-built object that was never run through zod.
+   */
+  escalationProvided: boolean = patch.escalation !== undefined,
 ): string | null {
   if (status === 'draft') return null;
+
+  // The clause is documentation, not money — editable on any status but
+  // cancelled (escalation plan §4.1, decision 15). Checked up front so it is
+  // reachable on 'ended'/'terminated' without being folded into their terminal
+  // allow-list below, and short-circuits before RENEW_FIELDS so escalation is
+  // never confused for a term-defining field.
+  if (status === 'cancelled' && escalationProvided) {
+    return 'A cancelled lease cannot be changed.';
+  }
 
   const RENEW_FIELDS = ['unitId', 'startDate', 'rentCents', 'rentFrequency'] as const;
   for (const f of RENEW_FIELDS) {
@@ -586,9 +1058,14 @@ export function illegalUpdateField(
 
   if (status === 'active') return null;
 
-  // ended / terminated / cancelled: only notes and moveOutDate.
+  // ended / terminated / cancelled: only notes, moveOutDate, and (per the
+  // escalation-provided check above) the clause. `escalation` is skipped here
+  // unconditionally rather than added to ALLOWED_TERMINAL — a plain membership
+  // check on `patch.escalation !== undefined` would be the exact bug this whole
+  // parameter exists to avoid (it is ALWAYS defined on a real HTTP PATCH).
   const ALLOWED_TERMINAL = new Set(['notes', 'moveOutDate']);
   for (const key of Object.keys(patch) as (keyof UpdateLeaseBody)[]) {
+    if (key === 'escalation') continue;
     if (patch[key] === undefined) continue;
     if (!ALLOWED_TERMINAL.has(key)) {
       return `${key} cannot be changed once a lease has ended.`;
@@ -602,11 +1079,11 @@ export function updateLeaseQuery(
   db: Database,
   id: string,
   data: UpdateLeaseBody,
-  currency?: string,
+  opts: { currency?: string; escalationProvided?: boolean; userId?: string } = {},
 ) {
   const patch: Partial<typeof lease.$inferInsert> = { updatedAt: new Date() };
   if (data.unitId !== undefined) patch.unitId = data.unitId;
-  if (currency !== undefined) patch.currency = currency;
+  if (opts.currency !== undefined) patch.currency = opts.currency;
   if (data.startDate !== undefined) patch.startDate = data.startDate;
   if (data.endDate !== undefined) patch.endDate = data.endDate ?? null;
   if (data.rentCents !== undefined) patch.rentCents = data.rentCents;
@@ -617,6 +1094,17 @@ export function updateLeaseQuery(
   if (data.openingBalanceCents !== undefined) patch.openingBalanceCents = data.openingBalanceCents;
   if (data.notes !== undefined) patch.notes = data.notes ?? null;
   if (data.moveOutDate !== undefined) patch.moveOutDate = data.moveOutDate ?? null;
+  // See illegalUpdateField's own comment on why "touched" is `opts.escalationProvided`,
+  // never `data.escalation !== undefined` — the latter is always true after zod
+  // parsing because `escalation` carries a default.
+  if (opts.escalationProvided) {
+    patch.escalationMode = data.escalation ? 'percent' : 'none';
+    patch.escalationRateBps = data.escalation?.rateBps ?? null;
+    patch.escalationIntervalYears = data.escalation?.intervalYears ?? null;
+    patch.escalationCompounding = data.escalation?.compounding ?? null;
+    patch.escalationUpdatedAt = new Date();
+    patch.escalationUpdatedByUserId = opts.userId ?? null;
+  }
 
   return db
     .update(lease)
@@ -630,11 +1118,14 @@ export async function updateLease(
   db: Database,
   id: string,
   data: UpdateLeaseBody,
+  opts: { userId?: string; escalationProvided?: boolean } = {},
 ): Promise<LeaseRow | null> {
   const current = await getLease(orgId, db, id);
   if (!current) return null;
 
-  const illegal = illegalUpdateField(current.status, data, { endDate: current.endDate });
+  const escalationProvided = opts.escalationProvided ?? data.escalation !== undefined;
+
+  const illegal = illegalUpdateField(current.status, data, { endDate: current.endDate }, escalationProvided);
   if (illegal) throw conflict(illegal);
 
   // Resolve the NEW unit (and its property) FIRST, when unitId is changing —
@@ -661,6 +1152,13 @@ export async function updateLease(
   const BILLING_FIELDS = ['unitId', 'startDate', 'endDate', 'rentFrequency', 'billingDay', 'ledgerStartDate', 'moveOutDate', 'rentCents'] as const;
   const touchesBilling = BILLING_FIELDS.some((f) => data[f] !== undefined);
   if (touchesBilling) {
+    // `rentSteps` is not part of `updateLeaseBody` (PUT /rent-steps owns the
+    // ladder — lease.ts's own comment on why), but a PATCH here can still change
+    // startDate/endDate/rentFrequency (on a draft) or endDate (on an active
+    // lease), any of which can invalidate an EXISTING step's I20 position. The
+    // existing steps are loaded so `validateBillingTerms` re-checks them against
+    // the terms as they would read AFTER this patch — never against the clause.
+    const existingSteps = await listRentSteps(orgId, db, id);
     const terms: LeaseBillingTerms = {
       frequency: data.rentFrequency ?? current.rentFrequency,
       rentCents: data.rentCents ?? current.rentCents,
@@ -671,6 +1169,7 @@ export async function updateLease(
       moveOutDate: data.moveOutDate !== undefined ? (data.moveOutDate ?? null) : current.moveOutDate,
       moveOutBillingPolicy: policyForValidation,
       calendar: calendarForValidation,
+      rentSteps: toRentSteps(existingSteps),
     };
     const billingError = validateBillingTerms(terms);
     if (billingError) throw validationFailed({ _: [billingError] });
@@ -679,7 +1178,7 @@ export async function updateLease(
     if (rangeError) throw validationFailed({ endDate: [rangeError] });
   }
 
-  const result = await updateLeaseQuery(orgId, db, id, data, currency);
+  const result = await updateLeaseQuery(orgId, db, id, data, { currency, escalationProvided, userId: opts.userId });
   if (result.length === 0) return null;
   return getLease(orgId, db, id);
 }
@@ -852,6 +1351,22 @@ export async function renewLease(
   const billingDay = data.billingDay ?? predecessor.billingDay;
   const depositCents = data.depositCents ?? predecessor.depositCents;
 
+  // Assumption §9.2.3 of the escalation plan: a renewal carries the predecessor's
+  // CLAUSE forward by default and re-anchors it on its OWN start/base — never the
+  // predecessor's rentSteps, which belonged to a different term.
+  const escalation = data.escalation !== undefined ? data.escalation : escalationFromRow(predecessor);
+  const stepsToWrite = resolveStepsToWrite({
+    rentSteps: data.rentSteps,
+    escalation,
+    baseRentCents: data.rentCents,
+    startDate: data.startDate,
+    endDate: data.endDate ?? null,
+    frequency: rentFrequency,
+    calendar: predecessor.calendar,
+  });
+  const rentStepsForValidation: RentStep[] =
+    stepsToWrite.from === 'none' ? [] : stepsToWrite.steps.map((s) => ({ effectiveFrom: s.effectiveFrom, rentCents: s.rentCents }));
+
   const terms: LeaseBillingTerms = {
     frequency: rentFrequency,
     rentCents: data.rentCents,
@@ -862,6 +1377,7 @@ export async function renewLease(
     moveOutDate: null,
     moveOutBillingPolicy: predecessor.moveOutBillingPolicy,
     calendar: predecessor.calendar,
+    rentSteps: rentStepsForValidation,
   };
   const billingError = validateBillingTerms(terms);
   if (billingError) throw validationFailed({ _: [billingError] });
@@ -910,10 +1426,19 @@ export async function renewLease(
       status: 'active',
       notes: data.notes ?? null,
       createdByUserId: userId,
+      escalationMode: escalation ? 'percent' : 'none',
+      escalationRateBps: escalation?.rateBps ?? null,
+      escalationIntervalYears: escalation?.intervalYears ?? null,
+      escalationCompounding: escalation?.compounding ?? null,
     });
   } catch (err) {
     if (isUniqueViolation(err)) throw conflict(UNIT_ACTIVE_CONFLICT_MESSAGE);
     throw err;
+  }
+
+  const stepRows = insertableRowsFor(orgId, id, stepsToWrite);
+  if (stepRows.length > 0) {
+    await insertRentStepsQuery(orgId, db, id, stepRows);
   }
 
   if (resolvedTenantIds.length > 0) {

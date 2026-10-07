@@ -83,9 +83,14 @@ function portalLeaseDetailRow(overrides: Partial<PortalLeaseDetailRow> = {}): Po
     billingDay: 1,
     depositCents: 0,
     moveOutBillingPolicy: 'bill_full_term',
+    escalationMode: 'none',
+    escalationRateBps: null,
+    escalationIntervalYears: null,
+    escalationCompounding: null,
     removedOn: null,
     ledgerStartDate: '2026-01-01',
     coTenants: [],
+    rentSteps: [],
     ...overrides,
   };
 }
@@ -221,6 +226,17 @@ describe('GET /v1/portal/leases/:id/schedule — scheduleFixtures through the HT
           ledgerStartDate: fixture.terms.ledgerStartDate,
           moveOutDate: fixture.terms.moveOutDate,
           moveOutBillingPolicy: fixture.terms.moveOutBillingPolicy,
+          rentSteps: fixture.terms.rentSteps.map((s) => ({
+            id: 'step',
+            leaseId: LEASE_L1,
+            effectiveFrom: s.effectiveFrom,
+            rentCents: s.rentCents,
+            source: 'clause',
+            clauseExpectedCents: null,
+            note: null,
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+            updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+          })),
         }),
       );
 
@@ -246,6 +262,17 @@ describe('GET /v1/portal/leases/:id/schedule — scheduleFixtures through the HT
           ledgerStartDate: fixture.terms.ledgerStartDate,
           moveOutDate: fixture.terms.moveOutDate,
           moveOutBillingPolicy: fixture.terms.moveOutBillingPolicy,
+          rentSteps: fixture.terms.rentSteps.map((s) => ({
+            id: 'step',
+            leaseId: LEASE_L1,
+            effectiveFrom: s.effectiveFrom,
+            rentCents: s.rentCents,
+            source: 'clause',
+            clauseExpectedCents: null,
+            note: null,
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+            updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+          })),
         }),
       );
 

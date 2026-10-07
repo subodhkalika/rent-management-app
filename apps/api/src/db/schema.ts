@@ -330,6 +330,25 @@ export const leaseStatusEnum = pgEnum('lease_status', [
 
 export const rentFrequencyEnum = pgEnum('rent_frequency', ['monthly', 'yearly']);
 
+/* ------------------------------------------------------------------ *
+ * Rent escalation — docs/PLAN-ESCALATION.md revision 2. The clause (four
+ * columns on `lease`, below) is a PROPOSAL that drafts `lease_rent_step` rows;
+ * the stored steps are the truth the schedule reads, never the clause itself.
+ * See `packages/contract/src/billing.ts`'s own header comment for the full
+ * reasoning — `rentForPeriodStart` is a pure lookup over the steps, never
+ * arithmetic on the clause.
+ * ------------------------------------------------------------------ */
+
+// 'none' exists so `escalation_mode` is NOT NULL with a default (a no-op
+// migration for every existing lease) — the CONTRACT never surfaces 'none' on
+// a response, it maps the column to `escalation: null`. Mirrors
+// `rentEscalationMode` in packages/contract/src/billing.ts.
+export const rentEscalationModeEnum = pgEnum('rent_escalation_mode', ['none', 'percent']);
+export const rentEscalationCompoundingEnum = pgEnum('rent_escalation_compounding', ['compound', 'simple']);
+// 'clause' = the generator drafted this step and nobody has touched it;
+// 'manual' = a human set this figure, by hand or by overriding a draft.
+export const rentStepSourceEnum = pgEnum('rent_step_source', ['clause', 'manual']);
+
 export const lease = pgTable(
   'lease',
   {
@@ -374,6 +393,25 @@ export const lease = pgTable(
     endNote: text(),
     // Landlord-private. Structurally absent from every portal shape.
     notes: text(),
+
+    // The escalation CLAUSE — documentation only (PLAN-ESCALATION.md decision 15).
+    // It moves no money on its own; `lease_rent_step` below is what the schedule
+    // reads. `escalation_mode = 'none'` is the no-op-migration default; the three
+    // columns beneath it are NULL iff mode is 'none', enforced by
+    // `lease_escalation_ck` below so a half-written clause is unrepresentable.
+    escalationMode: rentEscalationModeEnum().notNull().default('none'),
+    // Basis points — 1000 = 10%. Range (1..5000) enforced by lease_escalation_ck.
+    escalationRateBps: integer(),
+    // Years between increases — 1..10 in practice, range enforced by the CHECK.
+    // Independent of rent_frequency: monthly-billed + annually-escalating is the
+    // dominant real case.
+    escalationIntervalYears: smallint(),
+    escalationCompounding: rentEscalationCompoundingEnum(),
+    // Tracking only — the clause edits through the ordinary PATCH route, on any
+    // status but cancelled (R1's dedicated correct-escalation route is CUT; see
+    // PLAN-ESCALATION.md §4.1). Both NULL until the clause is first set or edited.
+    escalationUpdatedAt: timestamp({ withTimezone: true }),
+    escalationUpdatedByUserId: text().references(() => user.id),
 
     // Soft delete, same convention as property/unit/tenant — never set outside
     // `draft`/`cancelled` (enforced by hardDeleteLease's WHERE, not by a CHECK:
@@ -421,6 +459,19 @@ export const lease = pgTable(
     // Amendment A: holdover is legal (move-out AFTER start), early exit is legal
     // (move-out between start and end) — nothing ties this to end_date.
     check('lease_moveout_ck', sql`${t.moveOutDate} is null or ${t.moveOutDate} >= ${t.startDate}`),
+
+    // One all-or-nothing CHECK so a half-written clause — a rate with no interval,
+    // an interval with no compounding — is unrepresentable (PLAN-ESCALATION.md
+    // §2.2). 5000 / 10 mirror the contract's MAX_ESCALATION_RATE_BPS /
+    // MAX_ESCALATION_INTERVAL_YEARS (packages/contract/src/billing.ts) — duplicated
+    // here as literals because a DB CHECK cannot import a TS constant; keep them in
+    // sync by hand if either ever changes.
+    check(
+      'lease_escalation_ck',
+      sql`(${t.escalationMode} = 'none' and ${t.escalationRateBps} is null and ${t.escalationIntervalYears} is null and ${t.escalationCompounding} is null)
+          or
+          (${t.escalationMode} = 'percent' and ${t.escalationRateBps} between 1 and 5000 and ${t.escalationIntervalYears} between 1 and 10 and ${t.escalationCompounding} is not null)`,
+    ),
   ],
 );
 
@@ -462,4 +513,86 @@ export const leaseTenant = pgTable(
       .on(t.leaseId)
       .where(sql`${t.isPrimary} and ${t.removedOn} is null`),
   ],
+);
+
+/* ------------------------------------------------------------------ *
+ * lease_rent_step — the stored ladder the schedule actually reads
+ * (PLAN-ESCALATION.md §2.3). The clause on `lease` only ever drafts these rows;
+ * once written, a step is the truth until a landlord edits or corrects it.
+ * ------------------------------------------------------------------ */
+
+export const leaseRentStep = pgTable(
+  'lease_rent_step',
+  {
+    id: uuid().primaryKey(),
+    orgId: text().notNull().references(() => organization.id, { onDelete: 'cascade' }),
+    // Cascade: only ever runs on the hard-delete of a draft/cancelled lease, same
+    // reasoning as lease_tenant's own cascade above — a lease in that state never
+    // had a charge written against its steps.
+    leaseId: uuid().notNull().references(() => lease.id, { onDelete: 'cascade' }),
+    // A billing-period start, strictly AFTER lease.start_date. Both halves of that
+    // rule are CROSS-ROW (this column vs. another table's column) and a period
+    // start depends on the lease's cadence/calendar, so NEITHER half can be a
+    // CHECK constraint here. Enforced in the repo write path
+    // (replaceRentSteps/createLease, via the contract's validateBillingTerms) and
+    // covered by a route test — see PLAN-ESCALATION.md §2.3. An unenforceable
+    // -looking rule with no comment invites a future reader to assume it is
+    // already covered and delete the repo-side check; it is not, so do not.
+    effectiveFrom: date().notNull(),
+    // The rent from this date until the next step (or forever, if it is the last).
+    rentCents: bigint({ mode: 'number' }).notNull(),
+    source: rentStepSourceEnum().notNull(),
+    // What the clause ALONE would have said at this step. Display only — drives
+    // the "agreed X, you set Y" line. NULL when there was no clause, or the step
+    // was never clause-drafted.
+    clauseExpectedCents: bigint({ mode: 'number' }),
+    // Landlord-private, e.g. "good tenant — 5% only". Structurally absent from
+    // every portal shape (see portalRentStep in packages/contract/src/portal.ts).
+    note: text(),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('lease_rent_step_money_ck', sql`${t.rentCents} >= 0`),
+
+    // Makes "two rents on the same day" unrepresentable. Deliberately NO org_id in
+    // this index — lease_id is already the PK of an org-scoped table (`lease`), so
+    // adding org_id would WIDEN the key without changing uniqueness. Same
+    // reasoning as `lease_unit_active_uq` (schema.ts, above) and PLAN-PHASE2.md
+    // §3.3 — flagged here so a reviewer does not read the missing org_id as a
+    // tenancy miss.
+    uniqueIndex('lease_rent_step_uq').on(t.leaseId, t.effectiveFrom),
+    index('lease_rent_step_idx').on(t.orgId, t.leaseId, t.effectiveFrom),
+  ],
+);
+
+/* ------------------------------------------------------------------ *
+ * lease_rent_step_correction — append-only money audit (PLAN-ESCALATION.md
+ * §2.4). Written ONLY when a step that had ALREADY TAKEN EFFECT is changed —
+ * editing a future step via PUT writes nothing here, because nothing has been
+ * billed and nothing is owed. R1's clause-level audit table is CUT: the clause
+ * moves no money by itself, so there is nothing to audit until a step changes.
+ * ------------------------------------------------------------------ */
+
+export const leaseRentStepCorrection = pgTable(
+  'lease_rent_step_correction',
+  {
+    id: uuid().primaryKey(),
+    orgId: text().notNull().references(() => organization.id, { onDelete: 'cascade' }),
+    // Restrict, not cascade: a correction is a permanent financial record and must
+    // outlive the ordinary lease lifecycle (a corrected step only ever exists on a
+    // lease that has already been billed, so the lease itself is never hard
+    // -deleted afterwards — hardDeleteLease only runs on draft/cancelled).
+    leaseId: uuid().notNull().references(() => lease.id, { onDelete: 'restrict' }),
+    stepId: uuid().notNull().references(() => leaseRentStep.id, { onDelete: 'restrict' }),
+    // Copied from the step at correction time, so the row reads standalone.
+    effectiveFrom: date().notNull(),
+    oldRentCents: bigint({ mode: 'number' }).notNull(),
+    newRentCents: bigint({ mode: 'number' }).notNull(),
+    // 10..500 chars, enforced by the contract's correctRentStepBody.
+    reason: text().notNull(),
+    correctedByUserId: text().notNull().references(() => user.id),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('lease_rent_step_correction_idx').on(t.orgId, t.leaseId, t.createdAt)],
 );
