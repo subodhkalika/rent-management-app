@@ -1,8 +1,8 @@
 import { z } from 'zod';
-import { uuid, isoDate, currency, timezone } from './common.js';
+import { uuid, isoDate, money, currency, timezone } from './common.js';
 import { address } from './property.js';
 import { leaseStatus } from './lease.js';
-import { rentFrequency, moveOutBillingPolicy, plannedCharge } from './billing.js';
+import { rentFrequency, moveOutBillingPolicy, plannedCharge, rentEscalation } from './billing.js';
 import { calendarSystem, MAX_BILLING_DAY_ANY } from './calendar/index.js';
 
 /**
@@ -55,6 +55,19 @@ export const portalCoTenant = z.object({
 export type PortalCoTenant = z.infer<typeof portalCoTenant>;
 
 /**
+ * The actual ladder a tenant will be charged — `{ effectiveFrom, rentCents }`, and
+ * NOTHING else. Deliberately not `rentStep` imported and reused: this is a separate
+ * type, not the landlord shape with fields removed, so `note` (landlord-private),
+ * `source` and `clauseExpectedCents` can never leak here by a later edit to the
+ * landlord shape. See the escalation plan §4.7.
+ */
+export const portalRentStep = z.object({
+  effectiveFrom: isoDate,
+  rentCents: money,
+});
+export type PortalRentStep = z.infer<typeof portalRentStep>;
+
+/**
  * Structurally absent from every portal lease shape: `notes`, `openingBalanceCents`,
  * `chainId`, `renewedFromLeaseId`, `endReason`, `createdBy`, and any co-tenant
  * contact detail. `openingBalanceCents` is withheld because a debt figure with no
@@ -86,6 +99,11 @@ export const portalLease = z.object({
    * than showing it (Amendment A.5).
    */
   moveOutBillingPolicy,
+  /** What was agreed. `null` = no clause. The actual ladder — what they will be
+   *  charged — is `portalLeaseDetail.rentSteps`. No `note`, no `source`, no
+   *  `clauseExpectedCents`, no correction history: we show the tenant what they will
+   *  pay and what was agreed, not an editorial about the gap between them. */
+  escalation: rentEscalation.nullable(),
   yourRole: z.enum(['current', 'former']),
   removedOn: isoDate.nullable(),
 });
@@ -94,6 +112,9 @@ export type PortalLease = z.infer<typeof portalLease>;
 export const portalLeaseDetail = portalLease.extend({
   coTenants: z.array(portalCoTenant),
   ledgerStartDate: isoDate,
+  /** Ascending by `effectiveFrom`. The real numbers they will pay — see
+   *  `portalRentStep` above. */
+  rentSteps: z.array(portalRentStep),
 });
 export type PortalLeaseDetail = z.infer<typeof portalLeaseDetail>;
 

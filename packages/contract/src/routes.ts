@@ -64,5 +64,10 @@ export const routes = {
     addTenant: (id: string) => `/v1/leases/${id}/tenants`,
     removeTenant: (id: string, tenantId: string) => `/v1/leases/${id}/tenants/${tenantId}/remove`,
     setPrimaryTenant: (id: string, tenantId: string) => `/v1/leases/${id}/tenants/${tenantId}/primary`,
+    /** GET reads the ladder; PUT replaces the whole thing. See the escalation
+     *  plan §4.1 — one endpoint, one rule, no patch-plus-cascade pair. */
+    rentSteps: (id: string) => `/v1/leases/${id}/rent-steps`,
+    correctRentStep: (id: string, stepId: string) => `/v1/leases/${id}/rent-steps/${stepId}/correct`,
+    rentStepCorrections: (id: string) => `/v1/leases/${id}/rent-step-corrections`,
   },
 } as const;
