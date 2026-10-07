@@ -61,6 +61,10 @@ export function ReviewStep({ form, unit, propertyQuery }: ReviewStepProps) {
       moveOutDate: null,
       moveOutBillingPolicy: property.moveOutBillingPolicy,
       calendar: property.calendar,
+      // Onboarding an in-flight escalating tenancy (escalation plan §6.3 / E5): the
+      // ledger can start after one or more steps have already taken effect, so the
+      // very first generated charge may already be at a stepped rent, not the base.
+      rentSteps: values.rentSteps ?? [],
     };
     try {
       return { firstPeriod: previewFirstPeriod(leaseInput), previewError: null };
@@ -82,6 +86,7 @@ export function ReviewStep({ form, unit, propertyQuery }: ReviewStepProps) {
     values.rentCents,
     values.billingDay,
     values.ledgerStartDate,
+    values.rentSteps,
   ]);
 
   // A missing preview is honest; a confidently wrong one is not. Defaulting the

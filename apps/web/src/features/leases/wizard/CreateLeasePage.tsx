@@ -4,7 +4,13 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { toast } from 'sonner';
 import { ArrowLeft } from 'lucide-react';
-import { localToday, validateBillingTerms, billingTermsFromCreateBody, type Unit } from '@rms/contract';
+import {
+  localToday,
+  validateBillingTerms,
+  billingTermsFromCreateBody,
+  type Unit,
+  type DraftRentStep,
+} from '@rms/contract';
 import { Button } from '@/components/ui/button';
 import { useProperty } from '@/features/properties/api';
 import { applyServerErrors, blankToUndefined, errorMessage } from '@/lib/form-errors';
@@ -33,6 +39,8 @@ function emptyValues(): WizardInput {
     ledgerStartDate: undefined,
     openingBalanceCents: 0,
     notes: '',
+    escalation: null,
+    rentSteps: [],
   };
 }
 
@@ -43,6 +51,11 @@ export function CreateLeasePage() {
   const navigate = useNavigate();
   const [stepIndex, setStepIndex] = useState(0);
   const [selectedUnit, setSelectedUnit] = useState<Unit | undefined>(undefined);
+  // Lifted above `TermsStep` (rather than local state there) because that step
+  // unmounts when the wizard moves to another step, and a landlord's manual
+  // overrides — plus the `clauseExpectedCents` that drives the "agreed" column —
+  // must survive stepping back and forth across the wizard.
+  const [draftSteps, setDraftSteps] = useState<DraftRentStep[]>([]);
   const propertyQuery = useProperty(selectedUnit?.propertyId ?? '');
   const property = propertyQuery.data;
 
@@ -164,7 +177,15 @@ export function CreateLeasePage() {
           />
         )}
         {step === 'Tenants' && <TenantsStep form={form} />}
-        {step === 'Terms' && <TermsStep form={form} property={property} unit={selectedUnit} />}
+        {step === 'Terms' && (
+          <TermsStep
+            form={form}
+            property={property}
+            unit={selectedUnit}
+            draftSteps={draftSteps}
+            onDraftStepsChange={setDraftSteps}
+          />
+        )}
         {step === 'Review' && <ReviewStep form={form} propertyQuery={propertyQuery} unit={selectedUnit} />}
       </div>
 

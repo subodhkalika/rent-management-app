@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { scheduleFixtures, buildSchedule, type LeaseBillingTerms, type LeaseSummary } from '@rms/contract';
+import { scheduleFixtures, buildSchedule, type LeaseBillingTerms, type LeaseDetail } from '@rms/contract';
 import { previewSchedule, previewFirstPeriod, type PreviewLeaseInput } from './schedule-preview';
 
 /**
@@ -24,6 +24,7 @@ describe('previewSchedule against the contract scheduleFixtures', () => {
         moveOutDate: fixture.terms.moveOutDate,
         moveOutBillingPolicy: fixture.terms.moveOutBillingPolicy,
         calendar: fixture.terms.calendar,
+        rentSteps: fixture.terms.rentSteps,
       };
 
       const result = previewSchedule(leaseShaped, fixture.through);
@@ -32,13 +33,45 @@ describe('previewSchedule against the contract scheduleFixtures', () => {
     });
   }
 
-  it('type-checks against a real LeaseSummary pick, not a hand-rolled shape', () => {
-    // Compile-time guard: `PreviewLeaseInput` must stay assignable FROM `LeaseSummary`
-    // — if the contract renames or adds a required billing field, this line fails to
-    // typecheck rather than the preview silently going stale.
-    const assertAssignable = (lease: LeaseSummary): PreviewLeaseInput => lease;
+  it('type-checks against a real LeaseDetail pick, not a hand-rolled shape', () => {
+    // Compile-time guard: `PreviewLeaseInput` must stay assignable FROM `LeaseDetail`
+    // — if the contract renames or adds a required billing field (or moves
+    // `rentSteps`), this line fails to typecheck rather than the preview silently
+    // going stale. `rentSteps` lives on `LeaseDetail`, not `LeaseSummary` — see the
+    // escalation plan §4.2 — so this is the shape every real call site actually has.
+    const assertAssignable = (lease: LeaseDetail): PreviewLeaseInput => lease;
     expect(typeof assertAssignable).toBe('function');
   });
+});
+
+describe('E10..E13 — the escalation fixtures, asserted the same way the backend asserts them over HTTP', () => {
+  const escalationFixtureNames = [
+    "E10 the override, L1's ladder end to end",
+    "E11 a manual step survives a cascade, L2's ladder end to end",
+    'E12 a rent decrease, unremarked',
+    'E13 explicit ladder, no clause',
+  ];
+
+  for (const name of escalationFixtureNames) {
+    it(`matches fixture: ${name}`, () => {
+      const fixture = scheduleFixtures.find((f) => f.name === name);
+      expect(fixture, `fixture "${name}" is expected to exist in scheduleFixtures`).toBeDefined();
+      const leaseShaped: PreviewLeaseInput = {
+        rentFrequency: fixture!.terms.frequency,
+        rentCents: fixture!.terms.rentCents,
+        billingDay: fixture!.terms.billingDay,
+        startDate: fixture!.terms.startDate,
+        endDate: fixture!.terms.endDate,
+        ledgerStartDate: fixture!.terms.ledgerStartDate,
+        moveOutDate: fixture!.terms.moveOutDate,
+        moveOutBillingPolicy: fixture!.terms.moveOutBillingPolicy,
+        calendar: fixture!.terms.calendar,
+        rentSteps: fixture!.terms.rentSteps,
+      };
+
+      expect(previewSchedule(leaseShaped, fixture!.through)).toEqual(fixture!.expected);
+    });
+  }
 });
 
 /**
@@ -58,6 +91,7 @@ describe('previewFirstPeriod', () => {
       ledgerStartDate: '2026-03-05',
       moveOutDate: null,
       moveOutBillingPolicy: 'bill_full_term',
+      rentSteps: [],
       calendar: 'gregorian',
     };
     const terms: LeaseBillingTerms = { ...lease, frequency: lease.rentFrequency };
@@ -81,6 +115,7 @@ describe('previewFirstPeriod', () => {
       ledgerStartDate: '2026-01-01',
       moveOutDate: null,
       moveOutBillingPolicy: 'bill_full_term',
+      rentSteps: [],
       calendar: 'gregorian',
     };
     const terms: LeaseBillingTerms = { ...lease, frequency: lease.rentFrequency };
@@ -109,6 +144,7 @@ describe('previewFirstPeriod', () => {
       ledgerStartDate: '2021-01-01',
       moveOutDate: null,
       moveOutBillingPolicy: 'bill_full_term',
+      rentSteps: [],
       calendar: 'gregorian',
     };
     const terms: LeaseBillingTerms = { ...lease, frequency: lease.rentFrequency };
@@ -129,6 +165,7 @@ describe('previewFirstPeriod', () => {
       ledgerStartDate: '2026-02-01',
       moveOutDate: null,
       moveOutBillingPolicy: 'bill_full_term',
+      rentSteps: [],
       calendar: 'gregorian',
     };
 

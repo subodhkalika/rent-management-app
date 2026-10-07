@@ -66,6 +66,7 @@ export function EndLeaseDialog({ open, onOpenChange, lease }: EndLeaseDialogProp
       moveOutDate: moveOutDate || null,
       moveOutBillingPolicy: lease.moveOutBillingPolicy,
       calendar: lease.calendar,
+      rentSteps: lease.rentSteps,
     };
     try {
       return previewSchedule(leaseInput, endDate);
@@ -82,6 +83,7 @@ export function EndLeaseDialog({ open, onOpenChange, lease }: EndLeaseDialogProp
     lease.ledgerStartDate,
     lease.moveOutBillingPolicy,
     lease.calendar,
+    lease.rentSteps,
   ]);
 
   const finalPeriod = periods.at(-1);

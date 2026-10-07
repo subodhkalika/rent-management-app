@@ -4,7 +4,12 @@ import {
   rentFrequencyLabels,
   MAX_BILLING_DAY,
   MAX_BILLING_DAY_ANY,
+  compareIsoDate,
+  localToday,
+  formatMoney,
   type CalendarSystem,
+  type DraftRentStep,
+  type RentEscalation,
   type Property,
   type Unit,
 } from '@rms/contract';
@@ -16,6 +21,8 @@ import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { RentInput } from '@/features/units/RentInput';
 import { frequencyBillingDayHelp, showsBillingDay } from '../frequency-copy';
+import { currentRentCents, toRentStepInput } from '../rent-ladder';
+import { RentLadderPanel } from './RentLadderPanel';
 import type { WizardForm } from './types';
 
 const frequencies = rentFrequency.options;
@@ -24,11 +31,18 @@ interface TermsStepProps {
   form: WizardForm;
   property?: Property;
   unit?: Unit;
+  /** The live draft ladder — lifted to `CreateLeasePage` rather than held locally
+   *  here, because this step unmounts when the wizard moves to another step and a
+   *  landlord's manual overrides (and the `clauseExpectedCents` that drives the
+   *  "agreed" column) must survive stepping back and forth. */
+  draftSteps: DraftRentStep[];
+  onDraftStepsChange: (steps: DraftRentStep[]) => void;
 }
 
-/** Step 3: the terms. This is where §8.2 item 4 (the frequency toggle) and item 5
- *  (the "existing tenancy" disclosure) live. */
-export function TermsStep({ form, property, unit }: TermsStepProps) {
+/** Step 3: the terms. This is where §8.2 item 4 (the frequency toggle), item 5
+ *  (the "existing tenancy" disclosure) and the rent-ladder panel (escalation plan
+ *  §6.2) live. */
+export function TermsStep({ form, property, unit, draftSteps, onDraftStepsChange }: TermsStepProps) {
   const [showExistingTenancy, setShowExistingTenancy] = useState(
     () => !!(form.getValues('ledgerStartDate') || form.getValues('openingBalanceCents')),
   );
@@ -45,17 +59,50 @@ export function TermsStep({ form, property, unit }: TermsStepProps) {
   // property loads, this re-renders with its real calendar.
   const calendar: CalendarSystem = property?.calendar ?? 'gregorian';
 
+  const rentCents = form.watch('rentCents') ?? 0;
+  const startDate = form.watch('startDate');
+  const clause = form.watch('escalation') ?? null;
+
+  function handleClauseChange(next: RentEscalation | null) {
+    form.setValue('escalation', next, { shouldValidate: true });
+  }
+
+  function handleStepsChange(next: DraftRentStep[]) {
+    onDraftStepsChange(next);
+    form.setValue('rentSteps', toRentStepInput(next), { shouldValidate: true });
+  }
+
+  // The in-flight onboarding trap (escalation plan §6.3): `rentCents` means the
+  // rent AT LEASE START, not today. Onboarding a tenancy whose start date is
+  // already in the past, with a ladder on screen, is exactly the moment a
+  // landlord is likeliest to type today's rent by habit and silently re-price the
+  // whole term. Relabel the field and show the real "today" figure the instant
+  // both a start date and a drafted ladder exist.
+  const today = property ? localToday(property.timezone) : null;
+  const startedInPast = !!(today && startDate && compareIsoDate(startDate, today) < 0);
+  const showOnboardingTrapNotice = startedInPast && draftSteps.length > 0;
+  const rentToday = showOnboardingTrapNotice ? currentRentCents(rentCents, draftSteps, today!) : null;
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="grid gap-1.5">
-          <Label htmlFor="wizard-rentCents">Rent{currency ? ` (${currency})` : ''}</Label>
+          <Label htmlFor="wizard-rentCents">
+            {showOnboardingTrapNotice ? 'Rent at lease start' : 'Rent'}
+            {currency ? ` (${currency})` : ''}
+          </Label>
           <RentInput
             id="wizard-rentCents"
             value={form.watch('rentCents') ?? 0}
             onChange={(cents) => form.setValue('rentCents', cents, { shouldValidate: true })}
             aria-invalid={!!errors.rentCents}
+            aria-describedby={showOnboardingTrapNotice ? 'wizard-rentCents-today' : undefined}
           />
+          {showOnboardingTrapNotice && rentToday !== null && (
+            <p id="wizard-rentCents-today" className="text-sm text-muted-foreground">
+              Rent today, from the ladder below: <strong>{formatMoney(rentToday, currency ?? 'USD')}</strong>
+            </p>
+          )}
           {errors.rentCents && (
             <p role="alert" className="text-sm text-destructive">
               {errors.rentCents.message}
@@ -236,6 +283,21 @@ export function TermsStep({ form, property, unit }: TermsStepProps) {
           </div>
         )}
       </div>
+
+      {startDate && (
+        <RentLadderPanel
+          currency={currency ?? 'USD'}
+          calendar={calendar}
+          baseRentCents={rentCents}
+          startDate={startDate}
+          endDate={form.watch('endDate') ?? null}
+          frequency={frequency}
+          clause={clause}
+          steps={draftSteps}
+          onClauseChange={handleClauseChange}
+          onStepsChange={handleStepsChange}
+        />
+      )}
 
       <div className="grid gap-1.5">
         <Label htmlFor="wizard-notes">Notes (optional, landlord-private)</Label>

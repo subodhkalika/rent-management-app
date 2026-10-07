@@ -5,12 +5,19 @@ import {
   type LeaseSummary,
   type PlannedCharge,
   type IsoDate,
+  type RentStep,
 } from '@rms/contract';
 
 /**
  * Everything `billingTermsFor` needs, in `LeaseSummary`'s own field names
  * (`rentFrequency`, not `frequency`) — the create wizard builds this straight from
  * form state plus the selected unit's property, never from a saved lease.
+ *
+ * `rentSteps` is NOT on `LeaseSummary` itself (kept off the list response to stay
+ * light — see the escalation plan §4.2); it lives on `LeaseDetail` and on the
+ * wizard's own draft ladder, so it is added here explicitly rather than picked.
+ * Defaults to `[]` at every call site that has no ladder yet, which is exactly
+ * `rentForPeriodStart`'s byte-identical, pre-escalation case.
  */
 export type PreviewLeaseInput = Pick<
   LeaseSummary,
@@ -23,7 +30,7 @@ export type PreviewLeaseInput = Pick<
   | 'moveOutDate'
   | 'moveOutBillingPolicy'
   | 'calendar'
->;
+> & { rentSteps: RentStep[] };
 
 /**
  * Never compute a date or an amount by hand — `billingTermsFor` is the only
