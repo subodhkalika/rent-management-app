@@ -1,6 +1,6 @@
 import type { IsoDate } from './common.js';
-import type { LeaseBillingTerms, PlannedCharge } from './billing.js';
-import type { ScheduleFixture, DueDateFixture } from './billing.fixtures.js';
+import type { LeaseBillingTerms, PlannedCharge, RentEscalation } from './billing.js';
+import type { ScheduleFixture, DueDateFixture, GeneratorFixture } from './billing.fixtures.js';
 
 /**
  * Bikram Sambat worked examples — the BS counterpart of `billing.fixtures.ts`'s
@@ -31,6 +31,7 @@ const terms = (overrides: Partial<LeaseBillingTerms>): LeaseBillingTerms => ({
   moveOutDate: null,
   moveOutBillingPolicy: 'bill_full_term',
   calendar: 'bikram_sambat',
+  rentSteps: [],
   ...overrides,
 });
 
@@ -256,3 +257,37 @@ export const bsYearlyFixture: ScheduleFixture = {
     }),
   ],
 };
+
+/* ======================================================================== */
+/* BSb — rent escalation generator fixture (G6)                              */
+/*                                                                            */
+/* The Gregorian counterpart (G1..G5, G7, G8) lives in `billing.fixtures.ts`.*/
+/* G6 belongs here, not there: it is the one generator fixture that exists   */
+/* specifically to prove the BS calendar, so it is where someone looks first */
+/* when a BS calendar change breaks something.                               */
+/* ======================================================================== */
+
+const tenPercentCompound: RentEscalation = { mode: 'percent', rateBps: 1000, intervalYears: 1, compounding: 'compound' };
+
+export const bsGeneratorFixtures: readonly GeneratorFixture[] = [
+  {
+    // G6 — Bikram Sambat, monthly. Start is BS2000-01-15 (1943-04-28), mid-BS-month,
+    // so each BS anniversary (BS2001-01-15, BS2002-01-15) is snapped forward to the
+    // next BS month start (BS2001-02-01 = 1944-05-14, BS2002-02-01 = 1945-05-14) —
+    // the same snap as G4, worked out in the BS calendar rather than the Gregorian
+    // one, through the identical generic `firstPeriodStartOnOrAfter` path.
+    name: 'G6 Bikram Sambat, monthly — the BS anniversary snaps too',
+    input: {
+      clause: tenPercentCompound,
+      baseRentCents: 100000,
+      startDate: '1943-04-28',
+      endDate: '1945-12-31',
+      frequency: 'monthly',
+      calendar: 'bikram_sambat',
+    },
+    expected: [
+      { effectiveFrom: '1944-05-14', rentCents: 110000, source: 'clause', clauseExpectedCents: 110000 },
+      { effectiveFrom: '1945-05-14', rentCents: 121000, source: 'clause', clauseExpectedCents: 121000 },
+    ],
+  },
+];

@@ -244,6 +244,91 @@ export function prorate(rentCents: number, daysOccupied: number, daysInPeriod: n
 }
 
 /* ======================================================================== */
+/* rent escalation — R2: a stored ladder of steps, drafted by a clause       */
+/*                                                                            */
+/* A lease's rent is no longer a constant, and it is no longer a formula. It */
+/* is a list of stored steps. The rent for any period is                     */
+/* `rentForPeriodStart(terms, periodStart)` — a pure lookup, fixture-pinned. */
+/* The clause below is only a generator: `generateRentSteps` drafts a ladder */
+/* the landlord then edits, and the stored steps are the truth from that     */
+/* moment on. Multiplying a rent by a percentage anywhere outside            */
+/* `generateRentSteps`/`clauseExpectedRent`/`recomputeLadderFrom` — or       */
+/* converting a percentage to basis points anywhere but a form's input edge  */
+/* — is the second implementation this whole design exists to prevent.      */
+/* ======================================================================== */
+
+/**
+ * `'clause'` = the generator drafted this and nobody has touched it.
+ * `'manual'` = a human set this number — by hand, or by overriding a draft. A step
+ * stays `'manual'` until an explicit *reset* hands it back to the clause.
+ */
+export const rentStepSource = z.enum(['clause', 'manual']);
+export type RentStepSource = z.infer<typeof rentStepSource>;
+
+export const rentStep = z.object({
+  /** A billing-period start, strictly after the lease's startDate. Already snapped
+   *  — the straddle is resolved at generation time (`generateRentSteps`), never at
+   *  read time (`rentForPeriodStart`). */
+  effectiveFrom: isoDate,
+  rentCents: money,
+});
+export type RentStep = z.infer<typeof rentStep>;
+
+/** `rentStep` plus drafting provenance — what `generateRentSteps` and
+ *  `recomputeLadderFrom` return. `clauseExpectedCents` is display-only: "what the
+ *  clause would have said", frozen at the moment a step was last clause-drafted,
+ *  independent of any later override. */
+export const draftRentStep = rentStep.extend({
+  source: rentStepSource,
+  clauseExpectedCents: z.number().int().nullable(),
+});
+export type DraftRentStep = z.infer<typeof draftRentStep>;
+
+export const rentEscalationMode = z.enum(['none', 'percent']);
+export type RentEscalationMode = z.infer<typeof rentEscalationMode>;
+export const rentEscalationModeLabels: Record<RentEscalationMode, string> = {
+  none: 'No increase',
+  percent: 'Percentage',
+};
+
+export const rentEscalationCompounding = z.enum(['compound', 'simple']);
+export type RentEscalationCompounding = z.infer<typeof rentEscalationCompounding>;
+export const rentEscalationCompoundingLabels: Record<RentEscalationCompounding, string> = {
+  compound: 'Compounds on the previous rent',
+  simple: 'Always on the original rent',
+};
+
+/** Integer basis points — 10% is `1000`, never a float (`7.35 * 100 ===
+ *  734.9999999999999`). `BPS_SCALE` and `STEP_PROPOSAL_ROUNDING_UNIT` are the
+ *  generator's own constants and must never be referenced outside it (or outside
+ *  `packages/contract`) — if you find yourself importing them to multiply a rent,
+ *  you are writing a second clause engine. */
+export const BPS_SCALE = 10_000;
+/** 50% per step — the ceiling that catches a 100%-instead-of-10% typo. */
+export const MAX_ESCALATION_RATE_BPS = 5_000;
+export const MAX_ESCALATION_INTERVAL_YEARS = 10;
+/** A rolling lease has no natural stopping point; this is the generator's ceiling —
+ *  30 years at a one-year interval, well beyond any real lease (see "flat past the
+ *  last step" in the escalation plan). */
+export const MAX_GENERATED_STEPS = 30;
+/** One major unit. The generator's opening offer, half-up — never a rule applied at
+ *  read time. A landlord who wants the paisa types over the proposal and it is
+ *  stored exactly. */
+export const STEP_PROPOSAL_ROUNDING_UNIT = 100;
+
+/** `mode: 'none'` is not a value of this schema — it is the ABSENCE of one.
+ *  `escalation: RentEscalation | null`, never `{ mode: 'none' }`, so there is
+ *  exactly one representation of "no clause". Zero `rateBps` is rejected at the
+ *  schema boundary for the same reason: two spellings of "none" is a bug factory. */
+export const rentEscalation = z.object({
+  mode: z.literal('percent'),
+  rateBps: z.number().int().min(1).max(MAX_ESCALATION_RATE_BPS),
+  intervalYears: z.number().int().min(1).max(MAX_ESCALATION_INTERVAL_YEARS),
+  compounding: rentEscalationCompounding,
+});
+export type RentEscalation = z.infer<typeof rentEscalation>;
+
+/* ======================================================================== */
 /* terms + schedule                                                          */
 /* ======================================================================== */
 
@@ -265,6 +350,11 @@ export const leaseBillingTerms = z.object({
   /** Which calendar defines this lease's periods. Storage and every `IsoDate` value
    *  here stay Gregorian regardless — see `docs/DATES.md`. */
   calendar: calendarSystem,
+  /** Ascending by effectiveFrom, no duplicates, all > startDate, all period starts.
+   *  EMPTY = a constant rent for the whole term (the pre-escalation, byte-identical
+   *  case). The clause that may have drafted these is deliberately NOT part of this
+   *  object — see the section header above. */
+  rentSteps: z.array(rentStep).default([]),
 });
 export type LeaseBillingTerms = z.infer<typeof leaseBillingTerms>;
 
@@ -296,6 +386,25 @@ export function effectiveBillingEnd(terms: LeaseBillingTerms): IsoDate | null {
   if (terms.moveOutDate === null) return terms.endDate;
   if (terms.endDate === null) return terms.moveOutDate;
   return minIsoDate(terms.moveOutDate, terms.endDate);
+}
+
+/**
+ * The rent in force at `periodStart` — a PURE LOOKUP over sorted `terms.rentSteps`
+ * (I20 guarantees ascending order). No multiplication, no rounding, no calendar
+ * call — a stepped rent is stored data, not a recurrence to re-derive. With
+ * `rentSteps: []` this is the byte-identical pre-escalation case: the early return
+ * on line one is exactly that guarantee.
+ *
+ * Beyond the last step the rent is flat — this function never extrapolates.
+ */
+export function rentForPeriodStart(terms: LeaseBillingTerms, periodStart: IsoDate): number {
+  if (terms.rentSteps.length === 0) return terms.rentCents;
+  let rent = terms.rentCents;
+  for (const s of terms.rentSteps) {
+    if (compareIsoDate(s.effectiveFrom, periodStart) > 0) break;
+    rent = s.rentCents;
+  }
+  return rent;
 }
 
 export const MAX_SCHEDULE_PERIODS = 600;
@@ -336,8 +445,8 @@ export function buildSchedule(terms: LeaseBillingTerms, through: IsoDate): Plann
 
     const daysInPeriod = daysBetweenInclusive(p.start, p.end);
     const daysOccupied = daysBetweenInclusive(occupiedStart, occupiedEnd);
-    const amountCents =
-      daysOccupied === daysInPeriod ? terms.rentCents : prorate(terms.rentCents, daysOccupied, daysInPeriod);
+    const periodRent = rentForPeriodStart(terms, p.start);
+    const amountCents = daysOccupied === daysInPeriod ? periodRent : prorate(periodRent, daysOccupied, daysInPeriod);
 
     result.push({
       generationKey: p.start,
@@ -360,6 +469,196 @@ export function buildSchedule(terms: LeaseBillingTerms, through: IsoDate): Plann
       isProrated: daysOccupied < daysInPeriod,
     });
   }
+  return result;
+}
+
+/* ======================================================================== */
+/* the generator — drafts the ladder, never reads it back (R2)              */
+/* ======================================================================== */
+
+/**
+ * The generator's ONE arithmetic primitive — a PROPOSAL, never applied at read time.
+ * Rounds to the nearest `STEP_PROPOSAL_ROUNDING_UNIT`, half-up (`Math.round` on
+ * exact `.5` rounds away from zero for positive numbers, which is what "half-up"
+ * means for money).
+ */
+function proposeOnce(cents: number, rateBps: number): number {
+  const raw = (cents * (BPS_SCALE + rateBps)) / BPS_SCALE;
+  return Math.round(raw / STEP_PROPOSAL_ROUNDING_UNIT) * STEP_PROPOSAL_ROUNDING_UNIT;
+}
+
+/**
+ * `simple`'s own formula, generalized over WHICH figure it is simple about:
+ * `anchorCents * (1 + cycle * rate)`, rounded once. `clauseExpectedRent` calls this
+ * with `anchorCents = baseRentCents` (cycle counted from the lease's original base).
+ * `recomputeLadderFrom` calls it with `anchorCents` = an override (cycle counted from
+ * THAT override) — see the re-anchoring note on `recomputeLadderFrom`.
+ */
+function proposeSimple(anchorCents: number, rateBps: number, cycle: number): number {
+  const raw = (anchorCents * (BPS_SCALE + cycle * rateBps)) / BPS_SCALE;
+  return Math.round(raw / STEP_PROPOSAL_ROUNDING_UNIT) * STEP_PROPOSAL_ROUNDING_UNIT;
+}
+
+/**
+ * What the clause ALONE would say at `cycle` (1-based: the first increase is cycle
+ * 1), counted from the lease's original base. Display only — drives
+ * `clauseExpectedCents` and the "agreed X" line. Never called at schedule-read time.
+ *
+ * `compound` folds `proposeOnce` from the previous cycle's proposal; `simple`
+ * applies the rate to `baseRentCents` `cycle` times over, rounding once.
+ */
+export function clauseExpectedRent(clause: RentEscalation, baseRentCents: number, cycle: number): number {
+  if (clause.compounding === 'simple') {
+    return proposeSimple(baseRentCents, clause.rateBps, cycle);
+  }
+  let rent = baseRentCents;
+  for (let i = 0; i < cycle; i += 1) {
+    rent = proposeOnce(rent, clause.rateBps);
+  }
+  return rent;
+}
+
+/**
+ * The first billing-period start on or after `d` — the straddle resolution the
+ * escalation plan assigns to generation time, never to read time. Periods are a
+ * contiguous, gapless cover (`periodsOverlapping`'s own guarantee), so the start of
+ * the period immediately after the one containing `d` is exactly one day past that
+ * period's end — no second calendar call is needed to find it.
+ */
+function firstPeriodStartOnOrAfter(
+  frequency: RentFrequency,
+  anchorDate: IsoDate,
+  d: IsoDate,
+  system: CalendarSystem,
+): IsoDate {
+  const containing = periodContaining(frequency, anchorDate, d, system);
+  if (compareIsoDate(containing.start, d) === 0) return d;
+  return addDays(containing.end, 1);
+}
+
+/**
+ * Drafts the ladder a landlord previews before saving. Snaps each `effectiveFrom`
+ * to a period start (§3.5 of the escalation plan) and stops at the earlier of
+ * `endDate` and `MAX_GENERATED_STEPS` cycles. Deterministic and total: never throws
+ * for any in-range lease — a BS anniversary that falls outside the supported BS
+ * range (`BsDateOutOfRangeError`, a `RangeError`) simply ends the ladder early,
+ * because a lease's own window is already bounded by `validateEndDateSchedulable`.
+ *
+ * The ONLY place the clause's rate/interval arithmetic runs. `rentForPeriodStart`
+ * never calls this — it only ever reads the steps this produced (or that a landlord
+ * typed over).
+ */
+export function generateRentSteps(input: {
+  clause: RentEscalation;
+  baseRentCents: number;
+  startDate: IsoDate;
+  endDate: IsoDate | null;
+  frequency: RentFrequency;
+  calendar: CalendarSystem;
+}): DraftRentStep[] {
+  const { clause, baseRentCents, startDate, endDate, frequency, calendar: system } = input;
+  const calendar = calendarForSystem(system);
+  const steps: DraftRentStep[] = [];
+
+  for (let cycle = 1; cycle <= MAX_GENERATED_STEPS; cycle += 1) {
+    let rawAnniversary: IsoDate;
+    try {
+      rawAnniversary = calendar.addYears(startDate, cycle * clause.intervalYears);
+    } catch (e) {
+      if (e instanceof RangeError) break;
+      throw e;
+    }
+    if (endDate !== null && compareIsoDate(rawAnniversary, endDate) > 0) break;
+
+    let effectiveFrom: IsoDate;
+    try {
+      effectiveFrom = firstPeriodStartOnOrAfter(frequency, startDate, rawAnniversary, system);
+    } catch (e) {
+      if (e instanceof RangeError) break;
+      throw e;
+    }
+    if (endDate !== null && compareIsoDate(effectiveFrom, endDate) > 0) break;
+
+    const rentCents = clauseExpectedRent(clause, baseRentCents, cycle);
+    steps.push({ effectiveFrom, rentCents, source: 'clause', clauseExpectedCents: rentCents });
+  }
+
+  return steps;
+}
+
+/**
+ * Re-drafts the ladder after a landlord overrides `steps[index]` to `newRentCents`.
+ * Decision 5 of the escalation plan, in full:
+ *
+ * - The overridden step becomes `source: 'manual'`. Its `clauseExpectedCents` is
+ *   left exactly as it was — that field is "what was agreed", frozen at whatever it
+ *   held before, which is what lets the UI show "agreed X, you set Y".
+ * - Every LATER `'clause'` step is recomputed. The override RE-ANCHORS the ladder:
+ *   it becomes the new base for every later `'clause'` step, and the clause
+ *   continues IN ITS OWN MODE from there. `clauseExpectedCents` is updated to match,
+ *   because a step still driven by the clause has nothing else to show: what it
+ *   says IS what was agreed, now.
+ * - Every LATER `'manual'` step is preserved verbatim, full stop — a figure a
+ *   landlord set by hand is a decision, not a draft, and the cascade must never
+ *   move underneath them. It still counts as one elapsed cycle for `simple`'s
+ *   counter below, because a cycle is a unit of time elapsed under the clause, not a
+ *   property of who set the figure.
+ *
+ * `compound` folds `proposeOnce` forward from the immediately preceding rent in the
+ * (possibly already-edited) ladder — unchanged by this re-anchoring, because that is
+ * already what re-anchoring means for a formula with no separate "base" to begin
+ * with.
+ *
+ * `simple` is where re-anchoring is the whole story: a clause reading "10% simple"
+ * describes a KIND of increase, not a number, and an override changes the amount,
+ * not the kind. So every later `'clause'` step is `newRentCents * (1 + j * rate)`
+ * for `j` = 1, 2, 3 … counted from the override's OWN position in the ladder (`j`
+ * advances for every step after the override, manual or clause, since it is
+ * counting elapsed cycles, not counting how many of them got recomputed) — never
+ * folded onto the previous step's value, and never counted from the lease's
+ * original base, which an override has already superseded. Switching a `simple`
+ * clause to compounding after one override would silently change the character of
+ * the agreement the landlord signed; re-anchoring is what keeps it "10% simple"
+ * before and after.
+ *
+ * Deliberately takes no `baseRentCents`: recomputation never needs the lease's
+ * original base — a `compound` cascade only ever needs the immediately preceding
+ * rent, and a `simple` cascade's anchor IS the override itself. `clause: null` (the
+ * commercial, hand-entered case) recomputes nothing but the touched index — there is
+ * no clause to carry forward.
+ */
+export function recomputeLadderFrom(input: {
+  clause: RentEscalation | null;
+  steps: readonly DraftRentStep[];
+  index: number;
+  newRentCents: number;
+}): DraftRentStep[] {
+  const { clause, steps, index, newRentCents } = input;
+  const result: DraftRentStep[] = steps.map((s) => ({ ...s }));
+  const target = result[index];
+  if (target === undefined) {
+    throw new RangeError(`recomputeLadderFrom: index ${index} is out of range for a ladder of ${result.length}`);
+  }
+  result[index] = { ...target, rentCents: newRentCents, source: 'manual' };
+
+  let previous = newRentCents;
+  let cyclesSinceOverride = 0;
+  for (let i = index + 1; i < result.length; i += 1) {
+    const step = result[i];
+    if (step === undefined) continue;
+    cyclesSinceOverride += 1;
+    if (clause === null || step.source !== 'clause') {
+      previous = step.rentCents;
+      continue;
+    }
+    const recomputed =
+      clause.compounding === 'simple'
+        ? proposeSimple(newRentCents, clause.rateBps, cyclesSinceOverride)
+        : proposeOnce(previous, clause.rateBps);
+    result[i] = { ...step, rentCents: recomputed, clauseExpectedCents: recomputed };
+    previous = recomputed;
+  }
+
   return result;
 }
 
@@ -399,6 +698,27 @@ export function validateBillingTerms(terms: LeaseBillingTerms): string | null {
   }
   if (terms.moveOutDate !== null && compareIsoDate(terms.moveOutDate, terms.startDate) < 0) {
     return 'moveOutDate must not be before startDate';
+  }
+  if (terms.rentSteps.length > 0) {
+    let previousEffectiveFrom: IsoDate | null = null;
+    for (const step of terms.rentSteps) {
+      if (compareIsoDate(step.effectiveFrom, terms.startDate) <= 0) {
+        return 'Each rent step must be strictly after startDate';
+      }
+      if (terms.endDate !== null && compareIsoDate(step.effectiveFrom, terms.endDate) > 0) {
+        return 'Each rent step must not fall after endDate';
+      }
+      if (!isPeriodStart(terms.frequency, terms.startDate, step.effectiveFrom, terms.calendar)) {
+        return 'Each rent step must fall on a billing period start';
+      }
+      if (previousEffectiveFrom !== null && compareIsoDate(step.effectiveFrom, previousEffectiveFrom) <= 0) {
+        return 'rentSteps must be strictly ascending by effectiveFrom, with no duplicates';
+      }
+      if (step.rentCents < 0) {
+        return 'rentCents must not be negative';
+      }
+      previousEffectiveFrom = step.effectiveFrom;
+    }
   }
   return null;
 }

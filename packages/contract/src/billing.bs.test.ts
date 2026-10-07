@@ -1,6 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { buildSchedule, dueDateFor, validateBillingTerms, compareIsoDate, type LeaseBillingTerms } from './billing.js';
-import { bsScheduleFixtures, bsDueDateFixtures, bsYearlyFixture } from './billing.bs.fixtures.js';
+import {
+  buildSchedule,
+  dueDateFor,
+  validateBillingTerms,
+  compareIsoDate,
+  rentForPeriodStart,
+  generateRentSteps,
+  type LeaseBillingTerms,
+} from './billing.js';
+import { bsScheduleFixtures, bsDueDateFixtures, bsYearlyFixture, bsGeneratorFixtures } from './billing.bs.fixtures.js';
 import { MAX_BILLING_DAY } from './calendar/index.js';
 
 /**
@@ -56,15 +64,45 @@ describe('invariants hold for BS schedules too (I2, I4, I5, I6, I7)', () => {
         for (const c of charges) expect(c.isProrated).toBe(c.daysOccupied < c.daysInPeriod);
       });
 
-      it('I7 a full period charges exactly rentCents', () => {
+      it("I7' a full period charges exactly rentForPeriodStart(terms, periodStart)", () => {
         for (const c of charges) {
           if (c.daysOccupied === c.daysInPeriod) {
-            expect(c.amountCents).toBe(fixture.terms.rentCents);
+            expect(c.amountCents).toBe(rentForPeriodStart(fixture.terms, c.periodStart));
           }
         }
       });
     });
   }
+});
+
+describe('generateRentSteps — Bikram Sambat fixture (G6)', () => {
+  it.each(bsGeneratorFixtures.map((f) => [f.name, f] as const))('%s', (_name, fixture) => {
+    expect(generateRentSteps(fixture.input)).toEqual(fixture.expected);
+  });
+
+  it('produces a ladder validateBillingTerms accepts', () => {
+    for (const fixture of bsGeneratorFixtures) {
+      const terms: LeaseBillingTerms = {
+        frequency: fixture.input.frequency,
+        calendar: fixture.input.calendar,
+        rentCents: fixture.input.baseRentCents,
+        billingDay: 1,
+        startDate: fixture.input.startDate,
+        endDate: fixture.input.endDate,
+        ledgerStartDate: fixture.input.startDate,
+        moveOutDate: null,
+        moveOutBillingPolicy: 'bill_full_term',
+        rentSteps: fixture.expected.map((s) => ({ effectiveFrom: s.effectiveFrom, rentCents: s.rentCents })),
+      };
+      expect(validateBillingTerms(terms)).toBeNull();
+    }
+  });
+
+  it('is deterministic', () => {
+    for (const fixture of bsGeneratorFixtures) {
+      expect(generateRentSteps(fixture.input)).toEqual(generateRentSteps(fixture.input));
+    }
+  });
 });
 
 describe('validateBillingTerms — calendar-specific billingDay ceiling', () => {
@@ -78,6 +116,7 @@ describe('validateBillingTerms — calendar-specific billingDay ceiling', () => 
     moveOutDate: null,
     moveOutBillingPolicy: 'bill_full_term',
     calendar: 'bikram_sambat',
+    rentSteps: [],
   };
 
   it('accepts billingDay 32 for a Bikram Sambat lease', () => {

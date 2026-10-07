@@ -26,8 +26,13 @@ import {
   chargesDueForGeneration,
   validateBillingTerms,
   effectiveBillingEnd,
+  rentForPeriodStart,
+  generateRentSteps,
+  recomputeLadderFrom,
+  clauseExpectedRent,
   GENERATION_LOOKAHEAD_DAYS,
   MAX_SCHEDULE_PERIODS,
+  MAX_GENERATED_STEPS,
   type LeaseBillingTerms,
 } from './billing.js';
 import {
@@ -36,6 +41,8 @@ import {
   prorationFixtures,
   generationFixtures,
   billingEndFixtures,
+  generatorFixtures,
+  ladderFixtures,
 } from './billing.fixtures.js';
 import type { IsoDate } from './common.js';
 
@@ -428,10 +435,10 @@ describe('invariants over every schedule fixture', () => {
         for (const c of charges) expect(c.isProrated).toBe(c.daysOccupied < c.daysInPeriod);
       });
 
-      it('I7 a full period charges exactly rentCents', () => {
+      it("I7' a full period charges exactly rentForPeriodStart(terms, periodStart)", () => {
         for (const c of charges) {
           if (c.daysOccupied === c.daysInPeriod) {
-            expect(c.amountCents).toBe(fixture.terms.rentCents);
+            expect(c.amountCents).toBe(rentForPeriodStart(fixture.terms, c.periodStart));
           }
         }
       });
@@ -531,6 +538,239 @@ describe('I14 under bill_full_term, buildSchedule output is independent of moveO
 });
 
 /* ======================================================================== */
+/* Rent escalation — the generator and the ladder recompute (G1..G8, L1..L3) */
+/* ======================================================================== */
+
+describe('generateRentSteps — fixtures (G1..G8)', () => {
+  it.each(generatorFixtures.map((f) => [f.name, f] as const))('%s', (_name, fixture) => {
+    expect(generateRentSteps(fixture.input)).toEqual(fixture.expected);
+  });
+
+  it('G8 is bounded at exactly MAX_GENERATED_STEPS, never more', () => {
+    const g8 = generatorFixtures.find((f) => f.name.startsWith('G8'));
+    expect(g8).toBeDefined();
+    expect(g8!.expected.length).toBe(MAX_GENERATED_STEPS);
+    expect(g8!.input.endDate).toBeNull();
+  });
+});
+
+describe('recomputeLadderFrom — fixtures (L1..L3)', () => {
+  it.each(ladderFixtures.map((f) => [f.name, f] as const))('%s', (_name, fixture) => {
+    const result = recomputeLadderFrom({
+      clause: fixture.clause,
+      steps: fixture.steps,
+      index: fixture.index,
+      newRentCents: fixture.newRentCents,
+    });
+    expect(result).toEqual(fixture.expected);
+  });
+});
+
+describe('clauseExpectedRent — agrees with the generator at every cycle', () => {
+  for (const fixture of generatorFixtures) {
+    it(fixture.name, () => {
+      fixture.expected.forEach((step, i) => {
+        expect(clauseExpectedRent(fixture.input.clause, fixture.input.baseRentCents, i + 1)).toBe(
+          step.clauseExpectedCents,
+        );
+      });
+    });
+  }
+});
+
+/* ======================================================================== */
+/* I20 — rentSteps: strictly ascending, no duplicates, each a period start,  */
+/* each strictly after startDate, each at or before endDate                 */
+/* ======================================================================== */
+
+describe('I20 validateBillingTerms enforces the rentSteps shape', () => {
+  const base: LeaseBillingTerms = {
+    frequency: 'monthly',
+    calendar: 'gregorian',
+    rentCents: 100000,
+    billingDay: 1,
+    startDate: '2026-01-01',
+    endDate: null,
+    ledgerStartDate: '2026-01-01',
+    moveOutDate: null,
+    moveOutBillingPolicy: 'bill_full_term',
+    rentSteps: [],
+  };
+
+  it('accepts an empty ladder', () => {
+    expect(validateBillingTerms(base)).toBeNull();
+  });
+
+  it('accepts a well-formed ascending ladder', () => {
+    expect(
+      validateBillingTerms({
+        ...base,
+        rentSteps: [
+          { effectiveFrom: '2027-01-01', rentCents: 110000 },
+          { effectiveFrom: '2028-01-01', rentCents: 121000 },
+        ],
+      }),
+    ).toBeNull();
+  });
+
+  it('rejects a step on or before startDate', () => {
+    expect(
+      validateBillingTerms({ ...base, rentSteps: [{ effectiveFrom: '2026-01-01', rentCents: 110000 }] }),
+    ).not.toBeNull();
+    expect(
+      validateBillingTerms({ ...base, rentSteps: [{ effectiveFrom: '2025-06-01', rentCents: 110000 }] }),
+    ).not.toBeNull();
+  });
+
+  it('rejects a step that is not a billing-period start', () => {
+    expect(
+      validateBillingTerms({ ...base, rentSteps: [{ effectiveFrom: '2026-01-15', rentCents: 110000 }] }),
+    ).not.toBeNull();
+  });
+
+  it('rejects duplicate effectiveFrom values', () => {
+    expect(
+      validateBillingTerms({
+        ...base,
+        rentSteps: [
+          { effectiveFrom: '2027-01-01', rentCents: 110000 },
+          { effectiveFrom: '2027-01-01', rentCents: 120000 },
+        ],
+      }),
+    ).not.toBeNull();
+  });
+
+  it('rejects out-of-order effectiveFrom values', () => {
+    expect(
+      validateBillingTerms({
+        ...base,
+        rentSteps: [
+          { effectiveFrom: '2028-01-01', rentCents: 121000 },
+          { effectiveFrom: '2027-01-01', rentCents: 110000 },
+        ],
+      }),
+    ).not.toBeNull();
+  });
+
+  it('rejects a step after endDate', () => {
+    expect(
+      validateBillingTerms({
+        ...base,
+        endDate: '2027-06-30',
+        rentSteps: [{ effectiveFrom: '2027-07-01', rentCents: 110000 }],
+      }),
+    ).not.toBeNull();
+  });
+
+  it('accepts a step exactly on endDate (a period start that is also the last day of term)', () => {
+    expect(
+      validateBillingTerms({
+        ...base,
+        frequency: 'yearly',
+        startDate: '2026-04-01',
+        endDate: '2027-03-31',
+        ledgerStartDate: '2026-04-01',
+        rentSteps: [{ effectiveFrom: '2027-04-01', rentCents: 586600 }],
+      }),
+    ).not.toBeNull(); // 2027-04-01 is strictly after endDate 2027-03-31 — dead data
+  });
+
+  it('every generator fixture (G1..G8) produces a ladder validateBillingTerms accepts', () => {
+    for (const fixture of generatorFixtures) {
+      const terms: LeaseBillingTerms = {
+        frequency: fixture.input.frequency,
+        calendar: fixture.input.calendar,
+        rentCents: fixture.input.baseRentCents,
+        billingDay: 1,
+        startDate: fixture.input.startDate,
+        endDate: fixture.input.endDate,
+        ledgerStartDate: fixture.input.startDate,
+        moveOutDate: null,
+        moveOutBillingPolicy: 'bill_full_term',
+        rentSteps: fixture.expected.map((s) => ({ effectiveFrom: s.effectiveFrom, rentCents: s.rentCents })),
+      };
+      expect(validateBillingTerms(terms)).toBeNull();
+    }
+  });
+
+  it('every E10..E13 schedule fixture\'s own terms are themselves valid', () => {
+    for (const fixture of scheduleFixtures) {
+      if (fixture.terms.rentSteps.length === 0) continue;
+      expect(validateBillingTerms(fixture.terms)).toBeNull();
+    }
+  });
+});
+
+/* ======================================================================== */
+/* I21 — rentForPeriodStart performs no arithmetic and makes no calendar     */
+/* call: a source-grep, same technique as I1.                                */
+/* ======================================================================== */
+
+describe('I21 rentForPeriodStart is a pure lookup — no arithmetic, no calendar call', () => {
+  const thisFile = fileURLToPath(import.meta.url);
+  const here = dirname(thisFile);
+  const billingSource = readFileSync(join(here, 'billing.ts'), 'utf-8');
+
+  const match = billingSource.match(
+    /export function rentForPeriodStart\([\s\S]*?\n\}/,
+  );
+  if (match === null) throw new Error('rentForPeriodStart not found in billing.ts');
+  const body = match[0];
+
+  it('found the function', () => {
+    expect(body).toContain('rentForPeriodStart');
+  });
+
+  it('contains no multiplication, division, or rounding', () => {
+    expect(body).not.toMatch(/[*/]/);
+    expect(body).not.toMatch(/Math\./);
+  });
+
+  it('calls no calendar function — only compareIsoDate', () => {
+    expect(body).not.toMatch(/addDays\(|addMonths\(|addYears\(|calendarForSystem\(|periodContaining\(|periodsOverlapping\(|isPeriodStart\(/);
+    expect(body).toMatch(/compareIsoDate\(/);
+  });
+
+  it('returns on line one when there are no steps (the byte-identical guarantee)', () => {
+    const firstLine = body.split('\n')[1]!.trim();
+    expect(firstLine).toBe('if (terms.rentSteps.length === 0) return terms.rentCents;');
+  });
+});
+
+/* ======================================================================== */
+/* I22 — generateRentSteps is deterministic and total                       */
+/* ======================================================================== */
+
+describe('I22 generateRentSteps is deterministic and total', () => {
+  it('same inputs produce the same ladder, every time', () => {
+    for (const fixture of generatorFixtures) {
+      const once = generateRentSteps(fixture.input);
+      const twice = generateRentSteps(fixture.input);
+      expect(once).toEqual(twice);
+    }
+  });
+
+  it('never throws for any in-range lease, including a BS lease near the table boundary', () => {
+    for (const fixture of generatorFixtures) {
+      expect(() => generateRentSteps(fixture.input)).not.toThrow();
+    }
+    // A rolling BS lease starting close to the table's upper boundary (bs-data.ts
+    // supports through AD 2034-04-13): the generator must stop quietly rather than
+    // propagate BsDateOutOfRangeError once an anniversary falls outside the table.
+    expect(() =>
+      generateRentSteps({
+        clause: { mode: 'percent', rateBps: 1000, intervalYears: 1, compounding: 'compound' },
+        baseRentCents: 100000,
+        startDate: '2032-01-01',
+        endDate: null,
+        frequency: 'monthly',
+        calendar: 'bikram_sambat',
+      }),
+    ).not.toThrow();
+  });
+});
+
+/* ======================================================================== */
 /* validateBillingTerms                                                     */
 /* ======================================================================== */
 
@@ -545,6 +785,7 @@ describe('validateBillingTerms', () => {
     ledgerStartDate: '2026-01-01',
     moveOutDate: null,
     moveOutBillingPolicy: 'bill_full_term',
+    rentSteps: [],
   };
 
   it('accepts valid terms', () => {
@@ -603,6 +844,7 @@ describe('MAX_SCHEDULE_PERIODS', () => {
       ledgerStartDate: '2000-01-01',
       moveOutDate: null,
       moveOutBillingPolicy: 'bill_full_term',
+      rentSteps: [],
     };
     // 601 months past 2000-01-01 is well past MAX_SCHEDULE_PERIODS (600).
     const farThrough = addMonths('2000-01-01', MAX_SCHEDULE_PERIODS + 5);
@@ -620,6 +862,7 @@ describe('MAX_SCHEDULE_PERIODS', () => {
       ledgerStartDate: '2000-01-01',
       moveOutDate: null,
       moveOutBillingPolicy: 'bill_full_term',
+      rentSteps: [],
     };
     const through = addMonths('2000-01-01', MAX_SCHEDULE_PERIODS - 1);
     expect(() => buildSchedule(terms, through)).not.toThrow();
