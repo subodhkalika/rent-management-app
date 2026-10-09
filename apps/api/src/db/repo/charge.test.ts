@@ -130,13 +130,17 @@ describe('existsChargeForLeaseQuery — hardDeleteLease\'s zero-charge precondit
 });
 
 describe('latestChargedPeriodStartQuery — the rent-step mutability boundary (PLAN-PHASE3A.md §3.4)', () => {
-  it('filters to GENERATED, non-voided RENT charges on this (org_id, lease_id) only', () => {
+  it('filters to GENERATED rent charges on this (org_id, lease_id) only — voided or not (monotonic boundary, review finding 6)', () => {
     const { sql, params } = latestChargedPeriodStartQuery('org_A', db, 'lease_1').toSQL();
     expect(sql).toContain('"charge"."org_id" =');
     expect(sql).toContain('"charge"."lease_id" =');
     expect(sql).toContain('"charge"."type" =');
     expect(sql).toContain('"charge"."source" =');
-    expect(sql).toContain('"charge"."voided_at" is null');
+    // Deliberately NOT `"charge"."voided_at" is null` — a period billed once
+    // stays billed. See the query builder's own comment for why filtering out
+    // voided rows here let the boundary retreat and made a free, unaudited PUT
+    // possible on a step the ladder had already moved past.
+    expect(sql).not.toContain('voided_at');
     expect(params).toEqual(expect.arrayContaining(['org_A', 'lease_1', 'rent', 'generated']));
   });
 });

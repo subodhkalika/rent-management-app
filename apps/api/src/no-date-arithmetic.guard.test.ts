@@ -101,15 +101,18 @@ import { listSourceFiles, readSource } from '../test/support/repoGuard.js';
  *    (the cron's own entry point). A second direct caller is a second place that
  *    could pass a different `through` and quietly stop matching the generator.
  *
- * 9. A hand-typed `LeaseBillingTerms` object literal (Rule 7) — `: LeaseBillingTerms
- *    = { ... }` — anywhere in `apps/api`. `billingTermsFor` (packages/contract's
- *    lease.ts) is the ONLY sanctioned way to build one; every call site that needs
- *    a `LeaseBillingTerms` passes an plain object INTO `billingTermsFor` instead
- *    of typing one directly, which is what this detector distinguishes: a literal
- *    passed as `billingTermsFor({ ... })`'s argument carries no `LeaseBillingTerms`
- *    annotation (the function's return type is inferred), so it never matches.
- *    PLAN-PHASE3A.md §2.2 found four call sites hand-typing one directly in
- *    `repo/lease.ts` (`createLease`, `renewLease`, `updateLease`,
+ * 9. A hand-typed `LeaseBillingTerms` object literal (Rule 7) — ANY object literal
+ *    carrying both `frequency:` and `rentSteps:`, with a negative guard for
+ *    `rentFrequency:`. `billingTermsFor` (packages/contract's lease.ts) is the
+ *    ONLY sanctioned way to build one; its OWN argument shape is `LeaseSummary`'s
+ *    (field `rentFrequency`), never `LeaseBillingTerms`'s own field (`frequency`),
+ *    so `billingTermsFor({ ...lease, rentSteps })` never matches even with zero
+ *    type annotation. An earlier version of this detector keyed on a
+ *    `: LeaseBillingTerms = {` annotation, which missed the actual risk — a
+ *    hand-built object with NO annotation at all, passed straight into
+ *    `buildScheduleOrThrow`/`validateBillingTerms` as a bare argument (review
+ *    finding 7). PLAN-PHASE3A.md §2.2 found four call sites hand-typing one
+ *    directly in `repo/lease.ts` (`createLease`, `renewLease`, `updateLease`,
  *    `replaceRentSteps`) — all four are refactored to `billingTermsFor` as part of
  *    this phase, so the rule lands with zero exemptions.
  *
@@ -240,23 +243,46 @@ function callsBuildScheduleDirectly(src: string): boolean {
 }
 
 /**
- * PLAN-PHASE3A.md §2.2 Rule 7: a HAND-TYPED `LeaseBillingTerms` object literal —
- * `: LeaseBillingTerms = { ... }` — containing both `moveOutBillingPolicy:` and
- * `rentSteps:`. Brace-matches from the first `{` after the annotation so a literal
- * spanning many lines (every real offender does) is read whole, not just its first
- * line.
+ * PLAN-PHASE3A.md §2.2 Rule 7: a HAND-TYPED `LeaseBillingTerms` object literal.
  *
- * Deliberately keyed off the TYPE ANNOTATION, not the two field names alone: every
- * sanctioned call site passes an argument literal straight into `billingTermsFor(...)`,
- * which carries no `LeaseBillingTerms` annotation at all (the function's return type
- * is inferred) — so `billingTermsFor({ moveOutBillingPolicy: x, rentSteps: y })`
- * never matches, only `const terms: LeaseBillingTerms = { moveOutBillingPolicy: x,
- * rentSteps: y }` does.
+ * Review finding 7: keying this off a `LeaseBillingTerms = {` TYPE ANNOTATION (the
+ * original version of this detector) misses the actual risk — a hand-built object
+ * with NO annotation at all, passed straight into `buildScheduleOrThrow` or
+ * `validateBillingTerms`, e.g. `const terms = { frequency, rentCents, …,
+ * rentSteps }; buildScheduleOrThrow(terms, through);`. That bypasses
+ * `billingTermsFor` exactly as much as an annotated literal does, and the old
+ * detector let it through.
+ *
+ * Keyed instead on `frequency:` + `rentSteps:`, with a NEGATIVE guard for
+ * `rentFrequency:` — `LeaseBillingTerms`'s OWN field is spelled `frequency`
+ * (billing.ts's `leaseBillingTerms` schema), while `billingTermsFor`'s sanctioned
+ * argument shape is `LeaseSummary`'s, whose field is spelled `rentFrequency`. So
+ * `billingTermsFor({ ...lease, rentSteps })` or
+ * `billingTermsFor({ rentFrequency: x, …, rentSteps: y })` never matches (no bare
+ * `frequency:` key at all), while ANY object literal carrying both `frequency:`
+ * and `rentSteps:` — annotated or not — does. Scans every brace-matched `{ ... }`
+ * block in the file, not only ones following a particular prefix, so a hand-built
+ * object passed as a bare function argument is caught too.
  */
+/**
+ * A real object VALUE literal can never legally contain a bare `;` between its
+ * own properties — that is a parse error (object literal members are
+ * comma-separated, full stop). A TS inline TYPE literal — e.g. a function
+ * parameter's structural type, `input: { frequency: X; rentSteps: Y }` — commonly
+ * does use `;` as its member separator. This is therefore a GRAMMAR fact, not a
+ * style heuristic: if the named field is followed by `;` before the next `,`, it
+ * is a type position, never a value being constructed, and must not be flagged
+ * (`repo/lease.ts`'s `resolveStepsToWrite` has exactly this shape for its
+ * parameter's inline type, which is not a `LeaseBillingTerms` VALUE at all).
+ */
+function fieldIsTypePosition(body: string, field: string): boolean {
+  return new RegExp(`\\b${field}\\s*:[^,;{}]*;`).test(body);
+}
+
 function constructsLeaseBillingTermsLiteral(src: string): boolean {
-  const marker = /LeaseBillingTerms\s*=\s*\{/g;
+  const marker = /\{/g;
   for (let m = marker.exec(src); m; m = marker.exec(src)) {
-    let i = m.index + m[0].length;
+    let i = m.index + 1;
     let depth = 1;
     const start = i;
     while (i < src.length && depth > 0) {
@@ -265,7 +291,12 @@ function constructsLeaseBillingTermsLiteral(src: string): boolean {
       i++;
     }
     const body = src.slice(start, i - 1);
-    if (/moveOutBillingPolicy\s*:/.test(body) && /rentSteps\s*:/.test(body)) return true;
+    const hasBareFrequencyKey = /\bfrequency\s*:/.test(body);
+    const hasRentFrequencyKey = /\brentFrequency\s*:/.test(body);
+    const hasRentStepsKey = /\brentSteps\s*:/.test(body);
+    if (!hasBareFrequencyKey || !hasRentStepsKey || hasRentFrequencyKey) continue;
+    if (fieldIsTypePosition(body, 'frequency') || fieldIsTypePosition(body, 'rentSteps')) continue;
+    return true;
   }
   return false;
 }
@@ -650,6 +681,25 @@ describe('no-date-arithmetic guard — detectors proven against deliberate viola
     expect(constructsLeaseBillingTermsLiteral(good)).toBe(false);
   });
 
+  it('review finding 7: a NO-ANNOTATION literal passed straight into buildScheduleOrThrow is ALSO flagged — the bypass the old annotation-keyed detector missed', () => {
+    const bypass = [
+      'const terms = {',
+      '  frequency: lease.rentFrequency,',
+      '  rentCents: lease.rentCents,',
+      '  billingDay: lease.billingDay,',
+      '  startDate: lease.startDate,',
+      '  endDate: lease.endDate,',
+      '  ledgerStartDate: lease.ledgerStartDate,',
+      '  moveOutDate: lease.moveOutDate,',
+      '  moveOutBillingPolicy: property.moveOutBillingPolicy,',
+      '  calendar: property.calendar,',
+      '  rentSteps: steps,',
+      '};',
+      'buildScheduleOrThrow(terms, through);',
+    ].join('\n');
+    expect(constructsLeaseBillingTermsLiteral(bypass)).toBe(true);
+  });
+
   it('a deliberate PLAN-PHASE3A.md Rule 7 violation, written to disk, is caught end to end', () => {
     const badFile = join(fixtureRoot, 'bad-hand-typed-terms.ts');
     writeFileSync(
@@ -678,6 +728,25 @@ describe('no-date-arithmetic guard — detectors proven against deliberate viola
 
     const src = readSource(fixtureRoot, 'bad-hand-typed-terms.ts');
     expect(constructsLeaseBillingTermsLiteral(src)).toBe(true);
+  });
+
+  it('does not flag an inline TYPE literal parameter shape — a `;`-separated field is a type, not a value', () => {
+    // repo/lease.ts's own resolveStepsToWrite: the function's PARAMETER's inline
+    // structural type, never a LeaseBillingTerms VALUE under construction.
+    const typeShape = [
+      'export function resolveStepsToWrite(input: {',
+      '  rentSteps: readonly RentStepInput[] | undefined;',
+      '  escalation: RentEscalation | null;',
+      '  baseRentCents: number;',
+      '  startDate: string;',
+      '  endDate: string | null;',
+      '  frequency: LeaseBillingTerms[\'frequency\'];',
+      '  calendar: LeaseBillingTerms[\'calendar\'];',
+      '}): StepsToWrite {',
+      '  return { from: \'none\' };',
+      '}',
+    ].join('\n');
+    expect(constructsLeaseBillingTermsLiteral(typeShape)).toBe(false);
   });
 
   it('a well-formed fixture using billingTermsFor passes Rule 7', () => {

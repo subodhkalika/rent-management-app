@@ -62,6 +62,30 @@ describe('due-date pagination cursor — charges are ordered (due_date, id), not
     expect(() => decodeDueDateCursor(btoa(`${dueDate}|not-a-uuid`))).toThrow(ApiException);
   });
 
+  /**
+   * THE regression this fix closes: `2026-13-45` matches a shape-only
+   * `\d{4}-\d{2}-\d{2}` regex (it IS four-two-two digits) but is not a real
+   * calendar date. Before routing this through the contract's `isoDate`, a
+   * forged cursor like this reached `::date` in the generated SQL, Postgres
+   * raised SQLSTATE 22008 ("date/time field value out of range"), and
+   * `lib/db-errors.ts` — which only recognises 23505 — let it surface as an
+   * unhandled 500 instead of this 400.
+   */
+  it('rejects a cursor whose date half is shape-valid but not a real calendar date', () => {
+    expect(() => decodeDueDateCursor(btoa(`2026-13-45|${id}`))).toThrow(ApiException);
+    try {
+      decodeDueDateCursor(btoa(`2026-13-45|${id}`));
+      expect.unreachable();
+    } catch (err) {
+      expect((err as ApiException).code).toBe('bad_request');
+      expect((err as ApiException).status).toBe(400);
+    }
+  });
+
+  it('rejects 2026-02-30 — shape-valid, but February never has a 30th', () => {
+    expect(() => decodeDueDateCursor(btoa(`2026-02-30|${id}`))).toThrow(ApiException);
+  });
+
   it('throws a bad_request ApiException with a 400 status', () => {
     try {
       decodeDueDateCursor('garbage');

@@ -285,7 +285,7 @@ describe.skipIf(!DATABASE_URL)('charge.ts orchestration functions — live Postg
       expect(boundary).toBe('2026-01-15');
     });
 
-    it('equals the latest GENERATED, non-voided rent period start when that is later than today', async () => {
+    it('equals the latest GENERATED rent period start when that is later than today', async () => {
       const row = await insertLease();
       const gLease = generatableLeaseFrom(row);
       // 31-day lookahead from 2026-01-05 reaches into February.
@@ -295,22 +295,30 @@ describe.skipIf(!DATABASE_URL)('charge.ts orchestration functions — live Postg
       expect(boundary).toBe('2026-02-01'); // the lookahead already wrote February
     });
 
-    it('a VOIDED rent period never counts toward the boundary', async () => {
+    /**
+     * Review decision (2026-10-09), overriding an earlier version of this test
+     * that asserted the opposite: a VOIDED period must still count toward the
+     * boundary — the boundary is MONOTONIC, never retreating. Before this fix,
+     * voiding the latest-billed period (February here) dropped the boundary back
+     * to January, and a step dated in February would then take a free `PUT` —
+     * no correction audit, no reason required — while `charge_generation_uq`
+     * still held February's key (so nothing regenerates) and the drift banner
+     * stayed silent (the key is occupied, not missing). The ladder would say one
+     * number, the bill another, and nothing would tell anyone.
+     */
+    it('a VOIDED rent period still counts toward the boundary — once billed, always billed (monotonic)', async () => {
       const row = await insertLease();
       const gLease = generatableLeaseFrom(row);
       const created = await chargeRepo.generateChargesForLease(orgId, db, gLease, [], '2026-01-05');
       const feb = created.find((c) => c.generationKey === '2026-02-01')!;
+
+      const beforeVoid = await chargeRepo.rentStepMutabilityBoundary(orgId, db, row.id as string, '2026-01-20');
+      expect(beforeVoid).toBe('2026-02-01');
+
       await chargeRepo.voidCharge(orgId, db, row.id as string, feb.id, userId, { reason: 'Voided for this test.' });
 
-      // January ('2026-01-01') is now the latest LIVE generated rent period — but
-      // the boundary is max(today, latest), and `today` ('2026-01-20') is itself
-      // later than January, so THIS assertion needs `today` to fall strictly
-      // between January and the (now-voided) February to prove voiding actually
-      // excluded February from the max — a `today` already past February would
-      // make the boundary equal `today` regardless of which period is latest.
-      const boundary = await chargeRepo.rentStepMutabilityBoundary(orgId, db, row.id as string, '2026-01-20');
-      expect(boundary).toBe('2026-01-20'); // still > January; the point is what it is NOT:
-      expect(boundary).not.toBe('2026-02-01'); // never February — that row is voided
+      const afterVoid = await chargeRepo.rentStepMutabilityBoundary(orgId, db, row.id as string, '2026-01-20');
+      expect(afterVoid).toBe('2026-02-01'); // UNCHANGED — the boundary never retreats
     });
   });
 
@@ -522,6 +530,65 @@ describe.skipIf(!DATABASE_URL)('charge.ts orchestration functions — live Postg
         overdueOnly: false,
       });
       expect(rows).toEqual([]);
+    });
+  });
+
+  /**
+   * Review finding 9: the `overdueOnly` SQL predicate
+   * (`due_date < (now() at time zone property.timezone)::date` —
+   * `listChargesForOrgQuery` in charge.ts) was asserted only as SQL TEXT
+   * (`charge.test.ts`) and every integration test ran with `overdueOnly: false`
+   * — the one expression with a second implementation behind it (the contract's
+   * own `chargeOverdue`) had no LIVE test. This runs it for real.
+   */
+  describe('listChargesForOrg — overdueOnly, against REAL Postgres', () => {
+    it('includes only the charge due in the clear past, excludes the one due in the clear future', async () => {
+      const row = await insertLease();
+      const overdue = await chargeRepo.createManualCharge(orgId, db, row.id as string, userId, {
+        type: 'late_fee',
+        amountCents: 5000,
+        dueDate: '2000-01-01', // unambiguously in the past, whenever this suite runs
+      });
+      const notYetDue = await chargeRepo.createManualCharge(orgId, db, row.id as string, userId, {
+        type: 'late_fee',
+        amountCents: 5000,
+        dueDate: '2099-01-01', // unambiguously in the future
+      });
+
+      const { rows: overdueOnlyRows } = await chargeRepo.listChargesForOrg(orgId, db, {
+        limit: 25,
+        includeVoided: true,
+        overdueOnly: true,
+      });
+      const overdueIds = overdueOnlyRows.map((r) => r.id);
+      expect(overdueIds).toContain(overdue!.id);
+      expect(overdueIds).not.toContain(notYetDue!.id);
+
+      const { rows: allRows } = await chargeRepo.listChargesForOrg(orgId, db, {
+        limit: 25,
+        includeVoided: true,
+        overdueOnly: false,
+      });
+      const allIds = allRows.map((r) => r.id);
+      expect(allIds).toContain(overdue!.id);
+      expect(allIds).toContain(notYetDue!.id);
+    });
+
+    it('excludes a VOIDED overdue charge — voiding is a decision, not something still owed', async () => {
+      const row = await insertLease();
+      const overdue = await chargeRepo.createManualCharge(orgId, db, row.id as string, userId, {
+        type: 'late_fee',
+        amountCents: 5000,
+        dueDate: '2000-01-01',
+      });
+      await chargeRepo.voidCharge(orgId, db, row.id as string, overdue!.id, userId, { reason: 'Charged in error.' });
+
+      const { rows } = await chargeRepo.listChargesForOrg(orgId, db, {
+        limit: 25,
+        includeVoided: true,
+        overdueOnly: true,
+      });
+      expect(rows.map((r) => r.id)).not.toContain(overdue!.id);
     });
   });
 });

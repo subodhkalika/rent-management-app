@@ -1,4 +1,4 @@
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { uuidv7 } from '@rms/contract';
 import type { Database } from '../../index.js';
 import { jobRun } from '../../schema.js';
@@ -58,12 +58,35 @@ export async function finishRun(
     .where(eq(jobRun.id, id));
 }
 
-/** The health endpoint's ONLY query — `ORDER BY started_at DESC LIMIT 1`. */
+/**
+ * The latest run of ANY status — drives the health endpoint's `lastRunStatus`.
+ * `ORDER BY started_at DESC LIMIT 1`.
+ */
 export async function latestRun(db: Database, job: string): Promise<JobRunRow | null> {
   const [row] = await db
     .select()
     .from(jobRun)
     .where(eq(jobRun.job, job))
+    .orderBy(desc(jobRun.startedAt))
+    .limit(1);
+  return (row as JobRunRow | undefined) ?? null;
+}
+
+/**
+ * The latest run that actually SUCCEEDED — drives the health endpoint's
+ * `lastSuccessAt`/`ageSeconds`. Deliberately a SEPARATE query from `latestRun`
+ * (review finding BLOCKING-2): `latestRun` alone cannot answer "when did we last
+ * succeed", because the MOST RECENT row might be `failed` or a `running` row that
+ * never finished — reporting either one's own `startedAt`/`finishedAt` as a
+ * "success" timestamp would keep `ageSeconds` looking fresh while the cron fails
+ * every single day, which is exactly the signal the external watcher
+ * (PLAN-PHASE3A.md §5.2) needs to catch.
+ */
+export async function latestOkRun(db: Database, job: string): Promise<JobRunRow | null> {
+  const [row] = await db
+    .select()
+    .from(jobRun)
+    .where(and(eq(jobRun.job, job), eq(jobRun.status, 'ok')))
     .orderBy(desc(jobRun.startedAt))
     .limit(1);
   return (row as JobRunRow | undefined) ?? null;

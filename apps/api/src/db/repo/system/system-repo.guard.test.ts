@@ -105,28 +105,40 @@ describe('system repo guard', () => {
   }
 });
 
-describe('system repo import graph — only jobs/ may import repo/system', () => {
-  const IMPORT_RE = /from\s+['"]([^'"]*repo\/system[^'"]*)['"]/;
+/**
+ * Deliberately reads the RAW file, never `readSource`'s comment/string-stripped
+ * version — an import's module specifier IS a string literal, so stripping
+ * strings (the right move for every other guard in this file) would erase the
+ * one thing this check needs to read. Comments are harmless to leave in here:
+ * a commented-out import inside a plain `//` or `/* *‍/` is not a real import
+ * either way, and this regex only runs against genuine import statements below.
+ *
+ * Module scope, not re-declared inside a describe block — the deliberate
+ * -violation proof below calls THIS SAME FUNCTION against a throwaway fixture
+ * directory, the same way `tenancy.guard.test.ts`'s recursion proof calls the
+ * real `listSourceFiles`/`exportedFunctions` rather than a hand-copied
+ * reimplementation. A proof that re-implements the check with its own regex
+ * would keep passing even if the REAL detector below drifted.
+ */
+const IMPORT_RE = /from\s+['"]([^'"]*repo\/system[^'"]*)['"]/;
 
-  /**
-   * Deliberately reads the RAW file, never `readSource`'s comment/string-stripped
-   * version — an import's module specifier IS a string literal, so stripping
-   * strings (the right move for every other guard in this file) would erase the
-   * one thing this check needs to read. Comments are harmless to leave in here:
-   * a commented-out import inside a plain `//` or `/* *‍/` is not a real import
-   * either way, and this regex only runs against genuine import statements below.
-   */
-  function importsSystemRepo(filePath: string): boolean {
-    const raw = readFileSync(filePath, 'utf8');
-    return IMPORT_RE.test(raw);
-  }
+function importsSystemRepo(filePath: string): boolean {
+  const raw = readFileSync(filePath, 'utf8');
+  return IMPORT_RE.test(raw);
+}
 
-  const allFiles = listSourceFiles(SRC_DIR);
-  const offenders = allFiles.filter((f) => {
+/** Every file under `srcDir` that imports `repo/system/**` without being the
+ *  module itself or living under `jobs/` — the one sanctioned importer. */
+function findSystemRepoImportOffenders(srcDir: string): string[] {
+  return listSourceFiles(srcDir).filter((f) => {
     if (f.startsWith('db/repo/system/')) return false; // the module itself
     if (f.startsWith('jobs/')) return false; // the one sanctioned importer
-    return importsSystemRepo(join(SRC_DIR, ...f.split('/')));
+    return importsSystemRepo(join(srcDir, ...f.split('/')));
   });
+}
+
+describe('system repo import graph — only jobs/ may import repo/system', () => {
+  const offenders = findSystemRepoImportOffenders(SRC_DIR);
 
   it('no file outside src/jobs/ imports repo/system', () => {
     expect(
@@ -147,7 +159,7 @@ describe('system repo guard — detectors proven against a deliberate violation'
     rmSync(fixtureRoot, { recursive: true, force: true });
   });
 
-  it('flags a route file importing repo/system directly', () => {
+  it('findSystemRepoImportOffenders flags a route file importing repo/system directly, and spares a jobs/ one — against a REAL fixture directory, via the ACTUAL detector', () => {
     mkdirSync(join(fixtureRoot, 'routes'), { recursive: true });
     writeFileSync(
       join(fixtureRoot, 'routes', 'bad-route.ts'),
@@ -161,17 +173,6 @@ describe('system repo guard — detectors proven against a deliberate violation'
       'utf8',
     );
 
-    const raw = readFileSync(join(fixtureRoot, 'routes', 'bad-route.ts'), 'utf8');
-    const importsSystem = /from\s+['"][^'"]*repo\/system[^'"]*['"]/.test(raw);
-    expect(importsSystem, 'the fixture must actually import repo/system for this proof to mean anything').toBe(
-      true,
-    );
-    // This is the exact assertion the import-graph describe block above runs on
-    // every real file: a path under `routes/` must never pass.
-    expect('routes/bad-route.ts'.startsWith('jobs/')).toBe(false);
-  });
-
-  it('a well-formed fixture under jobs/ passes the same check', () => {
     mkdirSync(join(fixtureRoot, 'jobs'), { recursive: true });
     writeFileSync(
       join(fixtureRoot, 'jobs', 'good-job.ts'),
@@ -185,7 +186,13 @@ describe('system repo guard — detectors proven against a deliberate violation'
       'utf8',
     );
 
-    expect('jobs/good-job.ts'.startsWith('jobs/')).toBe(true);
+    // Calls the SAME function the main describe block above runs against
+    // SRC_DIR — not a hand-copied regex — so this proof actually demonstrates
+    // the real detector's failure mode, and would catch its own drift if that
+    // function were ever weakened.
+    const offenders = findSystemRepoImportOffenders(fixtureRoot);
+    expect(offenders).toEqual(['routes/bad-route.ts']);
+    expect(offenders).not.toContain('jobs/good-job.ts');
   });
 
   it('flags an exported function in repo/system/ that takes orgId first instead of db', () => {

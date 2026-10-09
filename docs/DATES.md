@@ -64,6 +64,8 @@ Deliberately concentrated. The grep guard in `apps/api` exists partly to keep it
 | `apps/api/src/db/repo/*.ts` | `new Date()` for `updatedAt` / `deletedAt` | No — category A |
 | `apps/api/src/routes/tenants.ts` | invite `expiresAt` = now + 14d | No — a duration on an instant |
 | `apps/api/src/routes/portal.ts` | invite liveness vs now | No — category A |
+| `apps/api/src/jobs/daily.ts` | `localToday(row.propertyTimezone, runAt)` — the cron's ONLY clock read, once per run, passed down to every lease | B1/B2 boundary, same as `common.ts`'s `localToday` above — the answer is a calendar date, and every lease in one run sees the IDENTICAL instant |
+| `apps/api/src/db/repo/charge.ts` — `listChargesForOrgQuery`'s `overdueOnly` | `due_date < (now() at time zone property.timezone)::date` — one "what day is it here" lookup (Postgres's own tz database, not a reimplementation) plus a civil-date comparison, run PER ROW across a portfolio that may span timezones | Yes — "overdue" is calendar-defined per property, same rule `chargeOverdue`/`localToday` encode in JS; this is the identical rule run in SQL because a single server-side `today` cannot be correct for every row in one portfolio-wide page |
 | `apps/web/src/components/civil-date-input.tsx` | B1 — civil date ENTRY in the property's calendar | Yes, but delegated: `decompose` + `clampDayToMonth` only, no arithmetic of its own |
 | `apps/web/src/lib/format-civil-date.ts` | B1 — civil date DISPLAY | Yes, but delegated: `decompose` + `monthNames` |
 | `apps/web/**` elsewhere | `toLocaleString()` on instants | No — category A, presentation only |

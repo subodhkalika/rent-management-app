@@ -240,9 +240,24 @@ export async function existsChargeForLease(orgId: string, db: Database, leaseId:
  * ======================================================================== */
 
 /**
- * MAX(period_start) over this lease's GENERATED, NON-VOIDED rent charges. `null`
- * when nothing has been generated yet (a draft, or an active lease the cron has not
- * yet reached).
+ * MAX(period_start) over this lease's GENERATED rent charges — voided or not.
+ * `null` when nothing has been generated yet (a draft, or an active lease the
+ * cron has not yet reached).
+ *
+ * DELIBERATELY includes voided rows (review decision, 2026-10-09 — overriding an
+ * earlier `isNull(voidedAt)` filter here). A period that was billed once stays
+ * billed: its `charge_generation_uq` key is occupied forever regardless of void
+ * status (schema.ts's own comment on that index), so the boundary this function
+ * feeds must be MONOTONIC the same way. Filtering by `voidedAt IS NULL` let the
+ * boundary RETREAT the moment the latest period was voided — a step dated at that
+ * now-unguarded point would then take a free `PUT`, with no correction audit and
+ * no reason, and the drift banner stays silent on it because the generation key
+ * is still occupied (nothing reads as "missing"). The ladder would say one
+ * number, the bill another, and nothing would tell anyone. A monotonic boundary
+ * is also what §3.4's "exactly one of PUT/`/correct` accepts any given step"
+ * actually requires — a boundary that can move backward can un-void a step's
+ * mutability along with the charge, which `/correct`'s own audit trail is
+ * supposed to prevent.
  */
 export function latestChargedPeriodStartQuery(orgId: string, db: Database, leaseId: string) {
   return db
@@ -254,7 +269,6 @@ export function latestChargedPeriodStartQuery(orgId: string, db: Database, lease
         eq(charge.leaseId, leaseId),
         eq(charge.type, 'rent'),
         eq(charge.source, 'generated'),
-        isNull(charge.voidedAt),
       ),
     );
 }
@@ -275,6 +289,10 @@ export async function latestChargedPeriodStart(
  * step after it. Charges are written up to `GENERATION_LOOKAHEAD_DAYS` ahead of
  * `today`, so a step dated inside that window is ALREADY inside a written period —
  * `today` alone is not strict enough once billing has started.
+ *
+ * MONOTONIC, never decreasing for a given lease (`latestChargedPeriodStart`'s own
+ * comment): voiding the latest-billed period must not hand its mutability back to
+ * `PUT` with no audit trail.
  */
 export async function rentStepMutabilityBoundary(
   orgId: string,

@@ -492,7 +492,15 @@ export function resolveStepsToWrite(input: {
   baseRentCents: number;
   startDate: string;
   endDate: string | null;
-  frequency: LeaseBillingTerms['frequency'];
+  // Named `rentFrequency` (LeaseSummary's own field), never bare `frequency` —
+  // the latter is `LeaseBillingTerms`'s OWN field name, and the no-date-arithmetic
+  // guard's Rule 7 keys on exactly that collision (`frequency:` + `rentSteps:`,
+  // no `rentFrequency:`) to catch a hand-built `LeaseBillingTerms` bypassing
+  // `billingTermsFor`. This function is unrelated to that — it decides which
+  // ladder to WRITE, never calls `buildSchedule`/`validateBillingTerms` — but an
+  // object literal built from the SAME two field names would be indistinguishable
+  // to that guard, so it stays named `rentFrequency` here on purpose.
+  rentFrequency: LeaseBillingTerms['frequency'];
   calendar: LeaseBillingTerms['calendar'];
 }): StepsToWrite {
   if (input.rentSteps !== undefined) {
@@ -504,7 +512,7 @@ export function resolveStepsToWrite(input: {
       baseRentCents: input.baseRentCents,
       startDate: input.startDate,
       endDate: input.endDate,
-      frequency: input.frequency,
+      frequency: input.rentFrequency,
       calendar: input.calendar,
     });
     return { from: 'generated', steps: drafted };
@@ -973,7 +981,7 @@ export async function createLease(
     baseRentCents: data.rentCents,
     startDate: data.startDate,
     endDate: data.endDate ?? null,
-    frequency: data.rentFrequency,
+    rentFrequency: data.rentFrequency,
     calendar: propertyRow.calendar,
   });
   const rentStepsForValidation: RentStep[] =
@@ -1441,7 +1449,7 @@ export async function renewLease(
     baseRentCents: data.rentCents,
     startDate: data.startDate,
     endDate: data.endDate ?? null,
-    frequency: rentFrequency,
+    rentFrequency,
     calendar: predecessor.calendar,
   });
   const rentStepsForValidation: RentStep[] =

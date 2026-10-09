@@ -3,10 +3,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 /**
  * `jobs/daily.ts`, fully mocked — proves the ORCHESTRATION (PLAN-PHASE3A.md §5.1):
  * one lease's failure never aborts the run, `job_run` starts and finishes exactly
- * once, and `localToday` is called with the PROPERTY's own timezone, never the
- * server's. The generator's own correctness (idempotency, catch-up, etc.) is
- * proven against live Postgres in `db/repo/charge.integration.test.ts` — this file
- * is about the LOOP around it.
+ * once (with a status DERIVED from the stats, never hardcoded), and `localToday`
+ * is called with the PROPERTY's own timezone, never the server's. The generator's
+ * own correctness (idempotency, catch-up, etc.) is proven against live Postgres in
+ * `db/repo/charge.integration.test.ts` — this file is about the LOOP around it.
+ *
+ * Deliberately does NOT mock `db/repo/lease.js` — `daily.ts` must import nothing
+ * from it (the rent ladder is folded into `listLeasesForGeneration`'s own SELECT,
+ * review finding BLOCKING-1). If a future edit reintroduces a second per-lease
+ * query for the ladder, this file has no mock for it and the import would throw
+ * at module-load time, failing loudly rather than quietly doubling the
+ * subrequest count per lease.
  */
 
 const systemChargeRepoMock = { listLeasesForGeneration: vi.fn() };
@@ -14,13 +21,6 @@ vi.mock('../db/repo/system/charges.js', () => systemChargeRepoMock);
 
 const jobRunRepoMock = { startRun: vi.fn(), finishRun: vi.fn() };
 vi.mock('../db/repo/system/job-run.js', () => jobRunRepoMock);
-
-const leaseRepoMock = {
-  listRentSteps: vi.fn(),
-  toRentSteps: (rows: readonly { effectiveFrom: string; rentCents: number }[]) =>
-    rows.map((r) => ({ effectiveFrom: r.effectiveFrom, rentCents: r.rentCents })),
-};
-vi.mock('../db/repo/lease.js', () => leaseRepoMock);
 
 const chargeRepoMock = { generateChargesForLease: vi.fn() };
 vi.mock('../db/repo/charge.js', () => chargeRepoMock);
@@ -44,6 +44,7 @@ function leaseRow(overrides: Record<string, unknown> = {}) {
     depositCents: 0,
     openingBalanceCents: 0,
     propertyTimezone: 'America/Chicago',
+    rentSteps: [],
     ...overrides,
   };
 }
@@ -51,7 +52,6 @@ function leaseRow(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   jobRunRepoMock.startRun.mockResolvedValue('run_1');
-  leaseRepoMock.listRentSteps.mockResolvedValue([]);
 });
 
 describe('runDailyJob', () => {
@@ -75,9 +75,18 @@ describe('runDailyJob', () => {
     expect(stats.chargesWritten).toBe(2);
     expect(stats.leasesFailed).toBe(0);
     expect(stats.errors).toEqual([]);
+
+    // The ladder comes from the ROW itself — never a second query.
+    expect(chargeRepoMock.generateChargesForLease).toHaveBeenCalledWith(
+      'org_1',
+      expect.anything(),
+      expect.objectContaining({ id: 'lease_1' }),
+      [],
+      expect.any(String),
+    );
   });
 
-  it("ONE lease's failure is caught, counted, and never aborts the scan of the rest", async () => {
+  it("ONE lease's failure is caught, counted, never aborts the scan of the rest — but makes the RUN's own status 'failed'", async () => {
     systemChargeRepoMock.listLeasesForGeneration.mockResolvedValue([
       leaseRow({ id: 'lease_bad' }),
       leaseRow({ id: 'lease_good_1' }),
@@ -100,10 +109,13 @@ describe('runDailyJob', () => {
     // Both GOOD leases still ran, despite the bad one being first in the list.
     expect(chargeRepoMock.generateChargesForLease).toHaveBeenCalledTimes(3);
 
+    // BLOCKING-1's second half: a run with ANY per-lease failure reports
+    // 'failed', never a hardcoded 'ok' — the health endpoint's `lastSuccessAt`
+    // depends on this being honest.
     expect(jobRunRepoMock.finishRun).toHaveBeenCalledWith(
       expect.anything(),
       'run_1',
-      'ok', // the RUN still succeeds — per-lease failures are counted, not fatal
+      'failed',
       expect.objectContaining({ leasesFailed: 1 }),
     );
   });
@@ -151,10 +163,23 @@ describe('runDailyJob', () => {
     );
   });
 
-  it('zero leases scanned still starts and finishes a run cleanly', async () => {
+  it('zero leases scanned still starts and finishes a run cleanly, status ok', async () => {
     systemChargeRepoMock.listLeasesForGeneration.mockResolvedValue([]);
     const stats = await runDailyJob({} as never, new Date('2026-06-01T09:00:00.000Z'));
     expect(stats).toEqual({ leasesScanned: 0, chargesWritten: 0, leasesFailed: 0, errors: [] });
     expect(jobRunRepoMock.finishRun).toHaveBeenCalledWith(expect.anything(), 'run_1', 'ok', expect.anything());
+  });
+
+  it('exactly ONE statement is issued per lease — the ladder travels on the row, not a second query', async () => {
+    systemChargeRepoMock.listLeasesForGeneration.mockResolvedValue([
+      leaseRow({ id: 'lease_1', rentSteps: [{ effectiveFrom: '2027-01-01', rentCents: 120000 }] }),
+    ]);
+    chargeRepoMock.generateChargesForLease.mockResolvedValue([]);
+
+    await runDailyJob({} as never, new Date('2026-06-01T09:00:00.000Z'));
+
+    expect(chargeRepoMock.generateChargesForLease).toHaveBeenCalledTimes(1);
+    const [, , , rentSteps] = chargeRepoMock.generateChargesForLease.mock.calls[0]!;
+    expect(rentSteps).toEqual([{ effectiveFrom: '2027-01-01', rentCents: 120000 }]);
   });
 });

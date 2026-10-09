@@ -1,6 +1,7 @@
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import type { RentStep } from '@rms/contract';
 import type { Database } from '../../index.js';
-import { lease, unit, property } from '../../schema.js';
+import { lease, unit, property, leaseRentStep } from '../../schema.js';
 import type { GeneratableLease } from '../charge.js';
 
 /**
@@ -15,6 +16,27 @@ import type { GeneratableLease } from '../charge.js';
  * kick (`POST /leases/:id/charges/generate`) would need a duplicate implementation
  * or the import rule would need an exemption, and an exemption list is how a rule
  * like this gets hollowed out.
+ *
+ * BLOCKING FIX (review, 2026-10-09): the rent ladder is folded into THIS SAME
+ * SELECT, not fetched by a second per-lease query from `jobs/daily.ts`. Two
+ * reasons, both load-bearing:
+ *
+ * 1. Subrequest budget. Every Neon HTTP query from a Worker is a subrequest.
+ *    `startRun` + this scan + ONE statement per lease (the insert) + `finishRun`
+ *    is `N + 3`. A second per-lease SELECT for the ladder makes it `2N + 3` —
+ *    on the Workers FREE plan's subrequest ceiling that roughly HALVES how many
+ *    leases one run can reach, and the leases past the limit throw "Too many
+ *    subrequests", are caught by the per-lease try/catch, and are silently never
+ *    billed — every day, with the health endpoint still reporting `ok`. That is
+ *    exactly the failure PLAN-PHASE2 §9 names: rent that is never charged is not
+ *    a bug anyone reports.
+ * 2. A lease edit landing between two separate queries (the terms SELECT, then
+ *    the ladder SELECT) could write a charge from HALF the old terms and HALF
+ *    the new ladder — a billingDay that drives `dueDate` from one moment in
+ *    time, a ladder that drives `amountCents` from a later one. That combination
+ *    existed at no point in real time, and once written it is frozen forever.
+ *    One SELECT reads both from the same Postgres snapshot, so this is
+ *    unreachable by construction.
  */
 
 export interface GeneratableLeaseRow extends GeneratableLease {
@@ -22,6 +44,28 @@ export interface GeneratableLeaseRow extends GeneratableLease {
   /** `localToday` needs this — the cron's only clock read is "what day is it, in
    *  THIS property's zone", never the server's. */
   propertyTimezone: string;
+  /** The stored ladder, ascending by `effectiveFrom` (I20's own order) — folded
+   *  into this query rather than a second one; see the module comment above. */
+  rentSteps: RentStep[];
+}
+
+/**
+ * One correlated subquery, aggregated as JSON inside the SAME statement as the
+ * lease's own columns — not a second round trip. `coalesce(..., '[]')` so a
+ * lease with no escalation (the common case) gets an empty array, never NULL.
+ */
+function rentStepsColumn() {
+  return sql<RentStep[]>`(
+    select coalesce(
+      json_agg(
+        json_build_object('effectiveFrom', ${leaseRentStep.effectiveFrom}, 'rentCents', ${leaseRentStep.rentCents})
+        order by ${leaseRentStep.effectiveFrom}
+      ),
+      '[]'::json
+    )
+    from ${leaseRentStep}
+    where ${leaseRentStep.leaseId} = ${lease.id}
+  )`;
 }
 
 /**
@@ -57,6 +101,7 @@ export async function listLeasesForGeneration(db: Database): Promise<Generatable
       depositCents: lease.depositCents,
       openingBalanceCents: lease.openingBalanceCents,
       propertyTimezone: property.timezone,
+      rentSteps: rentStepsColumn(),
     })
     .from(lease)
     .innerJoin(unit, eq(unit.id, lease.unitId))

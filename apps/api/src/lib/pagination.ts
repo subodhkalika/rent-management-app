@@ -1,3 +1,4 @@
+import { isoDate } from '@rms/contract';
 import { badRequest } from './errors.js';
 
 /**
@@ -38,9 +39,22 @@ export function encodeDueDateCursor(dueDate: string, id: string): string {
   return btoa(`${dueDate}|${id}`);
 }
 
-const DUE_DATE_CURSOR_RE =
-  /^(\d{4}-\d{2}-\d{2})\|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+// Splits the decoded `dueDate|id` pair apart. The DATE half's CALENDAR validity
+// (not just its shape) is checked separately below, through the contract's own
+// `isoDate` — see that function's comment for why a shape-only regex is not
+// enough here.
+const DUE_DATE_CURSOR_SHAPE_RE = /^([^|]+)\|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
+/**
+ * `dueDate` is validated through the contract's `isoDate`, not a `\d{4}-\d{2}-\d{2}`
+ * shape regex — a regex accepts `2026-13-45`, which is not shape-invalid but IS
+ * calendar-invalid. That string reaches `::date` in the generated SQL
+ * (`listChargesQuery`/`listChargesForOrgQuery`), Postgres raises SQLSTATE 22008
+ * ("date/time field value out of range"), and `lib/db-errors.ts` only recognises
+ * 23505 — so a forged cursor would 500 instead of 400. `isoDate` round-trips the
+ * date's components (year/month/day) through `Date.UTC` and checks they survive,
+ * which is exactly the check a shape regex cannot express.
+ */
 export function decodeDueDateCursor(cursor: string): { dueDate: string; id: string } {
   let decoded: string;
   try {
@@ -48,9 +62,13 @@ export function decodeDueDateCursor(cursor: string): { dueDate: string; id: stri
   } catch {
     throw badRequest('Invalid pagination cursor');
   }
-  const match = DUE_DATE_CURSOR_RE.exec(decoded);
+  const match = DUE_DATE_CURSOR_SHAPE_RE.exec(decoded);
   if (!match) {
     throw badRequest('Invalid pagination cursor');
   }
-  return { dueDate: match[1]!, id: match[2]! };
+  const dueDateResult = isoDate.safeParse(match[1]);
+  if (!dueDateResult.success) {
+    throw badRequest('Invalid pagination cursor');
+  }
+  return { dueDate: dueDateResult.data, id: match[2]! };
 }

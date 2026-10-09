@@ -629,6 +629,14 @@ export const charge = pgTable(
   'charge',
   {
     id: uuid().primaryKey(),
+    // CASCADE, same as every other org-owned table — and the ONE sanctioned
+    // exception to "a charge is never deleted" (this table's own header comment).
+    // Better Auth exposes `deleteOrganization` to an org owner, which is a
+    // reachable path that removes every row under that org, charges included,
+    // with no void tombstone. That is consistent with the rest of this schema
+    // (deleting the landlord's account deletes the landlord's data) and is
+    // treated as sanctioned, not a gap — named here so the next reader does not
+    // have to rediscover it.
     orgId: text().notNull().references(() => organization.id, { onDelete: 'cascade' }),
     // Restrict, not cascade: a charge is a permanent financial record and must
     // outlive any lease-deletion path (same reasoning as lease_rent_step_correction
