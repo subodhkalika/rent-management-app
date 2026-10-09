@@ -28,7 +28,17 @@ export const routes = {
     /** Unbind the login and revoke outstanding invites. The move-out kill switch. */
     revokePortalAccess: (id: string) => `/v1/tenants/${id}/portal-access`,
   },
+  charges: {
+    /** Portfolio-wide, across every property. */
+    list: () => '/v1/charges',
+  },
+  internal: {
+    /** Public: a watcher with no credentials must be able to see the cron is alive. */
+    cronHealth: () => '/v1/internal/cron/health',
+  },
   portal: {
+    leaseCharges: (leaseId: string) => `/v1/portal/leases/${leaseId}/charges`,
+
     /** Public: the caller is not signed in yet when accepting a fresh invite. */
     acceptInvite: () => '/v1/portal/invites/accept',
     /** Public. Fails with the same uniform 404 as acceptInvite — see invite.ts. */
@@ -51,6 +61,13 @@ export const routes = {
     remove: (id: string) => `/v1/units/${id}`,
   },
   leases: {
+    charges: (leaseId: string) => `/v1/leases/${leaseId}/charges`,
+    generateCharges: (leaseId: string) => `/v1/leases/${leaseId}/charges/generate`,
+    /** Nested under the lease so the resolve is (org, lease, charge) — a bare charge
+     *  id would leave it ambiguous whether it had been scoped. */
+    voidCharge: (leaseId: string, chargeId: string) => `/v1/leases/${leaseId}/charges/${chargeId}/void`,
+    correctCharge: (leaseId: string, chargeId: string) => `/v1/leases/${leaseId}/charges/${chargeId}/correct`,
+
     list: () => '/v1/leases',
     create: () => '/v1/leases',
     get: (id: string) => `/v1/leases/${id}`,

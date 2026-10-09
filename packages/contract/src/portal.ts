@@ -125,3 +125,39 @@ export const portalLeaseSchedule = z.object({
   periods: z.array(plannedCharge),
 });
 export type PortalLeaseSchedule = z.infer<typeof portalLeaseSchedule>;
+
+/* ---------- charges ---------- */
+
+/**
+ * A charge as the tenant sees it — their statement line, not the landlord's record.
+ *
+ * Separate from `charge` rather than that type with fields stripped, so a column added
+ * on the landlord side can never reach a tenant by inheritance. Four things are
+ * deliberately absent: `voidedReason` (landlord bookkeeping, and it may be unflattering
+ * or mention another tenancy), the user ids behind a void or a creation (staff
+ * identity), and `source`/`generationKey`/`periodIndex` (internal mechanics a tenant
+ * has no use for).
+ *
+ * The proration fields ARE present. A prorated first or last month is the most
+ * disputed number in renting, and "17 of 31 days" settles it without an email.
+ */
+export const portalCharge = z.object({
+  id: uuid,
+  leaseId: uuid,
+  type: z.string(),
+  description: z.string().nullable(),
+  periodStart: isoDate.nullable(),
+  periodEnd: isoDate.nullable(),
+  daysOccupied: z.number().int().nullable(),
+  daysInPeriod: z.number().int().nullable(),
+  isProrated: z.boolean(),
+  dueDate: isoDate,
+  amountCents: money,
+  currency,
+  /** Whether, not when or why — they must see a line was cancelled or the statement
+   *  does not add up, and the timestamp adds nothing they can act on. */
+  isVoided: z.boolean(),
+  /** Present so "$1,000 replaced by $900" reads as one correction, not two charges. */
+  supersedesChargeId: uuid.nullable(),
+});
+export type PortalCharge = z.infer<typeof portalCharge>;
