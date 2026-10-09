@@ -12,6 +12,9 @@ import type {
   RentStepSummary,
   RentStepCorrection,
   PortalRentStep,
+  Charge,
+  ChargeWithLease,
+  PortalCharge,
 } from '@rms/contract';
 import type { PropertyRow } from '../db/repo/property.js';
 import type { UnitRow } from '../db/repo/unit.js';
@@ -26,6 +29,7 @@ import {
   type RentStepCorrectionRow,
 } from '../db/repo/lease.js';
 import type { PortalLeaseRow, PortalLeaseDetailRow } from '../db/repo/portal/lease.js';
+import type { ChargeRow, ChargeWithLeaseRow } from '../db/repo/charge.js';
 
 /**
  * Explicit DB row -> contract type mapping. Never spread a row into a response —
@@ -316,5 +320,77 @@ export function mapPortalLeaseDetail(row: PortalLeaseDetailRow): PortalLeaseDeta
     // — a separate type from the landlord shape, not the landlord shape with
     // fields removed (portal.ts's own comment on `portalRentStep`).
     rentSteps: row.rentSteps.map(mapPortalRentStep),
+  };
+}
+
+/**
+ * A charge row explains its own number — every one of `PlannedCharge`'s eleven
+ * fields is read by name, never spread, so an internal column (`voidedByUserId` is
+ * deliberately NOT part of `charge` — see `charge.ts`'s own schema) can never leak
+ * just because it exists on the row.
+ */
+export function mapCharge(row: ChargeRow): Charge {
+  return {
+    id: row.id,
+    leaseId: row.leaseId,
+    type: row.type,
+    generationKey: row.generationKey,
+    periodIndex: row.periodIndex,
+    periodStart: row.periodStart,
+    periodEnd: row.periodEnd,
+    occupiedStart: row.occupiedStart,
+    occupiedEnd: row.occupiedEnd,
+    daysOccupied: row.daysOccupied,
+    daysInPeriod: row.daysInPeriod,
+    dueDate: row.dueDate,
+    amountCents: row.amountCents,
+    isProrated: row.isProrated,
+    currency: row.currency as Charge['currency'],
+    description: row.description,
+    source: row.source,
+    supersedesChargeId: row.supersedesChargeId,
+    voidedAt: row.voidedAt ? row.voidedAt.toISOString() : null,
+    voidedReason: row.voidedReason,
+    createdByUserId: row.createdByUserId,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+/** `charge` plus the lease context `GET /v1/charges` needs to render a
+ *  portfolio-wide row (property/unit, and the timezone "overdue" is decided in). */
+export function mapChargeWithLease(row: ChargeWithLeaseRow): ChargeWithLease {
+  return {
+    ...mapCharge(row),
+    propertyId: row.propertyId,
+    propertyName: row.propertyName,
+    unitId: row.unitId,
+    unitLabel: row.unitLabel,
+    propertyTimezone: row.propertyTimezone,
+  };
+}
+
+/**
+ * The tenant's statement line — a SEPARATE type from `charge`, not that type with
+ * fields removed (portal.ts's own comment on `portalCharge`). No `voidedReason`
+ * (landlord bookkeeping), no user ids (staff identity), no `source`/
+ * `generationKey`/`periodIndex` (internal mechanics) — `voidedAt` becomes a plain
+ * `isVoided` boolean: whether a line was cancelled, not when or why.
+ */
+export function mapPortalCharge(row: ChargeRow): PortalCharge {
+  return {
+    id: row.id,
+    leaseId: row.leaseId,
+    type: row.type,
+    description: row.description,
+    periodStart: row.periodStart,
+    periodEnd: row.periodEnd,
+    daysOccupied: row.daysOccupied,
+    daysInPeriod: row.daysInPeriod,
+    isProrated: row.isProrated,
+    dueDate: row.dueDate,
+    amountCents: row.amountCents,
+    currency: row.currency as PortalCharge['currency'],
+    isVoided: row.voidedAt !== null,
+    supersedesChargeId: row.supersedesChargeId,
   };
 }

@@ -2,13 +2,14 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { uuidv7, generatorFixtures } from '@rms/contract';
 import { createDb, type Database } from '../index.js';
-import { organization, user, property, unit, tenant, lease, leaseTenant, leaseRentStepCorrection } from '../schema.js';
+import { organization, user, property, unit, tenant, lease, leaseTenant, leaseRentStepCorrection, charge } from '../schema.js';
 import { ApiException } from '../../lib/errors.js';
 import { isUniqueViolation } from '../../lib/db-errors.js';
 import * as leaseRepo from './lease.js';
 import * as unitRepo from './unit.js';
 import * as propertyRepo from './property.js';
 import * as tenantRepo from './tenant.js';
+import * as chargeRepo from './charge.js';
 
 /**
  * REAL orchestration-function tests, against a REAL Postgres.
@@ -150,6 +151,13 @@ describe.skipIf(!DATABASE_URL)('lease.ts orchestration functions — live Postgr
       // own tests now exercise. `lease_rent_step` itself cascades, so it needs
       // no explicit delete here, but it is harmless to be explicit about it.
       await db.delete(leaseRentStepCorrection).where(eq(leaseRentStepCorrection.orgId, orgToClean));
+      // `charge.lease_id` is ON DELETE RESTRICT (schema.ts's own comment: a charge
+      // is a permanent financial record and must outlive any lease-deletion path)
+      // — activate/end now run the generator synchronously (PLAN-PHASE3A.md §3.2),
+      // so a real test lease can genuinely have charge rows by the time teardown
+      // runs, and deleting `lease` before these would itself hit the same
+      // constraint the §3.5 precondition test is specifically proving.
+      await db.delete(charge).where(eq(charge.orgId, orgToClean));
       await db.delete(lease).where(eq(lease.orgId, orgToClean));
       await db.delete(unit).where(eq(unit.orgId, orgToClean));
       await db.delete(property).where(eq(property.orgId, orgToClean));
@@ -387,6 +395,41 @@ describe.skipIf(!DATABASE_URL)('lease.ts orchestration functions — live Postgr
       expect(stillActive?.status).toBe('active');
       expect(stillActive?.endDate).toBeNull();
     });
+
+    /**
+     * THE §3.3 under-billing fix, proven at the generator level (the driving
+     * SCAN itself — status IN ('active','ended','terminated') — is proven
+     * directly in db/repo/system/charges.integration.test.ts). A lease ended
+     * today, effective many months out, flips to `ended` IMMEDIATELY — there is
+     * no "pending end" state. Before this phase, an `active`-only scan would
+     * have silently stopped billing it the moment it left `active`, even though
+     * the term — and the rent — continues for months. This asserts the
+     * generator keeps producing rent charges for an ENDED lease with a future
+     * endDate, exactly as it would for an active one.
+     */
+    it('a future endDate still bills the remaining months — the generator keeps writing for an ENDED lease', async () => {
+      const created = await leaseRepo.createLease(orgId, db, userId, { ...baseCreateBody(), startDate: '2026-01-01' });
+      await leaseRepo.activateLease(orgId, db, created.id);
+
+      const ended = await leaseRepo.endLease(orgId, db, created.id, { endDate: '2027-06-30', reason: 'term_ended' });
+      expect(ended?.status).toBe('ended');
+
+      const afterEnd = await db.select().from(charge).where(eq(charge.leaseId, created.id));
+      const rentRowsAfterEnd = afterEnd.filter((r) => r.type === 'rent');
+      expect(rentRowsAfterEnd.length).toBeGreaterThan(0); // the synchronous call (§3.2) wrote something already
+
+      // Simulate a much-later cron run, directly — `generateChargesForLease`
+      // itself never reads `status`; the whole point of the fix is that this
+      // ENDED lease is still HANDED to it by the driving scan.
+      const rentSteps = leaseRepo.toRentSteps(await leaseRepo.listRentSteps(orgId, db, created.id));
+      const laterRow = (await leaseRepo.getLease(orgId, db, created.id))!;
+      const more = await chargeRepo.generateChargesForLease(orgId, db, laterRow, rentSteps, '2026-12-01');
+      expect(more.length).toBeGreaterThan(0); // further months get written — nothing stopped it
+
+      const final = await db.select().from(charge).where(eq(charge.leaseId, created.id));
+      const december = final.find((r) => r.type === 'rent' && r.periodStart === '2026-12-01');
+      expect(december).toBeDefined();
+    });
   });
 
   /* ======================================================================== *
@@ -519,6 +562,41 @@ describe.skipIf(!DATABASE_URL)('lease.ts orchestration functions — live Postgr
     it('hard-deleting an active lease is blocked, never a silent no-op', async () => {
       const created = await leaseRepo.createLease(orgId, db, userId, baseCreateBody());
       await leaseRepo.activateLease(orgId, db, created.id);
+      const result = await leaseRepo.hardDeleteLease(orgId, db, created.id);
+      expect(result).toBe('blocked');
+
+      const stillThere = await leaseRepo.getLease(orgId, db, created.id);
+      expect(stillThere).not.toBeNull();
+    });
+
+    /**
+     * PLAN-PHASE3A.md §3.5: `charge.lease_id` is `ON DELETE RESTRICT`, so a
+     * cancelled/draft lease that somehow acquired a charge row would otherwise
+     * fail the soft-delete at the DATABASE with SQLSTATE 23503 — which
+     * `lib/db-errors.ts` does not recognise, surfacing as an unhandled 500
+     * instead of the clean 409 every other blocked case returns. A cancelled
+     * lease never reaches `createManualCharge` through the ordinary route (it
+     * refuses draft/cancelled), so this inserts the charge directly to prove
+     * the PRECONDITION CHECK itself — not just the happy path that never
+     * triggers it.
+     */
+    it('a cancelled lease holding a charge row (however it got one) is blocked, never 500ing on the FK', async () => {
+      const created = await leaseRepo.createLease(orgId, db, userId, baseCreateBody());
+      const cancelled = await leaseRepo.cancelLease(orgId, db, created.id);
+      expect(cancelled?.status).toBe('cancelled');
+
+      await db.insert(charge).values({
+        id: uuidv7(),
+        orgId,
+        leaseId: created.id,
+        type: 'other',
+        dueDate: '2026-01-01',
+        amountCents: 100,
+        currency: 'USD',
+        source: 'manual',
+        createdByUserId: userId,
+      });
+
       const result = await leaseRepo.hardDeleteLease(orgId, db, created.id);
       expect(result).toBe('blocked');
 
@@ -915,6 +993,80 @@ describe.skipIf(!DATABASE_URL)('lease.ts orchestration functions — live Postgr
             }),
           ).rejects.toMatchObject({ code: 'conflict', message: 'A cancelled lease cannot be changed.' });
         });
+      });
+
+      /**
+       * PLAN-PHASE3A.md §3.4 — THE new behaviour this phase introduces. Charges
+       * are written up to `GENERATION_LOOKAHEAD_DAYS` (31) ahead of `today`, so a
+       * step dated inside that window is ALREADY inside a written period even
+       * though it is calendar-future relative to `today` — the pre-3a code
+       * (boundary === today) would have let `PUT` edit it freely, silently
+       * disagreeing with a charge already on the books. "The 1st of next
+       * calendar month" is ALWAYS within 31 days of any `today` (the longest a
+       * Gregorian month ever runs is 31 days), so the synchronous
+       * activation-time generation is GUARANTEED to have already written that
+       * period, regardless of which real day this suite happens to run on.
+       */
+      it('§3.4: a step inside the 31-day lookahead is refused by PUT and accepted by /correct — and the complement, far beyond it', async () => {
+        const now = new Date();
+        const withinLookahead = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
+          .toISOString()
+          .slice(0, 10);
+        const farFuture = '2099-01-01'; // unambiguously beyond any real lookahead
+
+        const created = await leaseRepo.createLease(orgId, db, userId, {
+          ...baseCreateBody(),
+          startDate: '2020-01-01',
+          escalation: null,
+          rentSteps: [
+            { effectiveFrom: withinLookahead, rentCents: 160000, source: 'manual' },
+            { effectiveFrom: farFuture, rentCents: 170000, source: 'manual' },
+          ],
+        });
+        await leaseRepo.activateLease(orgId, db, created.id);
+
+        // Confirm the synchronous generation really did reach the within-lookahead
+        // period — the premise the rest of this test depends on.
+        const latest = await chargeRepo.latestChargedPeriodStart(orgId, db, created.id);
+        expect(latest).not.toBeNull();
+        expect(latest! >= withinLookahead).toBe(true);
+
+        // PUT refuses the within-lookahead step — "already billed".
+        await expect(
+          leaseRepo.replaceRentSteps(orgId, db, created.id, {
+            steps: [
+              { effectiveFrom: withinLookahead, rentCents: 999999, source: 'manual' },
+              { effectiveFrom: farFuture, rentCents: 170000, source: 'manual' },
+            ],
+          }),
+        ).rejects.toMatchObject({ code: 'conflict' });
+
+        // ...but PUT freely accepts editing the far-future step, unaudited.
+        const replaced = await leaseRepo.replaceRentSteps(orgId, db, created.id, {
+          steps: [
+            { effectiveFrom: withinLookahead, rentCents: 160000, source: 'manual' },
+            { effectiveFrom: farFuture, rentCents: 999999, source: 'manual' },
+          ],
+        });
+        expect(replaced?.find((s) => s.effectiveFrom === farFuture)?.rentCents).toBe(999999);
+
+        // /correct is the EXACT complement: it accepts the within-lookahead step...
+        const steps = await leaseRepo.listRentSteps(orgId, db, created.id);
+        const withinStep = steps.find((s) => s.effectiveFrom === withinLookahead)!;
+        const corrected = await leaseRepo.correctRentStep(orgId, db, created.id, withinStep.id, userId, {
+          rentCents: 165000,
+          reason: 'Within-lookahead correction, exercising the §3.4 boundary.',
+        });
+        expect(corrected?.rentCents).toBe(165000);
+
+        // ...and refuses the far-future one — "has not taken effect yet".
+        const farStep = steps.find((s) => s.effectiveFrom === farFuture)!;
+        await expect(
+          leaseRepo.correctRentStep(orgId, db, created.id, farStep.id, userId, {
+            rentCents: 1,
+            reason: 'Should 409 — this step has not taken effect yet.',
+          }),
+        ).rejects.toMatchObject({ code: 'conflict' });
       });
 
       it('PUT with an out-of-order effectiveFrom 422s (I20, via validateBillingTerms)', async () => {

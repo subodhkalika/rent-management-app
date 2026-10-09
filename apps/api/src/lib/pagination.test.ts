@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ApiException } from './errors.js';
-import { encodeCursor, decodeCursor } from './pagination.js';
+import { encodeCursor, decodeCursor, encodeDueDateCursor, decodeDueDateCursor } from './pagination.js';
 
 describe('pagination cursor', () => {
   it('round-trips a UUID through encode/decode', () => {
@@ -25,6 +25,46 @@ describe('pagination cursor', () => {
   it('throws a bad_request ApiException with a 400 status', () => {
     try {
       decodeCursor('garbage');
+      expect.unreachable();
+    } catch (err) {
+      expect(err).toBeInstanceOf(ApiException);
+      expect((err as ApiException).code).toBe('bad_request');
+      expect((err as ApiException).status).toBe(400);
+    }
+  });
+});
+
+describe('due-date pagination cursor — charges are ordered (due_date, id), not id alone', () => {
+  const dueDate = '2026-04-01';
+  const id = '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e0f';
+
+  it('round-trips a (dueDate, id) pair', () => {
+    expect(decodeDueDateCursor(encodeDueDateCursor(dueDate, id))).toEqual({ dueDate, id });
+  });
+
+  it('is opaque: the encoded form is not the raw pair', () => {
+    expect(encodeDueDateCursor(dueDate, id)).not.toContain(dueDate);
+  });
+
+  it('rejects a cursor that is not valid base64', () => {
+    expect(() => decodeDueDateCursor('!!!not-base64!!!')).toThrow(ApiException);
+  });
+
+  it('rejects a cursor missing the due-date half', () => {
+    expect(() => decodeDueDateCursor(btoa(id))).toThrow(ApiException);
+  });
+
+  it('rejects a cursor missing the id half', () => {
+    expect(() => decodeDueDateCursor(btoa(dueDate))).toThrow(ApiException);
+  });
+
+  it('rejects a cursor whose id half is not a UUID', () => {
+    expect(() => decodeDueDateCursor(btoa(`${dueDate}|not-a-uuid`))).toThrow(ApiException);
+  });
+
+  it('throws a bad_request ApiException with a 400 status', () => {
+    try {
+      decodeDueDateCursor('garbage');
       expect.unreachable();
     } catch (err) {
       expect(err).toBeInstanceOf(ApiException);

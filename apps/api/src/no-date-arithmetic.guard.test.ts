@@ -90,13 +90,38 @@ import { listSourceFiles, readSource } from '../test/support/repoGuard.js';
  *
  * Neither rule has a violation to catch today either (confirmed before writing
  * this) — same reasoning as rules 4/5 above.
+ *
+ * Two more rules, from PLAN-PHASE3A.md §2 (charge generation — byte-identity is
+ * enforced, not hoped for):
+ *
+ * 8. `buildSchedule(` called anywhere outside `lib/schedule.ts` (Rule 6). It is the
+ *    ONE function that turns terms into a schedule; every other caller in this app
+ *    — routes, repo functions, jobs — goes through `buildScheduleOrThrow` (which
+ *    wraps it with the BS-range/period-cap 422 translation) or `chargesDueForGeneration`
+ *    (the cron's own entry point). A second direct caller is a second place that
+ *    could pass a different `through` and quietly stop matching the generator.
+ *
+ * 9. A hand-typed `LeaseBillingTerms` object literal (Rule 7) — `: LeaseBillingTerms
+ *    = { ... }` — anywhere in `apps/api`. `billingTermsFor` (packages/contract's
+ *    lease.ts) is the ONLY sanctioned way to build one; every call site that needs
+ *    a `LeaseBillingTerms` passes an plain object INTO `billingTermsFor` instead
+ *    of typing one directly, which is what this detector distinguishes: a literal
+ *    passed as `billingTermsFor({ ... })`'s argument carries no `LeaseBillingTerms`
+ *    annotation (the function's return type is inferred), so it never matches.
+ *    PLAN-PHASE3A.md §2.2 found four call sites hand-typing one directly in
+ *    `repo/lease.ts` (`createLease`, `renewLease`, `updateLease`,
+ *    `replaceRentSteps`) — all four are refactored to `billingTermsFor` as part of
+ *    this phase, so the rule lands with zero exemptions.
+ *
+ * Neither rule has a violation to catch today either (confirmed before writing
+ * this) — same reasoning as rules 4/5 above.
  */
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 
 // Bump this UP whenever a legitimate source file is added. Never lower it to make a
 // failing suite pass — see tenancy.guard.test.ts for why a floor exists at all.
-const MIN_SOURCE_FILES = 33;
+const MIN_SOURCE_FILES = 43;
 
 const FORBIDDEN_LOCAL_NAMES = ['daysInMonth', 'isLeapYear'];
 
@@ -204,6 +229,47 @@ function usesRateBpsArithmetically(src: string): boolean {
   return RATE_BPS_ARITHMETIC.test(src);
 }
 
+/**
+ * PLAN-PHASE3A.md §2.1 Rule 6: `buildSchedule(` called anywhere but `lib/schedule.ts`.
+ * A plain substring/word-boundary check is enough — `buildScheduleOrThrow(` never
+ * matches because the characters right after `buildSchedule` are `OrThrow(`, not
+ * `(` (ignoring only whitespace), so `\bbuildSchedule\s*\(` cannot match inside it.
+ */
+function callsBuildScheduleDirectly(src: string): boolean {
+  return /\bbuildSchedule\s*\(/.test(src);
+}
+
+/**
+ * PLAN-PHASE3A.md §2.2 Rule 7: a HAND-TYPED `LeaseBillingTerms` object literal —
+ * `: LeaseBillingTerms = { ... }` — containing both `moveOutBillingPolicy:` and
+ * `rentSteps:`. Brace-matches from the first `{` after the annotation so a literal
+ * spanning many lines (every real offender does) is read whole, not just its first
+ * line.
+ *
+ * Deliberately keyed off the TYPE ANNOTATION, not the two field names alone: every
+ * sanctioned call site passes an argument literal straight into `billingTermsFor(...)`,
+ * which carries no `LeaseBillingTerms` annotation at all (the function's return type
+ * is inferred) — so `billingTermsFor({ moveOutBillingPolicy: x, rentSteps: y })`
+ * never matches, only `const terms: LeaseBillingTerms = { moveOutBillingPolicy: x,
+ * rentSteps: y }` does.
+ */
+function constructsLeaseBillingTermsLiteral(src: string): boolean {
+  const marker = /LeaseBillingTerms\s*=\s*\{/g;
+  for (let m = marker.exec(src); m; m = marker.exec(src)) {
+    let i = m.index + m[0].length;
+    let depth = 1;
+    const start = i;
+    while (i < src.length && depth > 0) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') depth--;
+      i++;
+    }
+    const body = src.slice(start, i - 1);
+    if (/moveOutBillingPolicy\s*:/.test(body) && /rentSteps\s*:/.test(body)) return true;
+  }
+  return false;
+}
+
 describe('no-date-arithmetic guard (docs/DATES.md)', () => {
   const files = listSourceFiles(DIR);
 
@@ -290,6 +356,28 @@ describe('no-date-arithmetic guard (docs/DATES.md)', () => {
           `${file} does arithmetic on \`rateBps\`/\`escalationRateBps\`. Reading or persisting the ` +
             'whole value is fine; the clause\'s rate/interval arithmetic lives ONLY inside ' +
             '`generateRentSteps`/`clauseExpectedRent`/`recomputeLadderFrom`, all in the contract.',
+        ).toBe(false);
+      });
+
+      if (file !== 'lib/schedule.ts') {
+        it('never calls buildSchedule directly (PLAN-PHASE3A.md §2.1 Rule 6) — use buildScheduleOrThrow or chargesDueForGeneration', () => {
+          expect(
+            callsBuildScheduleDirectly(src),
+            `${file} calls \`buildSchedule(\` directly. Only \`lib/schedule.ts\` may — everything else ` +
+              '(routes, repo functions, jobs) calls `buildScheduleOrThrow` (the BS-range/period-cap-422 ' +
+              'wrapper) or `chargesDueForGeneration` (the cron\'s own entry point), so there is never a ' +
+              'second place that could pass a different `through` and quietly stop matching the generator.',
+          ).toBe(false);
+        });
+      }
+
+      it('never hand-types a LeaseBillingTerms object literal (PLAN-PHASE3A.md §2.2 Rule 7) — use billingTermsFor', () => {
+        expect(
+          constructsLeaseBillingTermsLiteral(src),
+          `${file} constructs a \`: LeaseBillingTerms = { ... }\` literal by hand. \`billingTermsFor\` ` +
+            '(packages/contract\'s lease.ts) is the ONLY sanctioned way to build one — every real call ' +
+            'site passes its object straight into `billingTermsFor(...)` instead, so the browser\'s ' +
+            'preview and the written charge row are always produced by the exact same derivation.',
         ).toBe(false);
       });
     });
@@ -515,5 +603,103 @@ describe('no-date-arithmetic guard — detectors proven against deliberate viola
     const src = readSource(fixtureRoot, 'bad-escalation-arithmetic.ts');
     expect(referencesIdentifier(src, 'BPS_SCALE')).toBe(true);
     expect(usesRateBpsArithmetically(src)).toBe(true);
+  });
+
+  it('flags a direct call to buildSchedule, and does not flag buildScheduleOrThrow', () => {
+    expect(callsBuildScheduleDirectly("const p = buildSchedule(terms, through);")).toBe(true);
+    expect(callsBuildScheduleDirectly("const p = buildScheduleOrThrow(terms, through);")).toBe(false);
+    expect(callsBuildScheduleDirectly("const p = chargesDueForGeneration(terms, today);")).toBe(false);
+  });
+
+  it('a deliberate PLAN-PHASE3A.md Rule 6 violation, written to disk, is caught end to end', () => {
+    const badFile = join(fixtureRoot, 'bad-build-schedule-call.ts');
+    writeFileSync(
+      badFile,
+      [
+        "import { buildSchedule } from '@rms/contract';",
+        'export function previewSchedule(terms, through) {',
+        '  return buildSchedule(terms, through);',
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const src = readSource(fixtureRoot, 'bad-build-schedule-call.ts');
+    expect(callsBuildScheduleDirectly(src)).toBe(true);
+  });
+
+  it('flags a hand-typed LeaseBillingTerms literal, and does not flag billingTermsFor(...)', () => {
+    const bad = [
+      'const terms: LeaseBillingTerms = {',
+      '  frequency: lease.rentFrequency,',
+      '  rentCents: lease.rentCents,',
+      '  moveOutBillingPolicy: property.moveOutBillingPolicy,',
+      '  rentSteps: steps,',
+      '};',
+    ].join('\n');
+    expect(constructsLeaseBillingTermsLiteral(bad)).toBe(true);
+
+    const good = [
+      'const terms = billingTermsFor({',
+      '  ...lease,',
+      '  moveOutBillingPolicy: property.moveOutBillingPolicy,',
+      '  rentSteps: steps,',
+      '});',
+    ].join('\n');
+    expect(constructsLeaseBillingTermsLiteral(good)).toBe(false);
+  });
+
+  it('a deliberate PLAN-PHASE3A.md Rule 7 violation, written to disk, is caught end to end', () => {
+    const badFile = join(fixtureRoot, 'bad-hand-typed-terms.ts');
+    writeFileSync(
+      badFile,
+      [
+        "import type { LeaseBillingTerms } from '@rms/contract';",
+        'export function buildTerms(lease, property, steps): LeaseBillingTerms {',
+        '  const terms: LeaseBillingTerms = {',
+        '    frequency: lease.rentFrequency,',
+        '    rentCents: lease.rentCents,',
+        '    billingDay: lease.billingDay,',
+        '    startDate: lease.startDate,',
+        '    endDate: lease.endDate,',
+        '    ledgerStartDate: lease.ledgerStartDate,',
+        '    moveOutDate: lease.moveOutDate,',
+        '    moveOutBillingPolicy: property.moveOutBillingPolicy,',
+        '    calendar: property.calendar,',
+        '    rentSteps: steps,',
+        '  };',
+        '  return terms;',
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const src = readSource(fixtureRoot, 'bad-hand-typed-terms.ts');
+    expect(constructsLeaseBillingTermsLiteral(src)).toBe(true);
+  });
+
+  it('a well-formed fixture using billingTermsFor passes Rule 7', () => {
+    const goodFile = join(fixtureRoot, 'good-billing-terms-for.ts');
+    writeFileSync(
+      goodFile,
+      [
+        "import { billingTermsFor } from '@rms/contract';",
+        'export function buildTerms(lease, property, steps) {',
+        '  return billingTermsFor({',
+        '    ...lease,',
+        '    moveOutBillingPolicy: property.moveOutBillingPolicy,',
+        '    calendar: property.calendar,',
+        '    rentSteps: steps,',
+        '  });',
+        '}',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const src = readSource(fixtureRoot, 'good-billing-terms-for.ts');
+    expect(constructsLeaseBillingTermsLiteral(src)).toBe(false);
   });
 });

@@ -43,6 +43,13 @@
       "when": 1791340630591,
       "tag": "0005_massive_pestilence",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791541778333,
+      "tag": "0006_elite_gertrude_yorkes",
+      "breakpoints": true
     }
   ]
 }

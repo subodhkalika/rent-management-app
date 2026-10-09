@@ -13,7 +13,12 @@
     // and docs/DEPLOYMENT.md) rather than hardcoding the production URL here, since
     // this file also governs local dev.
     "WEB_ORIGIN": "http://localhost:5173"
-  }
+  },
+  // The daily charge generator (PLAN-PHASE3A.md §5). 09:00 UTC is not load-bearing
+  // — the 31-day lookahead guarantees a month of slack before any period's own due
+  // date, so the hour should not be tuned. `src/index.ts`'s `scheduled` export
+  // (`jobs/scheduled.ts`) is what Workers invokes on this trigger.
+  "triggers": { "crons": ["0 9 * * *"] }
   // Secrets (DATABASE_URL, BETTER_AUTH_SECRET, RESEND_API_KEY, R2_*) are set with
   // `wrangler secret put` — never listed here.
   //

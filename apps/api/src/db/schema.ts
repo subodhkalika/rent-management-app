@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   pgTable, text, timestamp, uuid, integer, bigint, real, date, smallint,
-  boolean, index, uniqueIndex, pgEnum, check, type AnyPgColumn,
+  boolean, jsonb, index, uniqueIndex, pgEnum, check, type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 
 /* ------------------------------------------------------------------ *
@@ -595,4 +595,167 @@ export const leaseRentStepCorrection = pgTable(
     createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index('lease_rent_step_correction_idx').on(t.orgId, t.leaseId, t.createdAt)],
+);
+
+/* ------------------------------------------------------------------ *
+ * charge — docs/PLAN-PHASE3A.md §1. A money DOCUMENT, not a derivation.
+ *
+ * Once written, a row is never updated and never deleted by any code path. The
+ * generator's only verb is INSERT ... ON CONFLICT DO NOTHING (charge_generation_uq,
+ * below) — "may this period be generated?" is always "is there a row?", never
+ * "is this already due?". The ONLY mutation this table ever accepts is the void
+ * tombstone (voided_at/voided_reason/voided_by_user_id), set once, by an explicit
+ * landlord action carrying a reason. A correction is a SUPERSEDING ROW
+ * (supersedes_charge_id), never an edit — see charge_generation_uq's own comment
+ * for why a correction carries generation_key = NULL.
+ *
+ * Stores the WHOLE of PlannedCharge (packages/contract/src/billing.ts), not a
+ * subset — a row that explains its own number is what a landlord needs when a
+ * tenant argues about proration, and the byte-identity test (PLAN-PHASE3A.md §2)
+ * is then a projection, not a re-derivation.
+ *
+ * Deliberately NOT denormalised: chain_id, unit_id, property_id. Every charge query
+ * already joins `lease` for currency/status, and at tens of units a join is free.
+ * ------------------------------------------------------------------ */
+
+export const chargeTypeEnum = pgEnum('charge_type', [
+  'rent', 'deposit', 'opening_balance', 'late_fee', 'utility', 'other',
+]);
+// 'generated' = the scheduler wrote it; 'manual' = a person did (including a
+// correction, which is always manual — see charge_generation_uq's comment).
+export const chargeSourceEnum = pgEnum('charge_source', ['generated', 'manual']);
+
+export const charge = pgTable(
+  'charge',
+  {
+    id: uuid().primaryKey(),
+    orgId: text().notNull().references(() => organization.id, { onDelete: 'cascade' }),
+    // Restrict, not cascade: a charge is a permanent financial record and must
+    // outlive any lease-deletion path (same reasoning as lease_rent_step_correction
+    // above). This is also what turns a mistaken hardDeleteLease into a 23503
+    // constraint error rather than silently losing billing history — the repo layer
+    // pre-checks this explicitly anyway (see repo/lease.ts's hardDeleteLease), since
+    // an invariant defended in only one place is one refactor from being defended in
+    // none.
+    leaseId: uuid().notNull().references(() => lease.id, { onDelete: 'restrict' }),
+    type: chargeTypeEnum().notNull(),
+
+    // The eleven PlannedCharge fields, stored whole. NULL for deposit/opening_balance
+    // and every manual non-periodic charge.
+    periodStart: date(),
+    periodEnd: date(),
+    // Anchored to the lease's first natural period, NOT an array index — pins
+    // fixture F9's periodIndex of 9 for an onboarded, already-in-flight tenancy.
+    periodIndex: integer(),
+    occupiedStart: date(),
+    occupiedEnd: date(),
+    daysOccupied: integer(),
+    daysInPeriod: integer(),
+
+    // Already clamped by dueDateFor — never day 31 in February.
+    dueDate: date().notNull(),
+    // CHECK >= 0, NOT > 0 (PLAN-PHASE3A.md §1.5): a prorated rent can legitimately
+    // round to zero, and lib/db-errors.ts only recognises 23505 — a 23514 here would
+    // surface as an unhandled 500 on the 09:00 UTC cron instead of simply writing a
+    // zero-amount row for a period that genuinely exists.
+    amountCents: bigint({ mode: 'number' }).notNull(),
+    // Copied from lease.currency at write time. Immutable — a charge's currency
+    // never changes after the fact, even if the lease's somehow could.
+    currency: text().notNull(),
+    description: text(),
+    isProrated: boolean().notNull().default(false),
+
+    source: chargeSourceEnum().notNull(),
+    // 'YYYY-MM-DD' (the period start), DEPOSIT_GENERATION_KEY ('deposit'), or
+    // OPENING_BALANCE_GENERATION_KEY ('opening'). NULL for every manual charge,
+    // including every correction — see charge_generation_uq's comment for why NULL
+    // here is load-bearing, not an oversight.
+    generationKey: text(),
+    // The correction chain. Self-referencing, restrict: a correction's predecessor
+    // must never disappear out from under it.
+    supersedesChargeId: uuid().references((): AnyPgColumn => charge.id, { onDelete: 'restrict' }),
+
+    // The ONLY mutation this table ever accepts. All three are NULL until voided,
+    // set together, exactly once.
+    voidedAt: timestamp({ withTimezone: true }),
+    // 10..500 chars, enforced by the contract's voidChargeBody/correctChargeBody.
+    voidedReason: text(),
+    voidedByUserId: text().references(() => user.id),
+
+    // NULL means the generator wrote it — that is the audit signal, not a separate
+    // column. Non-null for every manual charge (including corrections and voids'
+    // originating correction row).
+    createdByUserId: text().references(() => user.id),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+
+    // No updated_at. A table with no mutable field besides the void tombstone must
+    // not imply one with a column that invites "just edit it this once".
+  },
+  (t) => [
+    check('charge_amount_ck', sql`${t.amountCents} >= 0`),
+
+    // THE CRON'S IDEMPOTENCY KEY. Plain, NOT partial on generation_key IS NOT NULL —
+    // Postgres treats NULLs as distinct in a unique index by default (NULLS
+    // DISTINCT, never set NULLS NOT DISTINCT here), so this single plain index
+    // already permits unlimited manual rows (generation_key = NULL) while enforcing
+    // uniqueness on every non-NULL one — the same constraint, smaller surface. A
+    // PARTIAL unique index would need its predicate restated as `ON CONFLICT ...
+    // WHERE generation_key IS NOT NULL` (Drizzle's targetWhere) on every insert that
+    // uses it as an arbiter; omit that and the statement fails at runtime with "no
+    // unique or exclusion constraint matching the ON CONFLICT specification" — on
+    // the cron, at 09:00 UTC, writing nothing and telling nobody. A plain index
+    // cannot be got wrong this way. Do NOT "fix" this back into a partial index.
+    //
+    // No predicate on voided_at either, and that is equally deliberate: a voided row
+    // keeps its key, so the generator's ON CONFLICT DO NOTHING never re-creates a
+    // charge the landlord deliberately voided. Adding `WHERE voided_at IS NULL` here
+    // is the natural-looking "fix" that would silently resurrect a voided charge the
+    // very next morning — voiding March's rent is a decision, not a gap to refill.
+    //
+    // Deliberately carries NO org_id. lease_id is already the PK of an org-scoped
+    // table (lease), so adding org_id here would WIDEN the key without changing
+    // uniqueness — the one-column-narrower form is STRICTER, not a tenancy miss.
+    // Same reasoning as lease_unit_active_uq and lease_rent_step_uq above.
+    uniqueIndex('charge_generation_uq').on(t.leaseId, t.generationKey),
+
+    // The ledger page, and 3b's FIFO ordering, which sorts by (due_date, id) exactly.
+    index('charge_lease_due_idx').on(t.orgId, t.leaseId, t.dueDate, t.id),
+
+    // "What is due / overdue across my portfolio this month" — the /v1/charges page.
+    index('charge_org_due_idx').on(t.orgId, t.dueDate).where(sql`${t.voidedAt} is null`),
+  ],
+);
+
+/* ------------------------------------------------------------------ *
+ * job_run — the one table with NO org_id, and that is correct: it describes the
+ * SYSTEM (one cron run across every org), not a tenant. A reviewer applying the
+ * tenancy guard's usual rule to this table would be checking the wrong thing —
+ * say so here in as many words so it reads as a sanctioned exception, not a miss
+ * (PLAN-PHASE3A.md §1.6).
+ *
+ * `stats` is jsonb precisely so Phase 4's reminder counters need no migration.
+ * ------------------------------------------------------------------ */
+
+export const jobRunStatusEnum = pgEnum('job_run_status', ['running', 'ok', 'failed']);
+
+export const jobRun = pgTable(
+  'job_run',
+  {
+    id: uuid().primaryKey(),
+    // 'daily' today. Free-form rather than an enum: a second named job (Phase 4's
+    // reminder sweep, say) should never need a migration just to be named.
+    job: text().notNull(),
+    startedAt: timestamp({ withTimezone: true }).notNull(),
+    // NULL = still running, or the Worker died mid-run. A `running` row that never
+    // finishes IS the failure signal the health endpoint reads (PLAN-PHASE3A.md
+    // §4.4's table).
+    finishedAt: timestamp({ withTimezone: true }),
+    status: jobRunStatusEnum().notNull(),
+    stats: jsonb().notNull().default({}),
+    error: text(),
+  },
+  (t) => [
+    // The health endpoint's ONLY query: ORDER BY started_at DESC LIMIT 1.
+    index('job_run_job_started_idx').on(t.job, t.startedAt.desc()),
+  ],
 );

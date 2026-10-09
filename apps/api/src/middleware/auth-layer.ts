@@ -26,6 +26,11 @@ const PUBLIC_PATHS = new Set([
   // Accepting an invite is how a tenant gets an account at all, so it cannot require
   // one. Its safety comes from the 256-bit token, not from a session.
   '/v1/portal/invites/accept',
+  // An exact string, never a prefix (PLAN-PHASE3A.md §5.2) — a prefix entry here
+  // would be exactly the loosening this file's fallthrough-to-most-restrictive rule
+  // exists to prevent. Safe to leave public: it returns a timestamp and a status,
+  // nothing cross-org (see routes/internal.ts's own comment).
+  '/v1/internal/cron/health',
 ]);
 
 /**

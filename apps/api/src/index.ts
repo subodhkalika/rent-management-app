@@ -11,8 +11,12 @@ import { units } from './routes/units.js';
 import { me } from './routes/me.js';
 import { tenants } from './routes/tenants.js';
 import { leases } from './routes/leases.js';
+import { charges } from './routes/charges.js';
+import { internal } from './routes/internal.js';
 import { portalLeases } from './routes/portal-leases.js';
+import { portalCharges } from './routes/portal-charges.js';
 import { portal } from './routes/portal.js';
+import { scheduled } from './jobs/scheduled.js';
 import type { AppBindings } from './types.js';
 
 const app = new Hono<AppBindings>();
@@ -53,11 +57,14 @@ app.route('/', units);
 app.route('/', me);
 app.route('/', tenants);
 app.route('/', leases);
-// portalLeases MUST be mounted before portal: routes.portal.profile is
-// `/v1/portal/:tenantId/profile`, and Hono matches in registration order, so
-// `/v1/portal/leases/:id` has to be tried against this router's literal path
+app.route('/', charges);
+app.route('/', internal);
+// portalLeases and portalCharges MUST be mounted before portal: routes.portal.profile
+// is `/v1/portal/:tenantId/profile`, and Hono matches in registration order, so
+// `/v1/portal/leases/:id` has to be tried against these routers' literal paths
 // first or it would be captured as `tenantId = "leases"` by `portal`'s route.
 app.route('/', portalLeases);
+app.route('/', portalCharges);
 app.route('/', portal);
 
 app.notFound((c) =>
@@ -76,4 +83,4 @@ app.onError((err, c) => {
   );
 });
 
-export default app;
+export default { fetch: app.fetch, scheduled };

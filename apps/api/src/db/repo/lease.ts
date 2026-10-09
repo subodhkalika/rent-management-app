@@ -7,6 +7,7 @@ import {
   statusForEndReason,
   validateBillingTerms,
   generateRentSteps,
+  billingTermsFor,
   type CreateLeaseBody,
   type UpdateLeaseBody,
   type EndLeaseBody,
@@ -29,6 +30,7 @@ import { isUniqueViolation } from '../../lib/db-errors.js';
 import { validateEndDateSchedulable } from '../../lib/schedule.js';
 import * as unitRepo from './unit.js';
 import * as propertyRepo from './property.js';
+import * as chargeRepo from './charge.js';
 
 /**
  * Message fired by BOTH the pre-check in `activateLease` (the nice message) and the
@@ -518,25 +520,31 @@ function insertableRowsFor(orgId: string, leaseId: string, resolved: StepsToWrit
 
 /**
  * Pure: every reason `PUT /rent-steps` 409s or 422s, before any query runs.
- * `today` is the caller's `localToday(property.timezone)` — never computed here.
- * Exported so the route/repo split stays testable without a database.
+ * `boundary` is the caller's `rentStepMutabilityBoundary` (repo/charge.ts) — NEVER
+ * `today` alone. Exported so the route/repo split stays testable without a
+ * database.
+ *
+ * PLAN-PHASE3A.md §3.4 widens this past `today`: charges are written up to
+ * `GENERATION_LOOKAHEAD_DAYS` ahead, so a step dated inside that window is ALREADY
+ * inside a written period even though it has not "taken effect" by the calendar
+ * alone. `boundary` is `max(today, latestChargedPeriodStart)` — the single shared
+ * threshold `correctRentStep` uses too, so exactly one of the two routes accepts
+ * any given step (never zero, never both).
  *
  * PLAN-ESCALATION.md §4.5's table: a `draft` lease has no past — it has never
- * billed anything, so there is no money a correction could protect, and a step
- * dated behind `today` is exactly as free to replace as one ahead of it. This
- * is also what makes onboarding a backdated tenancy (§4.3) workable: a draft's
- * ladder can include already-past steps without forcing `/correct` for an event
- * that never happened. The date-based restriction below is unchanged for every
- * OTHER status — `active`, `ended`, `terminated` all still require `/correct`
- * for a step at or before `today`. The moment a lease activates it has a real
- * past; see `activateLease`'s comment for why activation itself needs no extra
- * guard here.
+ * billed anything (so `boundary` always equals `today` for one, since nothing has
+ * been generated yet), and a step dated behind `boundary` is exactly as free to
+ * replace as one ahead of it. This is also what makes onboarding a backdated
+ * tenancy (§4.3) workable: a draft's ladder can include already-past steps without
+ * forcing `/correct` for an event that never happened. The boundary-based
+ * restriction below is unchanged for every OTHER status — `active`, `ended`,
+ * `terminated` all still require `/correct` for a step at or before `boundary`.
  */
 export function validateStepReplacement(input: {
   leaseStatus: LeaseStatusValue;
   existing: readonly { effectiveFrom: string; rentCents: number }[];
   incoming: readonly RentStepInput[];
-  today: string;
+  boundary: string;
 }): { kind: 'conflict'; message: string } | null {
   if (input.leaseStatus === 'cancelled') {
     return { kind: 'conflict', message: 'A cancelled lease cannot be changed.' };
@@ -549,7 +557,7 @@ export function validateStepReplacement(input: {
   const incomingByDate = new Map(input.incoming.map((s) => [s.effectiveFrom, s.rentCents]));
 
   for (const [effectiveFrom, oldRentCents] of existingByDate) {
-    if (compareIsoDate(effectiveFrom, input.today) > 0) continue; // a future step — free to edit/remove
+    if (compareIsoDate(effectiveFrom, input.boundary) > 0) continue; // a future step — free to edit/remove
     const newRentCents = incomingByDate.get(effectiveFrom);
     if (newRentCents === undefined || newRentCents !== oldRentCents) {
       return {
@@ -560,7 +568,7 @@ export function validateStepReplacement(input: {
   }
 
   for (const [effectiveFrom] of incomingByDate) {
-    if (compareIsoDate(effectiveFrom, input.today) > 0) continue;
+    if (compareIsoDate(effectiveFrom, input.boundary) > 0) continue;
     if (!existingByDate.has(effectiveFrom)) {
       return {
         kind: 'conflict',
@@ -574,16 +582,18 @@ export function validateStepReplacement(input: {
 
 /**
  * `PUT /v1/leases/:id/rent-steps` — replaces the WHOLE ladder (decision 4.1: one
- * endpoint, one rule). Mutability is `validateStepReplacement` above; ordering/
+ * endpoint, one rule). Mutability is `validateStepReplacement` above, against the
+ * SHARED boundary (PLAN-PHASE3A.md §3.4) rather than `today` alone; ordering/
  * period-start/>-startDate validity is the contract's `validateBillingTerms` —
  * both of I20's cross-row rules live there, never as a DB CHECK (schema.ts's own
  * comment on `lease_rent_step` explains why neither half can be one).
  *
- * No interactive transaction (the Neon HTTP driver has none — PLAN-PHASE2.md
- * §5.4): delete-then-insert is two statements. A failure between them leaves a
- * lease with zero steps — visible and harmless (the base rent still applies via
- * `rentForPeriodStart`'s early return), fixed by retrying the PUT, the same
- * tolerance this codebase already accepts for `createLease`'s own roster insert.
+ * Wrapped in `db.batch` (PLAN-PHASE3A.md §4.3) — confirmed atomic against the local
+ * Neon HTTP proxy before relying on it here. Without this, a generator running
+ * between the DELETE and the INSERT would see ZERO steps and freeze a charge at
+ * the pre-escalation base rent (`rentForPeriodStart`'s early return), which is no
+ * longer "visible and harmless" once a cron is writing money against it — it was
+ * harmless only back when nothing read the ladder mid-write.
  */
 export async function replaceRentSteps(
   orgId: string,
@@ -595,34 +605,35 @@ export async function replaceRentSteps(
   if (!current) return null;
 
   const today = localToday(current.propertyTimezone);
+  const boundary = await chargeRepo.rentStepMutabilityBoundary(orgId, db, leaseId, today);
   const existing = await listRentSteps(orgId, db, leaseId);
 
   const replacementIssue = validateStepReplacement({
     leaseStatus: current.status,
     existing,
     incoming: body.steps,
-    today,
+    boundary,
   });
   if (replacementIssue) throw conflict(replacementIssue.message);
 
-  const terms: LeaseBillingTerms = {
-    frequency: current.rentFrequency,
-    rentCents: current.rentCents,
-    billingDay: current.billingDay,
-    startDate: current.startDate,
-    endDate: current.endDate,
-    ledgerStartDate: current.ledgerStartDate,
-    moveOutDate: current.moveOutDate,
-    moveOutBillingPolicy: current.moveOutBillingPolicy,
-    calendar: current.calendar,
+  const terms = billingTermsFor({
+    ...current,
     rentSteps: body.steps.map((s) => ({ effectiveFrom: s.effectiveFrom, rentCents: s.rentCents })),
-  };
+  });
   const billingError = validateBillingTerms(terms);
   if (billingError) throw validationFailed({ _: [billingError] });
 
-  await db.delete(leaseRentStep).where(and(eq(leaseRentStep.orgId, orgId), eq(leaseRentStep.leaseId, leaseId)));
+  const deleteQuery = db
+    .delete(leaseRentStep)
+    .where(and(eq(leaseRentStep.orgId, orgId), eq(leaseRentStep.leaseId, leaseId)));
+
   if (body.steps.length > 0) {
-    await insertRentStepsQuery(orgId, db, leaseId, body.steps.map((s) => toInsertableStep(orgId, leaseId, s)));
+    const insertQuery = insertRentStepsQuery(orgId, db, leaseId, body.steps.map((s) => toInsertableStep(orgId, leaseId, s)));
+    // `db.batch` requires a non-empty tuple — a delete alone (the empty-ladder
+    // case below) cannot go through it with nothing to pair it with.
+    await db.batch([deleteQuery, insertQuery]);
+  } else {
+    await deleteQuery;
   }
 
   return listRentSteps(orgId, db, leaseId);
@@ -658,9 +669,11 @@ export async function resolveRentStep(
 /**
  * Corrects a step that has ALREADY taken effect, writing exactly one
  * `lease_rent_step_correction` row (the money audit — schema.ts's own comment).
- * A future step 409s here and must go through `PUT /rent-steps` instead, per the
- * escalation plan §4.1 — "has it taken effect" is the one date comparison that
- * decides which route a landlord uses.
+ * A step after the SHARED mutability boundary (PLAN-PHASE3A.md §3.4) 409s here and
+ * must go through `PUT /rent-steps` instead — "is this at or before the boundary"
+ * is the one comparison that decides which route a landlord uses, and it is the
+ * same boundary `validateStepReplacement` checks the other side of, so exactly one
+ * of the two routes ever accepts a given step.
  */
 export async function correctRentStep(
   orgId: string,
@@ -679,7 +692,8 @@ export async function correctRentStep(
   if (!step) return null;
 
   const today = localToday(current.propertyTimezone);
-  if (compareIsoDate(step.effectiveFrom, today) > 0) {
+  const boundary = await chargeRepo.rentStepMutabilityBoundary(orgId, db, leaseId, today);
+  if (compareIsoDate(step.effectiveFrom, boundary) > 0) {
     throw conflict('This increase has not taken effect yet — edit it directly.');
   }
 
@@ -968,8 +982,11 @@ export async function createLease(
   // createLeaseBody's shared superRefine can only validate against a default
   // Gregorian calendar (it has no property to consult). This is the one place
   // that can re-validate against the lease's REAL calendar and move-out policy.
-  const terms: LeaseBillingTerms = {
-    frequency: data.rentFrequency,
+  //
+  // Built through `billingTermsFor` — the ONLY sanctioned adapter (date-guard
+  // Rule 7) — rather than a hand-typed `LeaseBillingTerms` literal.
+  const terms = billingTermsFor({
+    rentFrequency: data.rentFrequency,
     rentCents: data.rentCents,
     billingDay: data.billingDay,
     startDate: data.startDate,
@@ -979,7 +996,7 @@ export async function createLease(
     moveOutBillingPolicy: propertyRow.moveOutBillingPolicy,
     calendar: propertyRow.calendar,
     rentSteps: rentStepsForValidation,
-  };
+  });
   const billingError = validateBillingTerms(terms);
   if (billingError) throw validationFailed({ _: [billingError] });
 
@@ -1173,8 +1190,10 @@ export async function updateLease(
     // existing steps are loaded so `validateBillingTerms` re-checks them against
     // the terms as they would read AFTER this patch — never against the clause.
     const existingSteps = await listRentSteps(orgId, db, id);
-    const terms: LeaseBillingTerms = {
-      frequency: data.rentFrequency ?? current.rentFrequency,
+    // Built through `billingTermsFor` (date-guard Rule 7) rather than a hand-typed
+    // `LeaseBillingTerms` literal.
+    const terms = billingTermsFor({
+      rentFrequency: data.rentFrequency ?? current.rentFrequency,
       rentCents: data.rentCents ?? current.rentCents,
       billingDay: data.billingDay ?? current.billingDay,
       startDate: data.startDate ?? current.startDate,
@@ -1184,7 +1203,7 @@ export async function updateLease(
       moveOutBillingPolicy: policyForValidation,
       calendar: calendarForValidation,
       rentSteps: toRentSteps(existingSteps),
-    };
+    });
     const billingError = validateBillingTerms(terms);
     if (billingError) throw validationFailed({ _: [billingError] });
 
@@ -1200,6 +1219,31 @@ export async function updateLease(
 /* ======================================================================== *
  * lifecycle transitions (§5)
  * ======================================================================== */
+
+/**
+ * Runs the generator synchronously for `activate` and `end` (PLAN-PHASE3A.md §0
+ * decision 10, §3.2) — a landlord who activates a lease expects the deposit and
+ * first rent charge on screen now, not tomorrow, and the generator being
+ * idempotent makes the extra run free (the cron will see the same written rows and
+ * insert zero).
+ *
+ * Deliberately swallows any error. PLAN-PHASE3A.md §4.4's ordering table: the
+ * lease row (the system of record) is already written by the time this runs, so a
+ * failure here — a Bikram Sambat lease past the data table, a `MAX_SCHEDULE_PERIODS`
+ * breach — must never undo or block the status transition that already committed.
+ * The lease is active (or ended) with no charges yet; that is VISIBLE, and the
+ * next cron run (or a manual `POST /charges/generate`) repairs it. Self-healing is
+ * the transaction.
+ */
+async function generateChargesIfPossible(orgId: string, db: Database, leaseRow: LeaseRow): Promise<void> {
+  try {
+    const rentSteps = toRentSteps(await listRentSteps(orgId, db, leaseRow.id));
+    const today = localToday(leaseRow.propertyTimezone);
+    await chargeRepo.generateChargesForLease(orgId, db, leaseRow, rentSteps, today);
+  } catch (err) {
+    console.error(`generateChargesForLease failed for lease ${leaseRow.id}:`, err);
+  }
+}
 
 /**
  * Needs no rent-step guard for already-past `effectiveFrom` values. A draft is
@@ -1257,7 +1301,11 @@ export async function activateLease(orgId: string, db: Database, id: string): Pr
   // record.
   await unitRepo.updateUnit(orgId, db, current.unitId, { status: 'occupied' });
 
-  return getLease(orgId, db, id);
+  const activated = await getLease(orgId, db, id);
+  // §3.2: the generator runs SYNCHRONOUSLY, in addition to the cron — the deposit,
+  // opening balance and first rent charge land on screen immediately.
+  if (activated) await generateChargesIfPossible(orgId, db, activated);
+  return activated;
 }
 
 export async function cancelLease(orgId: string, db: Database, id: string): Promise<LeaseRow | null> {
@@ -1331,7 +1379,14 @@ export async function endLease(
     }
   }
 
-  return getLease(orgId, db, id);
+  const ended = await getLease(orgId, db, id);
+  // §3.2: runs SYNCHRONOUSLY, in addition to the cron — the final prorated charge
+  // is on screen immediately. The lease STAYS in the cron's own driving scan
+  // regardless (status IN ('active','ended','terminated') — repo/system/charges.ts),
+  // so an endDate months in the future still bills its remaining months even if
+  // this particular run fails.
+  if (ended) await generateChargesIfPossible(orgId, db, ended);
+  return ended;
 }
 
 export async function renewLease(
@@ -1392,8 +1447,10 @@ export async function renewLease(
   const rentStepsForValidation: RentStep[] =
     stepsToWrite.from === 'none' ? [] : stepsToWrite.steps.map((s) => ({ effectiveFrom: s.effectiveFrom, rentCents: s.rentCents }));
 
-  const terms: LeaseBillingTerms = {
-    frequency: rentFrequency,
+  // Built through `billingTermsFor` (date-guard Rule 7) rather than a hand-typed
+  // `LeaseBillingTerms` literal.
+  const terms = billingTermsFor({
+    rentFrequency,
     rentCents: data.rentCents,
     billingDay,
     startDate: data.startDate,
@@ -1403,7 +1460,7 @@ export async function renewLease(
     moveOutBillingPolicy: predecessor.moveOutBillingPolicy,
     calendar: predecessor.calendar,
     rentSteps: rentStepsForValidation,
-  };
+  });
   const billingError = validateBillingTerms(terms);
   if (billingError) throw validationFailed({ _: [billingError] });
 
@@ -1513,6 +1570,16 @@ export async function hardDeleteLease(orgId: string, db: Database, id: string): 
   const current = await getLease(orgId, db, id);
   if (!current) return false;
   if (current.status !== 'draft' && current.status !== 'cancelled') return 'blocked';
+
+  // PLAN-PHASE3A.md §3.5: a draft/cancelled lease should never have a charge row —
+  // `createManualCharge` already refuses one on a draft/cancelled lease (409), and
+  // this is the belt to that suspenders. Without it, a charge row that existed
+  // anyway would fail the DELETE at the database with `charge.lease_id`'s own
+  // `ON DELETE RESTRICT` (SQLSTATE 23503), which `lib/db-errors.ts` does not
+  // recognise — surfacing as an unhandled 500 instead of this same clean 409. An
+  // invariant defended in only one place is one refactor from being defended in
+  // none.
+  if (await chargeRepo.existsChargeForLease(orgId, db, id)) return 'blocked';
 
   const result = await hardDeleteLeaseQuery(orgId, db, id);
   if (result.length === 0) return false;

@@ -7,12 +7,16 @@ import {
   rentStepSummary,
   rentStepCorrection,
   portalRentStep,
+  charge as chargeSchema,
+  chargeWithLease as chargeWithLeaseSchema,
+  portalCharge as portalChargeSchema,
 } from '@rms/contract';
 import type { PropertyRow } from '../db/repo/property.js';
 import type { UnitRow } from '../db/repo/unit.js';
 import type { TenantRow } from '../db/repo/tenant.js';
 import type { PortalProfileRow } from '../db/repo/portal/profile.js';
 import { escalationFromRow, type RentStepRow, type RentStepCorrectionRow } from '../db/repo/lease.js';
+import type { ChargeRow, ChargeWithLeaseRow } from '../db/repo/charge.js';
 import {
   mapProperty,
   mapUnit,
@@ -22,6 +26,9 @@ import {
   mapRentStep,
   mapRentStepCorrection,
   mapPortalRentStep,
+  mapCharge,
+  mapChargeWithLease,
+  mapPortalCharge,
 } from './mappers.js';
 
 const propertyRow: PropertyRow = {
@@ -366,5 +373,140 @@ describe('mapPortalRentStep', () => {
     const sourceRow: RentStepRow = { ...rentStepRow, note: 'Good tenant — 5% only' };
     const mapped = mapPortalRentStep(sourceRow) as Record<string, unknown>;
     expect(mapped.note).toBeUndefined();
+  });
+});
+
+const chargeRow: ChargeRow = {
+  id: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e0f',
+  leaseId: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e10',
+  type: 'rent',
+  generationKey: '2026-04-01',
+  periodIndex: 3,
+  periodStart: '2026-04-01',
+  periodEnd: '2026-04-30',
+  occupiedStart: '2026-04-17',
+  occupiedEnd: '2026-04-30',
+  daysOccupied: 14,
+  daysInPeriod: 30,
+  dueDate: '2026-04-17',
+  amountCents: 70000,
+  isProrated: true,
+  currency: 'USD',
+  description: null,
+  source: 'generated',
+  supersedesChargeId: null,
+  voidedAt: null,
+  voidedReason: null,
+  voidedByUserId: null,
+  createdByUserId: null,
+  createdAt: new Date('2026-04-01T09:00:00.000Z'),
+};
+
+describe('mapCharge', () => {
+  it('produces a value matching the contract schema', () => {
+    expect(chargeSchema.safeParse(mapCharge(chargeRow)).success).toBe(true);
+  });
+
+  it('formats createdAt and voidedAt as ISO strings, never a bare Date', () => {
+    const mapped = mapCharge({
+      ...chargeRow,
+      voidedAt: new Date('2026-04-02T00:00:00.000Z'),
+      voidedReason: 'Charged in error.',
+    });
+    expect(mapped.createdAt).toBe('2026-04-01T09:00:00.000Z');
+    expect(mapped.voidedAt).toBe('2026-04-02T00:00:00.000Z');
+  });
+
+  it('preserves a null voidedAt as null, never an empty string', () => {
+    expect(mapCharge(chargeRow).voidedAt).toBeNull();
+  });
+
+  it('never leaks voidedByUserId — structurally absent from the landlord charge shape', () => {
+    const mapped = mapCharge({ ...chargeRow, voidedByUserId: 'user_42' }) as Record<string, unknown>;
+    expect(mapped.voidedByUserId).toBeUndefined();
+  });
+
+  it('round-trips every one of the eleven PlannedCharge-shaped fields unchanged', () => {
+    const mapped = mapCharge(chargeRow);
+    expect(mapped.generationKey).toBe(chargeRow.generationKey);
+    expect(mapped.periodIndex).toBe(chargeRow.periodIndex);
+    expect(mapped.periodStart).toBe(chargeRow.periodStart);
+    expect(mapped.periodEnd).toBe(chargeRow.periodEnd);
+    expect(mapped.occupiedStart).toBe(chargeRow.occupiedStart);
+    expect(mapped.occupiedEnd).toBe(chargeRow.occupiedEnd);
+    expect(mapped.daysOccupied).toBe(chargeRow.daysOccupied);
+    expect(mapped.daysInPeriod).toBe(chargeRow.daysInPeriod);
+    expect(mapped.dueDate).toBe(chargeRow.dueDate);
+    expect(mapped.amountCents).toBe(chargeRow.amountCents);
+    expect(mapped.isProrated).toBe(chargeRow.isProrated);
+  });
+});
+
+describe('mapChargeWithLease', () => {
+  const row: ChargeWithLeaseRow = {
+    ...chargeRow,
+    propertyId: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e20',
+    propertyName: 'Maple Court',
+    unitId: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e30',
+    unitLabel: '2B',
+    propertyTimezone: 'America/Chicago',
+  };
+
+  it('produces a value matching the contract schema', () => {
+    expect(chargeWithLeaseSchema.safeParse(mapChargeWithLease(row)).success).toBe(true);
+  });
+
+  it('carries every charge field plus the lease context', () => {
+    const mapped = mapChargeWithLease(row);
+    expect(mapped.id).toBe(row.id);
+    expect(mapped.propertyName).toBe('Maple Court');
+    expect(mapped.unitLabel).toBe('2B');
+    expect(mapped.propertyTimezone).toBe('America/Chicago');
+  });
+});
+
+describe('mapPortalCharge', () => {
+  it('produces a value matching the contract schema', () => {
+    expect(portalChargeSchema.safeParse(mapPortalCharge(chargeRow)).success).toBe(true);
+  });
+
+  it('collapses voidedAt to a plain isVoided boolean — whether, not when or why', () => {
+    const live = mapPortalCharge(chargeRow) as Record<string, unknown>;
+    expect(live.isVoided).toBe(false);
+    expect(live.voidedAt).toBeUndefined();
+
+    const voided = mapPortalCharge({
+      ...chargeRow,
+      voidedAt: new Date('2026-04-02T00:00:00.000Z'),
+      voidedReason: 'Landlord bookkeeping — unflattering.',
+    }) as Record<string, unknown>;
+    expect(voided.isVoided).toBe(true);
+  });
+
+  it('never leaks voidedReason, source, generationKey, periodIndex, or any user id', () => {
+    const mapped = mapPortalCharge({
+      ...chargeRow,
+      voidedAt: new Date('2026-04-02T00:00:00.000Z'),
+      voidedReason: 'Duplicate — my error.',
+      createdByUserId: 'user_1',
+    }) as Record<string, unknown>;
+    expect(mapped.voidedReason).toBeUndefined();
+    expect(mapped.source).toBeUndefined();
+    expect(mapped.generationKey).toBeUndefined();
+    expect(mapped.periodIndex).toBeUndefined();
+    expect(mapped.createdByUserId).toBeUndefined();
+    expect(mapped.voidedByUserId).toBeUndefined();
+  });
+
+  it('keeps the proration fields — the most disputed numbers in renting', () => {
+    const mapped = mapPortalCharge(chargeRow);
+    expect(mapped.daysOccupied).toBe(14);
+    expect(mapped.daysInPeriod).toBe(30);
+    expect(mapped.isProrated).toBe(true);
+  });
+
+  it('keeps supersedesChargeId — "$1,000 replaced by $900" reads as one correction', () => {
+    const mapped = mapPortalCharge({ ...chargeRow, supersedesChargeId: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e40' });
+    expect(mapped.supersedesChargeId).toBe('0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e40');
   });
 });
