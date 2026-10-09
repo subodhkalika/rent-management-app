@@ -11,7 +11,8 @@
     "lint": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "test:live": "docker compose -f ../../docker-compose.yml exec -T api sh -c 'cd /workspace/apps/api && DATABASE_URL=postgres://rms:rms_dev_password@db.localtest.me:5432/rms NEON_LOCAL_FETCH_ENDPOINT=http://db.localtest.me:4444/sql pnpm exec vitest run --testTimeout=60000'"
   },
   "dependencies": {
     "@neondatabase/serverless": "^0.10.4",

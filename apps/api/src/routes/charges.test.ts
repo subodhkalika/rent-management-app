@@ -281,6 +281,47 @@ describe('POST /v1/leases/:id/charges/generate', () => {
   });
 });
 
+describe('POST /v1/leases/:id/charges/generate-next-period', () => {
+  it('404s when the lease does not exist', async () => {
+    leaseRepoMock.getLease.mockResolvedValue(null);
+    const res = await post(`/v1/leases/${LEASE_ID}/charges/generate-next-period`);
+    expect(res.status).toBe(404);
+  });
+
+  it('409s on a draft lease', async () => {
+    leaseRepoMock.getLease.mockResolvedValue(leaseRow({ status: 'draft' }));
+    const res = await post(`/v1/leases/${LEASE_ID}/charges/generate-next-period`);
+    expect(res.status).toBe(409);
+    expect(chargeRepoMock.generateChargesForLease).not.toHaveBeenCalled();
+  });
+
+  it('409s on a cancelled lease', async () => {
+    leaseRepoMock.getLease.mockResolvedValue(leaseRow({ status: 'cancelled' }));
+    const res = await post(`/v1/leases/${LEASE_ID}/charges/generate-next-period`);
+    expect(res.status).toBe(409);
+  });
+
+  it('runs the generator with `chargesThroughNextPeriod` as the plan function and returns { created: [...] }', async () => {
+    leaseRepoMock.getLease.mockResolvedValue(leaseRow());
+    chargeRepoMock.generateChargesForLease.mockResolvedValue([chargeRow()]);
+
+    const res = await post(`/v1/leases/${LEASE_ID}/charges/generate-next-period`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, any>;
+    expect(body.created).toHaveLength(1);
+    // Same shared generator, called with `chargesThroughNextPeriod` as the extra
+    // 6th argument — the only difference from `/generate`.
+    expect(chargeRepoMock.generateChargesForLease).toHaveBeenCalledWith(
+      currentOrgId,
+      expect.anything(),
+      expect.objectContaining({ id: LEASE_ID }),
+      [],
+      expect.any(String),
+      expect.any(Function),
+    );
+  });
+});
+
 describe('POST /v1/leases/:leaseId/charges/:chargeId/void', () => {
   it('404s when the repo finds no such (lease, charge)', async () => {
     chargeRepoMock.voidCharge.mockResolvedValue(null);

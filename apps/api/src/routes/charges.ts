@@ -6,6 +6,7 @@ import {
   chargeListQuery,
   orgChargeListQuery,
   localToday,
+  chargesThroughNextPeriod,
   type CreateChargeBody,
   type VoidChargeBody,
   type CorrectChargeBody,
@@ -80,6 +81,39 @@ charges.post('/v1/leases/:id/charges/generate', async (c) => {
   const rentSteps = leaseRepo.toRentSteps(await leaseRepo.listRentSteps(orgId, db, leaseId));
   const today = localToday(current.propertyTimezone);
   const created = await chargeRepo.generateChargesForLease(orgId, db, current, rentSteps, today);
+  return c.json({ created: created.map(mapCharge) });
+});
+
+/**
+ * The landlord's deliberate "bill one period early" action — a tenant turns up
+ * wanting to pay next period's rent before the scheduled run would create it.
+ * Same guards, same shape, same response as `/generate`; the only difference is
+ * `chargesThroughNextPeriod` instead of `chargesDueForGeneration` as the plan
+ * function, threaded through the one shared `generateChargesForLease`. Repeating
+ * this call writes nothing new, and once the scheduled run reaches the real period
+ * start the generation key is already taken.
+ */
+charges.post('/v1/leases/:id/charges/generate-next-period', async (c) => {
+  const orgId = c.get('orgId');
+  const db = c.get('db');
+  const leaseId = requireUuidParam(c.req.param('id'), 'Lease');
+
+  const current = await leaseRepo.getLease(orgId, db, leaseId);
+  if (!current) throw notFound('Lease');
+  if (current.status === 'draft' || current.status === 'cancelled') {
+    throw conflict('Charges cannot be generated for a draft or cancelled lease.');
+  }
+
+  const rentSteps = leaseRepo.toRentSteps(await leaseRepo.listRentSteps(orgId, db, leaseId));
+  const today = localToday(current.propertyTimezone);
+  const created = await chargeRepo.generateChargesForLease(
+    orgId,
+    db,
+    current,
+    rentSteps,
+    today,
+    chargesThroughNextPeriod,
+  );
   return c.json({ created: created.map(mapCharge) });
 });
 

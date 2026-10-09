@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { uuidv7, generatorFixtures } from '@rms/contract';
+import { uuidv7, generatorFixtures, chargesThroughNextPeriod, localToday } from '@rms/contract';
 import { createDb, type Database } from '../index.js';
 import { organization, user, property, unit, tenant, lease, leaseTenant, leaseRentStepCorrection, charge } from '../schema.js';
 import { ApiException } from '../../lib/errors.js';
@@ -40,12 +40,14 @@ import * as chargeRepo from './charge.js';
  * real: point `DATABASE_URL` (and `NEON_LOCAL_FETCH_ENDPOINT`, since
  * `db/index.ts`'s driver speaks HTTP, not raw TCP — see its own comment) at a
  * reachable Postgres. The simplest way, with this repo's `docker-compose.yml`
- * stack already up: `docker compose exec api sh -c "cd apps/api && DATABASE_URL=
- * postgres://rms:rms_dev_password@db:5432/rms NEON_LOCAL_FETCH_ENDPOINT=http://
- * db.localtest.me:4444/sql pnpm exec vitest run lease.integration.test.ts"` — run
- * from INSIDE the `api` container, because the Neon HTTP proxy sidecar
- * (`db-proxy`) is deliberately not exposed to the host (see docker-compose.yml's
- * own comment on that service). Verified passing this way before reporting done.
+ * stack already up, run `pnpm --filter api test:live` from the repo root.
+ *
+ * Use that script rather than hand-writing the command. `docker compose exec`
+ * WITHOUT `-T` tries to allocate a TTY, and from a non-interactive shell it hangs
+ * forever at zero CPU with no output — indistinguishable from a slow suite, and it
+ * has already cost one agent forty minutes of doing nothing. The script runs from
+ * INSIDE the `api` container, because the Neon HTTP proxy sidecar (`db-proxy`) is
+ * deliberately not exposed to the host (see docker-compose.yml's own comment).
  *
  * NOTE for CI: `.github/workflows/ci.yml` is outside `apps/api/**` (backend-dev's
  * boundary) and today sets neither env var and runs no Postgres service, so this
@@ -996,66 +998,90 @@ describe.skipIf(!DATABASE_URL)('lease.ts orchestration functions — live Postgr
       });
 
       /**
-       * PLAN-PHASE3A.md §3.4 — THE new behaviour this phase introduces. Charges
-       * are written up to `GENERATION_LOOKAHEAD_DAYS` (31) ahead of `today`, so a
-       * step dated inside that window is ALREADY inside a written period even
-       * though it is calendar-future relative to `today` — the pre-3a code
-       * (boundary === today) would have let `PUT` edit it freely, silently
-       * disagreeing with a charge already on the books. "The 1st of next
-       * calendar month" is ALWAYS within 31 days of any `today` (the longest a
-       * Gregorian month ever runs is 31 days), so the synchronous
-       * activation-time generation is GUARANTEED to have already written that
-       * period, regardless of which real day this suite happens to run on.
+       * PLAN-PHASE3A.md §3.4 — THE new behaviour this phase introduces.
+       *
+       * Rewritten 2026-10-09 (the "charges a month ahead by default" fix):
+       * `GENERATION_LOOKAHEAD_DAYS` is now 0, so the synchronous generation
+       * `activateLease` runs no longer reaches a future period by itself — only
+       * the period CONTAINING `today` gets written. Reaching "the 1st of next
+       * calendar month" is now a DELIBERATE act (`chargesThroughNextPeriod`, the
+       * landlord billing one period early on purpose), never an automatic side
+       * effect of activation. This test now proves both halves: the step is
+       * freely editable by PUT right after activation (nothing has billed it
+       * yet), and becomes PUT-refused / `/correct`-accepted only once the
+       * landlord explicitly bills that next period.
        */
-      it('§3.4: a step inside the 31-day lookahead is refused by PUT and accepted by /correct — and the complement, far beyond it', async () => {
+      it('§3.4: a step in the next period is free to PUT until billed early, then refused by PUT and accepted by /correct — and the complement, far beyond it', async () => {
         const now = new Date();
-        const withinLookahead = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
+        const nextPeriodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
           .toISOString()
           .slice(0, 10);
-        const farFuture = '2099-01-01'; // unambiguously beyond any real lookahead
+        const farFuture = '2099-01-01'; // unambiguously beyond any real horizon
 
         const created = await leaseRepo.createLease(orgId, db, userId, {
           ...baseCreateBody(),
           startDate: '2020-01-01',
           escalation: null,
           rentSteps: [
-            { effectiveFrom: withinLookahead, rentCents: 160000, source: 'manual' },
+            { effectiveFrom: nextPeriodStart, rentCents: 160000, source: 'manual' },
             { effectiveFrom: farFuture, rentCents: 170000, source: 'manual' },
           ],
         });
         await leaseRepo.activateLease(orgId, db, created.id);
 
-        // Confirm the synchronous generation really did reach the within-lookahead
-        // period — the premise the rest of this test depends on.
+        // Confirm the premise: activation's ordinary (lookahead-0) generation did
+        // NOT reach the next period — it only ever writes through the period
+        // containing `today`.
+        const latestAfterActivation = await chargeRepo.latestChargedPeriodStart(orgId, db, created.id);
+        expect(latestAfterActivation).not.toBeNull();
+        expect(latestAfterActivation! < nextPeriodStart).toBe(true);
+
+        // So PUT freely accepts editing the next-period step too — nothing has
+        // billed it yet.
+        const replacedEarly = await leaseRepo.replaceRentSteps(orgId, db, created.id, {
+          steps: [
+            { effectiveFrom: nextPeriodStart, rentCents: 161000, source: 'manual' },
+            { effectiveFrom: farFuture, rentCents: 170000, source: 'manual' },
+          ],
+        });
+        expect(replacedEarly?.find((s) => s.effectiveFrom === nextPeriodStart)?.rentCents).toBe(161000);
+
+        // Now the landlord deliberately bills one period early.
+        const leaseRow = (await leaseRepo.getLease(orgId, db, created.id))!;
+        const rentSteps = leaseRepo.toRentSteps(await leaseRepo.listRentSteps(orgId, db, created.id));
+        const today = localToday(leaseRow.propertyTimezone);
+        await chargeRepo.generateChargesForLease(orgId, db, leaseRow, rentSteps, today, chargesThroughNextPeriod);
+
         const latest = await chargeRepo.latestChargedPeriodStart(orgId, db, created.id);
         expect(latest).not.toBeNull();
-        expect(latest! >= withinLookahead).toBe(true);
+        expect(latest! >= nextPeriodStart).toBe(true);
 
-        // PUT refuses the within-lookahead step — "already billed".
+        // PUT now refuses the next-period step — "already billed".
         await expect(
           leaseRepo.replaceRentSteps(orgId, db, created.id, {
             steps: [
-              { effectiveFrom: withinLookahead, rentCents: 999999, source: 'manual' },
+              { effectiveFrom: nextPeriodStart, rentCents: 999999, source: 'manual' },
               { effectiveFrom: farFuture, rentCents: 170000, source: 'manual' },
             ],
           }),
         ).rejects.toMatchObject({ code: 'conflict' });
 
-        // ...but PUT freely accepts editing the far-future step, unaudited.
+        // ...but PUT still freely accepts editing the far-future step, unaudited.
         const replaced = await leaseRepo.replaceRentSteps(orgId, db, created.id, {
           steps: [
-            { effectiveFrom: withinLookahead, rentCents: 160000, source: 'manual' },
+            { effectiveFrom: nextPeriodStart, rentCents: 161000, source: 'manual' },
             { effectiveFrom: farFuture, rentCents: 999999, source: 'manual' },
           ],
         });
         expect(replaced?.find((s) => s.effectiveFrom === farFuture)?.rentCents).toBe(999999);
 
-        // /correct is the EXACT complement: it accepts the within-lookahead step...
+        // /correct is the EXACT complement: it accepts the now-billed next-period
+        // step...
         const steps = await leaseRepo.listRentSteps(orgId, db, created.id);
-        const withinStep = steps.find((s) => s.effectiveFrom === withinLookahead)!;
+        const withinStep = steps.find((s) => s.effectiveFrom === nextPeriodStart)!;
         const corrected = await leaseRepo.correctRentStep(orgId, db, created.id, withinStep.id, userId, {
           rentCents: 165000,
-          reason: 'Within-lookahead correction, exercising the §3.4 boundary.',
+          reason: 'Correction after billing the next period early, exercising the §3.4 boundary.',
         });
         expect(corrected?.rentCents).toBe(165000);
 

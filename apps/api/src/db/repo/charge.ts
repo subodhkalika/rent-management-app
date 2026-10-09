@@ -16,6 +16,8 @@ import {
   type MoveOutBillingPolicy,
   type CalendarSystem,
   type IsoDate,
+  type LeaseBillingTerms,
+  type PlannedCharge,
 } from '@rms/contract';
 import type { Database } from '../index.js';
 import { charge, lease, unit, property } from '../schema.js';
@@ -567,6 +569,13 @@ function nonPeriodicRows(orgId: string, lease: GeneratableLease): (typeof charge
  * §5.1: the run instant is captured once, at the top of `jobs/daily.ts`, and passed
  * down. Every lease in a run must see the same clock).
  *
+ * `plan` picks WHICH set of periods to write — `chargesDueForGeneration` (the
+ * default, used by the cron and the ordinary manual kick) or
+ * `chargesThroughNextPeriod` (the "bill one period early" manual action). Threaded
+ * through rather than duplicated: the insert, the conflict target and the
+ * non-periodic rows stay byte-identical for every caller, and only the function
+ * that decides which periods are "due" varies.
+ *
  * `rows.length === 0` is deliberately checked before the INSERT: `db.insert(...)
  * .values([])` is either a no-op or a SQL error depending on the driver, and a
  * lease with a zero deposit, a zero opening balance, and a schedule that is
@@ -583,9 +592,10 @@ export async function generateChargesForLease(
   lease: GeneratableLease,
   rentSteps: readonly RentStep[],
   today: IsoDate,
+  plan: (terms: LeaseBillingTerms, today: IsoDate) => PlannedCharge[] = chargesDueForGeneration,
 ): Promise<ChargeRow[]> {
   const terms = billingTermsFor({ ...lease, rentSteps });
-  const planned = chargesDueForGeneration(terms, today);
+  const planned = plan(terms, today);
 
   const rows: (typeof charge.$inferInsert)[] = [
     ...nonPeriodicRows(orgId, lease),

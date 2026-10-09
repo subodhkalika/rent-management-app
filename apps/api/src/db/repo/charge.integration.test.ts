@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { and, asc, eq } from 'drizzle-orm';
-import { uuidv7 } from '@rms/contract';
+import { uuidv7, chargesThroughNextPeriod } from '@rms/contract';
 import { createDb, type Database } from '../index.js';
 import { organization, user, property, unit, lease, charge } from '../schema.js';
 import * as chargeRepo from './charge.js';
@@ -136,18 +136,23 @@ describe.skipIf(!DATABASE_URL)('charge.ts orchestration functions — live Postg
       expect(rows).toHaveLength(first.length);
     });
 
-    it('catch-up: advancing today by 40 days with no intervening run backfills exactly the missing periods, with correct historical due dates, zero duplicates', async () => {
+    it('catch-up: a later run with no intervening run backfills exactly the periods missed in between, with correct historical due dates, zero duplicates', async () => {
       const row = await insertLease();
       const gLease = generatableLeaseFrom(row);
 
+      // GENERATION_LOOKAHEAD_DAYS is 0 — a run only ever writes through the period
+      // CONTAINING `today`, never ahead of it (see billing.ts's own comment on the
+      // constant). So the first run (Jan 5) writes January only; the skipped
+      // February must come back on the next run, alongside March, proving catch-up
+      // still works with no lookahead cushioning the gap between runs.
       const day1 = await chargeRepo.generateChargesForLease(orgId, db, gLease, [], '2026-01-05');
       const keysAfterDay1 = day1.map((c) => c.generationKey).sort();
 
-      const day41 = await chargeRepo.generateChargesForLease(orgId, db, gLease, [], '2026-02-14'); // +40 days
-      const keysAfterDay41 = day41.map((c) => c.generationKey).sort();
+      const laterRun = await chargeRepo.generateChargesForLease(orgId, db, gLease, [], '2026-03-14');
+      const keysAfterLaterRun = laterRun.map((c) => c.generationKey).sort();
 
-      // Nothing written on day 1 is written again on day 41.
-      expect(keysAfterDay1.some((k) => keysAfterDay41.includes(k))).toBe(false);
+      // Nothing written on day 1 is written again on the later run.
+      expect(keysAfterDay1.some((k) => keysAfterLaterRun.includes(k))).toBe(false);
 
       const allRows = await db
         .select()
@@ -288,11 +293,15 @@ describe.skipIf(!DATABASE_URL)('charge.ts orchestration functions — live Postg
     it('equals the latest GENERATED rent period start when that is later than today', async () => {
       const row = await insertLease();
       const gLease = generatableLeaseFrom(row);
-      // 31-day lookahead from 2026-01-05 reaches into February.
-      await chargeRepo.generateChargesForLease(orgId, db, gLease, [], '2026-01-05');
+      // GENERATION_LOOKAHEAD_DAYS is 0 — the ORDINARY generator never reaches past
+      // the period containing `today`. Reaching February from a January `today`
+      // now requires the DELIBERATE `chargesThroughNextPeriod` action (the
+      // landlord billing one period early on purpose), which is exactly what this
+      // asserts the boundary still honours.
+      await chargeRepo.generateChargesForLease(orgId, db, gLease, [], '2026-01-05', chargesThroughNextPeriod);
 
       const boundary = await chargeRepo.rentStepMutabilityBoundary(orgId, db, row.id as string, '2026-01-05');
-      expect(boundary).toBe('2026-02-01'); // the lookahead already wrote February
+      expect(boundary).toBe('2026-02-01'); // the deliberate next-period call already wrote February
     });
 
     /**
@@ -309,7 +318,9 @@ describe.skipIf(!DATABASE_URL)('charge.ts orchestration functions — live Postg
     it('a VOIDED rent period still counts toward the boundary — once billed, always billed (monotonic)', async () => {
       const row = await insertLease();
       const gLease = generatableLeaseFrom(row);
-      const created = await chargeRepo.generateChargesForLease(orgId, db, gLease, [], '2026-01-05');
+      // Reaching February from a January `today` is the deliberate next-period
+      // action (GENERATION_LOOKAHEAD_DAYS is 0 — see the test above).
+      const created = await chargeRepo.generateChargesForLease(orgId, db, gLease, [], '2026-01-05', chargesThroughNextPeriod);
       const feb = created.find((c) => c.generationKey === '2026-02-01')!;
 
       const beforeVoid = await chargeRepo.rentStepMutabilityBoundary(orgId, db, row.id as string, '2026-01-20');
