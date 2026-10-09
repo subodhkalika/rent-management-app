@@ -122,6 +122,18 @@ export const correctChargeBody = z.object({
 });
 export type CorrectChargeBody = z.infer<typeof correctChargeBody>;
 
+
+/**
+ * A boolean that arrives as a query string.
+ *
+ * `z.coerce.boolean()` is wrong for this and silently so: it is `Boolean(value)`, so
+ * the string "false" — which is what a browser sends — parses as `true`. A flag that
+ * cannot be switched off looks like a broken filter, not a parsing bug.
+ */
+export const queryBoolean = z
+  .union([z.boolean(), z.enum(['true', 'false'])])
+  .transform((v) => (typeof v === 'boolean' ? v : v === 'true'));
+
 export const chargeListQuery = pageQuery.extend({
   from: isoDate.optional(),
   to: isoDate.optional(),
@@ -129,15 +141,20 @@ export const chargeListQuery = pageQuery.extend({
   /**
    * Defaults to true. A ledger that silently hides rows is how an hour disappears
    * reconciling a total — the UI strikes voids through, it does not drop them.
+   *
+   * NOT `z.coerce.boolean()`. Query params arrive as strings and `Boolean("false")`
+   * is `true`, so coercion made this flag impossible to turn off — and made
+   * `diffChargesAgainstSchedule` work only by accident, since it needs the voided
+   * rows the caller was explicitly asking to exclude.
    */
-  includeVoided: z.coerce.boolean().default(true),
+  includeVoided: queryBoolean.default(true),
 });
 export type ChargeListQuery = z.infer<typeof chargeListQuery>;
 
 export const orgChargeListQuery = chargeListQuery.extend({
   propertyId: uuid.optional(),
   unitId: uuid.optional(),
-  overdueOnly: z.coerce.boolean().default(false),
+  overdueOnly: queryBoolean.default(false),
 });
 export type OrgChargeListQuery = z.infer<typeof orgChargeListQuery>;
 

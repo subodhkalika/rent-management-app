@@ -147,6 +147,17 @@ export const timezone = z
   .string()
   .min(1)
   .max(64)
+  // Must be an IANA region name, not a bare offset.
+  //
+  // `Intl` accepts "+05:30" and so would a looser check — but Postgres reads that
+  // string with the POSIX sign convention (positive means WEST) while JS reads it
+  // with the ISO one, so the two disagree by eleven hours and in opposite
+  // directions. The overdue filter runs in SQL and the Overdue badge runs in JS, so
+  // an offset zone makes a charge overdue in the list and current on the page.
+  // Region names mean the same thing to both.
+  // 'UTC' is the one accepted name without a region, and both systems agree on it.
+  // It is also the column default every property starts at.
+  .refine((v) => v === 'UTC' || v.includes('/'), 'Use a region name like Asia/Kolkata, not an offset')
   .refine((v) => {
     try {
       new Intl.DateTimeFormat('en-US', { timeZone: v });
