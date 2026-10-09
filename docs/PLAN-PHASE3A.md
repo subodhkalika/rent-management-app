@@ -1,5 +1,9 @@
 # Phase 3a — Charge generation
 
+> A **design record**: what was decided and why, at the time it was decided. Parts
+> of it have since been superseded — superseded decisions are marked inline.
+> For what the system does *now*, read [BEHAVIOUR.md](./BEHAVIOUR.md).
+
 > **Scope.** The `charge` table, the generator that materialises it, the scheduled job
 > that runs it, and the landlord + tenant views of charges. **No payments, no FIFO
 > allocation, no balances, no arrears** — those are 3b. §11 states exactly what 3a
@@ -499,6 +503,13 @@ empty `created`. **The guarantee is the index, not application logic** — there
 lock.
 
 **Misses a day.** Nothing. `generationHorizon(today)` is 31 days wide, so a period
+
+> **SUPERSEDED 2026-10-10.** Charges are now created on the FIRST DAY of their own
+> period; `GENERATION_LOOKAHEAD_DAYS` is `0`. Billing a period early is a deliberate
+> landlord action (`chargesThroughNextPeriod`), not the default. The reasoning below
+> is kept because it explains why the horizon was once wide — but it no longer
+> describes the system. See `docs/BEHAVIOUR.md`.
+
 that would have been written on day *N* is written on day *N+1* with a byte-identical
 `due_date` — because `due_date` is computed from the **period**, never from "today".
 Nothing downstream can tell.

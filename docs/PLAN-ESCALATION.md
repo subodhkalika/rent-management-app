@@ -1,5 +1,9 @@
 # Plan — Rent escalation: stored rent steps
 
+> A **design record**: what was decided and why, at the time it was decided. Parts
+> of it have since been superseded — superseded decisions are marked inline.
+> For what the system does *now*, read [BEHAVIOUR.md](./BEHAVIOUR.md).
+
 > Written by `architect`. A **plan**, not a contract. The orchestrator turns §5 into real
 > contract files, freezes them, then dispatches the §7 backend and frontend tasks in
 > parallel.

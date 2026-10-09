@@ -17,6 +17,17 @@ Every piece is on a permanent free tier that permits commercial use.
 | Email | Resend | — |
 | CI/CD | GitHub Actions | — |
 
+## Documentation
+
+| | |
+|---|---|
+| [docs/BEHAVIOUR.md](./docs/BEHAVIOUR.md) | **What the app does today.** Start here. |
+| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | The rules code must follow, and why |
+| [docs/DOCKER.md](./docs/DOCKER.md) | Running it locally |
+| [docs/DEPLOYMENT.md](./docs/DEPLOYMENT.md) | Getting it into production |
+| [docs/DATES.md](./docs/DATES.md) | Where date logic is allowed to live |
+| `docs/PLAN-*.md` | Design records — what was decided and why. Superseded parts are marked; BEHAVIOUR.md wins on any disagreement. |
+
 ## Layout
 
 ```

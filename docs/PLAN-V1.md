@@ -1,5 +1,9 @@
 # V1 Plan — Rent Management SaaS
 
+> A **design record**: what was decided and why, at the time it was decided. Parts
+> of it have since been superseded — superseded decisions are marked inline.
+> For what the system does *now*, read [BEHAVIOUR.md](./BEHAVIOUR.md).
+
 > Written by `architect`. This is a **plan**, not a contract. The orchestrator turns each
 > phase's "Frozen contract" section into real files under `packages/contract/src/`, then
 > dispatches a backend/frontend pair against it.
@@ -831,6 +835,13 @@ for each lease where status = 'active':
   landlord sets `ledger_start_date` to the current month and supplies
   `openingBalanceCents`, which writes a single `type = 'opening_balance'` charge.
 - **Horizon:** end of **next** calendar month, so a tenant always sees one month ahead and
+
+> **SUPERSEDED 2026-10-10.** Charges are now created on the FIRST DAY of their own
+> period; `GENERATION_LOOKAHEAD_DAYS` is `0`. Billing a period early is a deliberate
+> landlord action (`chargesThroughNextPeriod`), not the default. The reasoning below
+> is kept because it explains why the horizon was once wide — but it no longer
+> describes the system. See `docs/BEHAVIOUR.md`.
+
   the "upcoming rent" reminder has a row to point at.
 - **A voided charge is never regenerated**, because `ON CONFLICT` keys on
   `generation_key` regardless of `voided_at`. Correct: voiding March's rent is a decision,

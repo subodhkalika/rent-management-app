@@ -1,5 +1,9 @@
 # Phase 2 Plan — Leases
 
+> A **design record**: what was decided and why, at the time it was decided. Parts
+> of it have since been superseded — superseded decisions are marked inline.
+> For what the system does *now*, read [BEHAVIOUR.md](./BEHAVIOUR.md).
+
 > Written by `architect`. A **plan**, not a contract. The orchestrator turns §4 into real
 > files under `packages/contract/src/`, freezes them, then dispatches the §5 backend and
 > frontend tasks in parallel.
@@ -22,6 +26,13 @@
 | 5 | `rent_frequency` is **immutable once a lease has ever been active**. A cadence change is a renewal in the same `chain_id`. | The predecessor's charges were written under its own cadence and stay valid; nothing is ever retro-recadenced. |
 | 6 | **Whether an early move-out stops the rent is a PROPERTY-level setting**, `property.move_out_billing_policy`, defaulting to `bill_full_term`. `buildSchedule` applies it internally. | The policy follows the building and the local market, not the individual tenant — per-lease means answering it correctly on every lease forever. **[CORRECTION]** to PLAN-V1 §4.5 and to this plan's own first draft. **RESOLVED — see Amendment A.** |
 | 7 | Generation horizon is **one rule for both cadences**: a period is wanted once `today >= periodStart − 31 days`. | PLAN-V1's "end of next calendar month" cannot be expressed for a yearly cadence; 31 days reproduces monthly behaviour exactly and gives a yearly charge a sane month of notice. **[CORRECTION]** |
+
+> **SUPERSEDED 2026-10-10.** Charges are now created on the FIRST DAY of their own
+> period; `GENERATION_LOOKAHEAD_DAYS` is `0`. Billing a period early is a deliberate
+> landlord action (`chargesThroughNextPeriod`), not the default. The reasoning below
+> is kept because it explains why the horizon was once wide — but it no longer
+> describes the system. See `docs/BEHAVIOUR.md`.
+
 | 8 | `ledger_start_date` must equal `start_date` **or** be a period start. | Otherwise a landlord onboarding an in-flight tenancy silently prorates a month the tenant owes in full. |
 | 9 | `opening_balance_cents` is a **column on `lease` written in Phase 2**, materialised as a charge by Phase 3. | Phase 2's job is to produce billing primitives; the lease form is the only place this can be captured. |
 | 10 | `POST /v1/leases` **always creates `draft`.** Activation is a separate explicit call. | The partial unique index is then exercised by exactly one endpoint, and a half-built wizard leaves a harmless visible draft instead of a double-booked unit. |
