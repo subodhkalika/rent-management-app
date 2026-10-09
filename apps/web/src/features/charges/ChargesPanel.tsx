@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils';
 import { useGenerateCharges, useLeaseCharges } from './api';
 import { chargeTypeVariant, formatOccupied } from './charge-ui';
 import { DriftBanner } from './DriftBanner';
+import { GenerateNextPeriodAction } from './GenerateNextPeriodAction';
 import { VoidChargeDialog } from './VoidChargeDialog';
 import { CorrectChargeDialog } from './CorrectChargeDialog';
 import { CreateChargeDialog } from './CreateChargeDialog';
@@ -91,6 +92,14 @@ export function ChargesPanel({ lease }: { lease: LeaseDetail }) {
           </Button>
         </div>
       </div>
+
+      {/* Quiet and secondary on purpose: the ordinary path is that charges appear by
+          themselves, so this exception does not compete with the actions above. */}
+      {lease.status === 'active' && (
+        <div className="mt-1 flex justify-end">
+          <GenerateNextPeriodAction lease={lease} />
+        </div>
+      )}
 
       <div className="mt-2">
         {isPending ? (

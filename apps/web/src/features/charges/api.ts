@@ -126,6 +126,22 @@ export function useGenerateCharges(leaseId: string) {
   });
 }
 
+/**
+ * The landlord's deliberate "bill one period early" action — same response shape
+ * as `useGenerateCharges`, just against `generate-next-period` instead of
+ * `generate`. Repeating this writes nothing new once the key is taken, same as the
+ * route it calls.
+ */
+export function useGenerateNextPeriodCharge(leaseId: string) {
+  const queryClient = useQueryClient();
+  const responseSchema = z.object({ created: z.array(charge) });
+  return useMutation<{ created: Charge[] }, ApiClientError, void>({
+    mutationFn: () =>
+      request(routes.leases.generateNextPeriod(leaseId), { method: 'POST', schema: responseSchema }),
+    onSuccess: () => invalidateLeaseCharges(queryClient, leaseId),
+  });
+}
+
 export function useCreateManualCharge(leaseId: string) {
   const queryClient = useQueryClient();
   return useMutation<Charge, ApiClientError, CreateChargeBody>({

@@ -133,10 +133,12 @@ function renderBanner(lease: LeaseDetail, onReviewCharge = vi.fn(), onVoidCharge
 describe('DriftBanner — the only thing that makes a written charge disagreeing with the live schedule visible', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    // Mid-January: `chargesDueForGeneration` (today + 31d horizon) reaches exactly
-    // the January and February rent periods for a plain monthly lease starting
-    // 2026-01-01 — the fixed, known "planned" set every case below diffs against.
-    vi.setSystemTime(new Date('2026-01-15T12:00:00.000Z'));
+    // Mid-February: a charge exists from the period it belongs to, never earlier
+    // (`GENERATION_LOOKAHEAD_DAYS` is 0), so `chargesDueForGeneration` reaches
+    // exactly the periods whose start has arrived — January and February, for a
+    // plain monthly lease starting 2026-01-01 — the fixed, known "planned" set
+    // every case below diffs against.
+    vi.setSystemTime(new Date('2026-02-15T12:00:00.000Z'));
   });
 
   afterEach(() => {

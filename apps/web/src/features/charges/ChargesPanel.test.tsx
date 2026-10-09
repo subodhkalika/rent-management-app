@@ -233,4 +233,42 @@ describe('ChargesPanel — the four states', () => {
       expect(screen.queryByText(/period has no charge yet/i)).not.toBeInTheDocument();
     },
   );
+
+  it.each(['draft', 'cancelled', 'ended'] as const)(
+    '"Bill next period early" does not appear on a %s lease — the exception exists only while a lease is active',
+    async (status) => {
+      const leaseId = '00000000-0000-7000-8000-000000000001';
+      const lease = baseLease({ id: leaseId, status });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation((input: string | URL) => {
+          const url = new URL(String(input), 'http://localhost');
+          if (url.pathname === routes.leases.charges(leaseId)) return jsonResponse({ items: [], nextCursor: null });
+          return jsonResponse({ error: { code: 'not_found', message: 'no stub' } }, 404);
+        }),
+      );
+
+      renderPanel(lease);
+
+      expect(await screen.findByText(/no charges yet/i)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /bill next period early/i })).not.toBeInTheDocument();
+    },
+  );
+
+  it('"Bill next period early" appears on an active lease', async () => {
+    const leaseId = '00000000-0000-7000-8000-000000000001';
+    const lease = baseLease({ id: leaseId, status: 'active' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((input: string | URL) => {
+        const url = new URL(String(input), 'http://localhost');
+        if (url.pathname === routes.leases.charges(leaseId)) return jsonResponse({ items: [], nextCursor: null });
+        return jsonResponse({ error: { code: 'not_found', message: 'no stub' } }, 404);
+      }),
+    );
+
+    renderPanel(lease);
+
+    expect(await screen.findByRole('button', { name: /bill next period early/i })).toBeInTheDocument();
+  });
 });

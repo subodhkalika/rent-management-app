@@ -58,8 +58,6 @@ function renderDialog(lease: LeaseDetail) {
 describe('ActivateLeaseDialog — the onboarding guard-rail (docs/PLAN-PHASE3A.md §8)', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    // today = 2026-03-31, the same derivation as `generationPlanFixtures` (31 days
-    // before `through`) for fixture F9's own `through` of 2026-05-01.
     vi.setSystemTime(new Date('2026-03-31T12:00:00.000Z'));
   });
 
@@ -70,11 +68,12 @@ describe('ActivateLeaseDialog — the onboarding guard-rail (docs/PLAN-PHASE3A.m
   it('shows the count, total and overdue count before the landlord commits', () => {
     renderDialog(draftLease());
 
-    // 3 rent periods (F9) + 1 deposit = 4 charges; deposit (2025-06-15) and the
-    // first rent period (2026-03-01) are both before "today" (2026-03-31) — 2
-    // already overdue.
-    expect(document.body.textContent).toMatch(/activating creates\s*4\s*charges totalling/i);
-    expect(document.body.textContent).toMatch(/\$3,500\.00/); // 3 x $1,000 rent + $500 deposit
+    // Charges are written on a period's first day, never earlier (§ the contract's
+    // `GENERATION_LOOKAHEAD_DAYS`), so "today" (2026-03-31) only reaches the March
+    // rent period — April's hasn't started yet. 1 rent period + 1 deposit = 2
+    // charges; both are already due before today, so both are overdue.
+    expect(document.body.textContent).toMatch(/activating creates\s*2\s*charges totalling/i);
+    expect(document.body.textContent).toMatch(/\$1,500\.00/); // $1,000 rent + $500 deposit
     expect(document.body.textContent).toMatch(/2\s*are already overdue/i);
   });
 

@@ -82,10 +82,12 @@ describe('previewActivationCharges — the onboarding guard-rail (docs/PLAN-PHAS
         { generationKey: 'opening', dueDate: lease.ledgerStartDate, amountCents: 20000 },
       ]),
     );
-    // Deposit (2025-06-15), opening + first rent period (both 2026-03-01) are all
-    // before `today` (2026-03-31) — three already-overdue charges in one click,
+    // Deposit (2025-06-15), opening + the first two rent periods (2026-03-01,
+    // 2026-04-01) are all before `today` (2026-05-01, F9's own `through` now that
+    // charges are written on a period's first day, never earlier — see
+    // `GENERATION_LOOKAHEAD_DAYS`) — four already-overdue charges in one click,
     // exactly the hazard the activate dialog exists to surface before it commits.
-    expect(preview.overdueCount).toBe(3);
+    expect(preview.overdueCount).toBe(4);
     expect(preview.totalCents).toBe(50000 + 20000 + f9.expected.reduce((sum, e) => sum + e.amountCents, 0));
   });
 
