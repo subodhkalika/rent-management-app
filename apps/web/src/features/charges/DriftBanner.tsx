@@ -7,6 +7,7 @@ import {
   diffChargesAgainstSchedule,
   localToday,
   formatMoney,
+  type Charge,
   type ChargeDrift,
   type LeaseDetail,
 } from '@rms/contract';
@@ -19,10 +20,16 @@ import { useAllGeneratedRentCharges, useGenerateCharges } from './api';
 
 interface DriftBannerProps {
   lease: LeaseDetail;
-  /** Opens the correct dialog for this written charge — the `amount` / `due_date` action. */
-  onReviewCharge: (chargeId: string) => void;
-  /** Opens the void dialog for this written charge — the `unscheduled` action. */
-  onVoidCharge: (chargeId: string) => void;
+  /**
+   * Opens the correct dialog for this written charge — the `amount` / `due_date`
+   * action. Takes the whole `Charge`, resolved from THIS component's own
+   * complete (every-page) set, never a bare id the caller has to re-resolve
+   * against its own, possibly-partial page — a lease with more than one page of
+   * charges made that lookup fail silently (no dialog, no toast, nothing).
+   */
+  onReviewCharge: (charge: Charge) => void;
+  /** Opens the void dialog for this written charge — the `unscheduled` action. Same reasoning. */
+  onVoidCharge: (charge: Charge) => void;
 }
 
 /**
@@ -71,6 +78,12 @@ export function DriftBanner({ lease, onReviewCharge, onVoidCharge }: DriftBanner
 
   if (!drifts || drifts.length === 0) return null;
 
+  // Resolve every action against OUR OWN complete set, loaded across every page —
+  // never against whatever the caller happens to have on screen. `chargeId` is
+  // always non-null for these two kinds, and always a member of `charges` (it came
+  // from diffing that exact array), so this is a lookup, not a maybe.
+  const byId = new Map(charges!.map((c) => [c.id, c]));
+
   const needsReview = drifts.filter((d) => d.kind === 'amount' || d.kind === 'due_date');
   const missing = drifts.filter((d) => d.kind === 'missing');
   const unscheduled = drifts.filter((d) => d.kind === 'unscheduled');
@@ -97,13 +110,16 @@ export function DriftBanner({ lease, onReviewCharge, onVoidCharge }: DriftBanner
               changed. Each row's own number stays frozen until you review and supersede it.
             </p>
             <ul className="mt-1 space-y-1">
-              {needsReview.map((d) => (
-                <DriftRow key={d.generationKey} drift={d} lease={lease}>
-                  <Button size="sm" variant="outline" onClick={() => d.chargeId && onReviewCharge(d.chargeId)}>
-                    Review
-                  </Button>
-                </DriftRow>
-              ))}
+              {needsReview.map((d) => {
+                const target = d.chargeId ? byId.get(d.chargeId) : undefined;
+                return (
+                  <DriftRow key={d.generationKey} drift={d} lease={lease}>
+                    <Button size="sm" variant="outline" onClick={() => target && onReviewCharge(target)}>
+                      Review
+                    </Button>
+                  </DriftRow>
+                );
+              })}
             </ul>
           </div>
         )}
@@ -133,13 +149,16 @@ export function DriftBanner({ lease, onReviewCharge, onVoidCharge }: DriftBanner
               typically a lease ended after this period was already written.
             </p>
             <ul className="mt-1 space-y-1">
-              {unscheduled.map((d) => (
-                <DriftRow key={d.generationKey} drift={d} lease={lease}>
-                  <Button size="sm" variant="outline" onClick={() => d.chargeId && onVoidCharge(d.chargeId)}>
-                    Void it
-                  </Button>
-                </DriftRow>
-              ))}
+              {unscheduled.map((d) => {
+                const target = d.chargeId ? byId.get(d.chargeId) : undefined;
+                return (
+                  <DriftRow key={d.generationKey} drift={d} lease={lease}>
+                    <Button size="sm" variant="outline" onClick={() => target && onVoidCharge(target)}>
+                      Void it
+                    </Button>
+                  </DriftRow>
+                );
+              })}
             </ul>
           </div>
         )}

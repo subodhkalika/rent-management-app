@@ -175,14 +175,16 @@ describe('ChargesPanel — the four states', () => {
       vi.fn().mockImplementation((input: string | URL) => {
         const url = new URL(String(input), 'http://localhost');
         if (url.pathname === routes.leases.charges(leaseId)) {
-          // `DriftBanner` (rendered inside `ChargesPanel`) issues its own, separate
-          // request for generated/non-voided rent charges only — distinguish it by
-          // its own query params so a voided row never gets diffed as if it were
-          // live (which would also print its amount a second time in the DOM).
-          if (url.searchParams.get('includeVoided') === 'false') {
-            return jsonResponse({ items: [stillDue], nextCursor: null });
-          }
-          return jsonResponse({ items: [original, successor, stillDue], nextCursor: null });
+          // Match the REAL server's `includeVoided` semantics (post-835b80e):
+          // only the literal string "true" returns voided rows; anything else —
+          // absent, or any other value — excludes them. Checking for the inverse
+          // ("false" means filtered) is exactly the more-lenient-than-production
+          // mock shape that let the real includeVoided:false regression hide
+          // behind a green suite before.
+          const includeVoided = url.searchParams.get('includeVoided') === 'true';
+          const all = [original, successor, stillDue];
+          const visible = includeVoided ? all : all.filter((c) => c.voidedAt === null);
+          return jsonResponse({ items: visible, nextCursor: null });
         }
         return jsonResponse({ error: { code: 'not_found', message: 'no stub' } }, 404);
       }),
@@ -206,4 +208,29 @@ describe('ChargesPanel — the four states', () => {
     // not flagged), and February is not due yet.
     expect(screen.getAllByText(/overdue/i)).toHaveLength(1);
   });
+
+  it.each(['draft', 'cancelled'] as const)(
+    'suppresses the drift banner entirely on a %s lease — nothing has ever been generated, and Run generation would 409',
+    async (status) => {
+      const leaseId = '00000000-0000-7000-8000-000000000001';
+      // Onboarding a six-month-old tenancy (the exact scenario PLAN-PHASE3A names):
+      // the schedule already wants several periods, but this lease has never been
+      // activated, so no charge row exists for any of them.
+      const lease = baseLease({ id: leaseId, status, startDate: '2025-06-15', ledgerStartDate: '2025-06-15' });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation((input: string | URL) => {
+          const url = new URL(String(input), 'http://localhost');
+          if (url.pathname === routes.leases.charges(leaseId)) return jsonResponse({ items: [], nextCursor: null });
+          return jsonResponse({ error: { code: 'not_found', message: 'no stub' } }, 404);
+        }),
+      );
+
+      renderPanel(lease);
+
+      expect(await screen.findByText(/no charges yet/i)).toBeInTheDocument();
+      expect(screen.queryByText(/charges need review/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/period has no charge yet/i)).not.toBeInTheDocument();
+    },
+  );
 });

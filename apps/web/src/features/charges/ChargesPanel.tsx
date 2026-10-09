@@ -57,9 +57,13 @@ export function ChargesPanel({ lease }: { lease: LeaseDetail }) {
     return map;
   }, [items]);
 
-  function findCharge(id: string): Charge | null {
-    return items.find((c) => c.id === id) ?? null;
-  }
+  // Nothing is ever generated for a draft or cancelled lease (§9.1: both 409 on
+  // `/charges/generate` and `/charges`), and neither status has ever had a charge
+  // written — so the only drift kind that could ever appear is `missing`, firing on
+  // every scheduled period before the lease is even activated. Suppress the banner
+  // entirely for the same statuses the generator itself refuses, rather than
+  // showing an alarming banner with an action guaranteed to 409.
+  const canHaveCharges = lease.status !== 'draft' && lease.status !== 'cancelled';
 
   function handleGenerate() {
     generateMutation.mutate(undefined, {
@@ -72,11 +76,9 @@ export function ChargesPanel({ lease }: { lease: LeaseDetail }) {
 
   return (
     <div>
-      <DriftBanner
-        lease={lease}
-        onReviewCharge={(id) => setCorrectCharge(findCharge(id))}
-        onVoidCharge={(id) => setVoidCharge(findCharge(id))}
-      />
+      {canHaveCharges && (
+        <DriftBanner lease={lease} onReviewCharge={setCorrectCharge} onVoidCharge={setVoidCharge} />
+      )}
 
       <div className="mt-4 flex items-center justify-between">
         <h2 className="text-sm font-medium">Charges</h2>

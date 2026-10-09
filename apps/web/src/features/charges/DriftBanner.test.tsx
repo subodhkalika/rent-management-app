@@ -99,7 +99,14 @@ function stubFetch(leaseId: string, charges: Charge[], onGenerate?: () => Charge
     vi.fn().mockImplementation((input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input), 'http://localhost');
       if (url.pathname === routes.leases.charges(leaseId) && (init?.method ?? 'GET') === 'GET') {
-        return jsonResponse({ items: charges, nextCursor: null });
+        // Match the REAL server's post-835b80e behaviour: `includeVoided=true`
+        // returns every row; anything else (absent, or any other string) excludes
+        // voided ones. A mock that is more lenient than the real server — e.g. one
+        // that returns voided rows regardless of the query string — is exactly how
+        // the `includeVoided: false` regression survived a green suite before.
+        const includeVoided = url.searchParams.get('includeVoided') === 'true';
+        const visible = includeVoided ? charges : charges.filter((c) => c.voidedAt === null);
+        return jsonResponse({ items: visible, nextCursor: null });
       }
       if (url.pathname === routes.leases.generateCharges(leaseId) && init?.method === 'POST') {
         return jsonResponse({ created: onGenerate ? onGenerate() : [] });
@@ -171,11 +178,18 @@ describe('DriftBanner — the only thing that makes a written charge disagreeing
     expect(document.body.textContent).toMatch(/1 scheduled period has no charge yet/i);
     expect(document.body.textContent).toMatch(/1 written charge no longer matches/i);
 
+    // The whole `Charge` is passed through, resolved from THIS component's own
+    // complete set — never a bare id a paginated caller has to re-resolve against
+    // whatever page it happens to have loaded (see ChargesPanel.tsx's fix).
     await user.click(screen.getByRole('button', { name: /^review$/i }));
-    expect(onReviewCharge).toHaveBeenCalledWith('00000000-0000-7000-8000-00000000000a');
+    expect(onReviewCharge).toHaveBeenCalledWith(
+      expect.objectContaining({ id: '00000000-0000-7000-8000-00000000000a' }),
+    );
 
     await user.click(screen.getByRole('button', { name: /^void it$/i }));
-    expect(onVoidCharge).toHaveBeenCalledWith('00000000-0000-7000-8000-00000000000c');
+    expect(onVoidCharge).toHaveBeenCalledWith(
+      expect.objectContaining({ id: '00000000-0000-7000-8000-00000000000c' }),
+    );
   });
 
   it('a mismatched due date reports as `due_date` drift, not `amount`', async () => {
@@ -215,6 +229,41 @@ describe('DriftBanner — the only thing that makes a written charge disagreeing
       charge({ id: '00000000-0000-7000-8000-00000000000a', generationKey: '2026-01-01', amountCents: 100000, dueDate: '2026-01-01' }),
       charge({ id: '00000000-0000-7000-8000-00000000000b', generationKey: '2026-02-01', amountCents: 100000, dueDate: '2026-02-01', periodStart: '2026-02-01', periodEnd: '2026-02-28' }),
       charge({ id: '00000000-0000-7000-8000-00000000000d', generationKey: null, type: 'late_fee', source: 'manual', amountCents: 5000, dueDate: '2026-01-10' }),
+    ]);
+
+    renderBanner(lease);
+
+    await waitFor(() => expect(screen.queryByText(/charges need review/i)).not.toBeInTheDocument());
+  });
+
+  it('a corrected period stays silent, never `missing` forever — the voided original still occupies its key', async () => {
+    // Contract commit d09f11a ("Stop reporting a corrected period as missing
+    // forever"): `charge_generation_uq` has no predicate on `voided_at`, so the
+    // generator can NEVER refill this key — a "Run generation" action here would be
+    // guaranteed to write nothing. This requires `includeVoided: true` on the
+    // banner's own request (api.ts) to see the voided row at all; regress that flag
+    // back to `false` and this test fails because January reports `missing`.
+    const lease = baseLease();
+    const voidedOriginal = charge({
+      id: '00000000-0000-7000-8000-00000000000e',
+      generationKey: '2026-01-01',
+      amountCents: 90000,
+      dueDate: '2026-01-01',
+      voidedAt: '2026-01-10T00:00:00.000Z',
+      voidedReason: 'Rent step corrected',
+    });
+    const successor = charge({
+      id: '00000000-0000-7000-8000-00000000000f',
+      generationKey: null,
+      source: 'manual',
+      amountCents: 100000,
+      dueDate: '2026-01-01',
+      supersedesChargeId: voidedOriginal.id,
+    });
+    stubFetch(lease.id, [
+      voidedOriginal,
+      successor,
+      charge({ id: '00000000-0000-7000-8000-00000000000b', generationKey: '2026-02-01', amountCents: 100000, dueDate: '2026-02-01', periodStart: '2026-02-01', periodEnd: '2026-02-28' }),
     ]);
 
     renderBanner(lease);

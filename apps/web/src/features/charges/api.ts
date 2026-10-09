@@ -59,16 +59,25 @@ export function useLeaseCharges(leaseId: string, filters: Partial<ChargeListQuer
 }
 
 /**
- * Every generated, non-voided rent charge for a lease, across every page.
+ * Every generated rent charge for a lease, VOIDED ONES INCLUDED, across every page.
  *
- * The drift banner (`diffChargesAgainstSchedule`) must see the WHOLE set or it
- * reports false "missing" rows for periods on a page it hasn't fetched yet — so
- * this walks pages until exhausted rather than rendering the first page alone.
- * Bounded by `MAX_SCHEDULE_PERIODS` (600; at most ~6 pages at the API's max page
- * size of 100), so this always terminates.
+ * `includeVoided: true` here is load-bearing, not a default left alone.
+ * `diffChargesAgainstSchedule` needs voided rows to tell an occupied generation key
+ * from a genuinely missing one — `charge_generation_uq` has no predicate on
+ * `voided_at`, so a voided row's key can never be refilled by the generator, and a
+ * period whose only row is voided is *handled*, not missing. Request
+ * `includeVoided: false` here and every corrected period reports `missing` forever,
+ * offering a "Run generation" action guaranteed to write nothing — see
+ * `diffChargesAgainstSchedule`'s own doc comment and `docs/PLAN-PHASE3A.md`.
+ * `api.includeVoided.test.ts` pins this.
+ *
+ * The drift banner must also see the WHOLE set or it reports false "missing" rows
+ * for periods on a page it hasn't fetched yet — so this walks pages until exhausted
+ * rather than rendering the first page alone. Bounded by `MAX_SCHEDULE_PERIODS`
+ * (600; at most ~6 pages at the API's max page size of 100), so this terminates.
  */
 export function useAllGeneratedRentCharges(leaseId: string) {
-  const filters: Partial<ChargeListQuery> = { type: 'rent', includeVoided: false, limit: 100 };
+  const filters: Partial<ChargeListQuery> = { type: 'rent', includeVoided: true, limit: 100 };
   const query = useInfiniteQuery<ChargeList, ApiClientError>({
     queryKey: chargesKeys.leaseList(leaseId, filters),
     queryFn: ({ pageParam, signal }) =>
