@@ -20,6 +20,7 @@ export * from './invite.js';
 export * from './me.js';
 export * from './lease.js';
 export * from './charge.js';
+export * from './charge.fixtures.js';
 export * from './portal.js';
 export * from './unit.js';
 export * from './routes.js';

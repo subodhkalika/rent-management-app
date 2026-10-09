@@ -75,6 +75,9 @@ function invalidateLease(queryClient: ReturnType<typeof useQueryClient>, updated
   // Unit occupancy and property unit counts can change on activate/end/renew.
   void queryClient.invalidateQueries({ queryKey: ['units'] });
   void queryClient.invalidateQueries({ queryKey: ['properties'] });
+  // Activate and end both run the generator synchronously (docs/PLAN-PHASE3A.md
+  // §0 decision 10) — the Charges tab's data is stale the instant either succeeds.
+  void queryClient.invalidateQueries({ queryKey: ['charges'] });
 }
 
 export function useCreateLease() {

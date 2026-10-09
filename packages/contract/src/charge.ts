@@ -235,8 +235,15 @@ export type ChargeDrift = z.infer<typeof chargeDrift>;
 /**
  * Compare the rent charges that exist against the schedule as it stands now.
  *
- * Pass only generated, non-voided rent charges: a manual charge has no generation key
- * and a voided one is a deliberate decision, so neither is drift.
+ * Pass EVERY generated rent charge for the lease, **including voided ones**. That is
+ * not an oversight in the caller: a voided row still occupies its generation key —
+ * `charge_generation_uq` has no predicate on `voided_at`, deliberately, so the
+ * generator can never resurrect a charge somebody chose to void. A period whose only
+ * row is voided is therefore *handled*, not missing, and reporting it as missing
+ * would offer a "run generation" action that is guaranteed to write nothing.
+ *
+ * Manual charges may be passed or not; they have no generation key, so they are never
+ * drift either way.
  *
  * The four kinds and what each means to a landlord:
  *   amount / due_date — written before a change; review and supersede if it matters
@@ -249,9 +256,14 @@ export function diffChargesAgainstSchedule(input: {
   charges: readonly Charge[];
   planned: readonly PlannedCharge[];
 }): ChargeDrift[] {
-  const byKey = new Map<string, Charge>();
+  /** Keys any row holds, voided included — i.e. keys the generator can never fill. */
+  const occupied = new Set<string>();
+  /** Keys with a row that still stands, and is therefore comparable. */
+  const liveByKey = new Map<string, Charge>();
   for (const c of input.charges) {
-    if (c.generationKey !== null) byKey.set(c.generationKey, c);
+    if (c.generationKey === null) continue;
+    occupied.add(c.generationKey);
+    if (c.voidedAt === null) liveByKey.set(c.generationKey, c);
   }
 
   const out: ChargeDrift[] = [];
@@ -260,8 +272,13 @@ export function diffChargesAgainstSchedule(input: {
   for (const p of input.planned) {
     if (p.generationKey === null) continue;
     seen.add(p.generationKey);
-    const existing = byKey.get(p.generationKey);
+    const existing = liveByKey.get(p.generationKey);
     const expected = { amountCents: p.amountCents, dueDate: p.dueDate };
+
+    // Voided, with or without a successor: a deliberate decision, and a key the
+    // generator cannot reuse. Silent on purpose — a banner nobody can clear is noise
+    // that trains people to ignore the ones that matter.
+    if (!existing && occupied.has(p.generationKey)) continue;
 
     if (!existing) {
       out.push({ kind: 'missing', generationKey: p.generationKey, chargeId: null, actual: null, expected });
@@ -277,7 +294,7 @@ export function diffChargesAgainstSchedule(input: {
     }
   }
 
-  for (const [key, c] of byKey) {
+  for (const [key, c] of liveByKey) {
     if (seen.has(key)) continue;
     out.push({
       kind: 'unscheduled',

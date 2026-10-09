@@ -138,6 +138,17 @@ export function AppShell() {
               >
                 Leases
               </Link>
+              <Link
+                to="/charges"
+                className={cn(
+                  'transition-colors',
+                  location.pathname.startsWith('/charges')
+                    ? 'font-medium text-foreground'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                Charges
+              </Link>
             </nav>
           )}
 

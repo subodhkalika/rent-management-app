@@ -8,6 +8,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { formatCivilDate } from '@/lib/format-civil-date';
 import { leaseStatusVariant } from '@/features/leases/lease-ui';
 import { moveOutBillingCopy } from '@/features/leases/frequency-copy';
+import { PortalChargesPanel } from '@/features/charges/PortalChargesPanel';
 import { usePortalLease } from './api';
 
 export function PortalLeaseDetailPage() {
@@ -93,6 +94,8 @@ function LeaseContent({ lease }: { lease: NonNullable<ReturnType<typeof usePorta
           {moveOutBillingCopy(lease.moveOutBillingPolicy, lease.endDate, lease.calendar)}
         </p>
       </div>
+
+      <PortalChargesPanel leaseId={lease.id} calendar={lease.calendar} currency={lease.currency} />
     </>
   );
 }

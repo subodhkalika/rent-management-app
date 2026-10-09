@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { z } from 'zod';
 import {
   routes,
@@ -8,6 +8,8 @@ import {
   invitePreview,
   portalLease,
   portalLeaseDetail,
+  portalCharge,
+  paged,
   type PortalProfile,
   type UpdatePortalProfileBody,
   type AcceptInviteBody,
@@ -15,6 +17,7 @@ import {
   type InvitePreview,
   type PortalLease,
   type PortalLeaseDetail,
+  type IsoDate,
 } from '@rms/contract';
 import { ApiClientError, request } from '@/lib/api';
 
@@ -102,5 +105,45 @@ export function usePortalLease(id: string) {
     queryKey: portalLeasesKeys.detail(id),
     queryFn: ({ signal }) => request(routes.portal.lease(id), { schema: portalLeaseDetail, signal }),
     enabled: id.length > 0,
+  });
+}
+
+/* ---------- charges ---------- */
+
+export interface PortalChargeFilters {
+  from?: IsoDate;
+  to?: IsoDate;
+}
+
+const portalChargeList = paged(portalCharge);
+type PortalChargeList = z.infer<typeof portalChargeList>;
+
+function portalLeaseChargesUrl(leaseId: string, filters: PortalChargeFilters, cursor?: string) {
+  const params = new URLSearchParams();
+  if (filters.from) params.set('from', filters.from);
+  if (filters.to) params.set('to', filters.to);
+  if (cursor) params.set('cursor', cursor);
+  const qs = params.toString();
+  const base = routes.portal.leaseCharges(leaseId);
+  return qs ? `${base}?${qs}` : base;
+}
+
+/**
+ * The tenant's statement for one lease (docs/PLAN-PHASE3A.md §9.2). No totals are
+ * ever computed from this list — a sum with no payments against it changes meaning
+ * the instant 3b ships, and telling a tenant they owe an amount they have already
+ * paid is worse than showing nothing.
+ */
+export function usePortalLeaseCharges(leaseId: string, filters: PortalChargeFilters = {}) {
+  return useInfiniteQuery<PortalChargeList, ApiClientError>({
+    queryKey: ['portal', 'leases', leaseId, 'charges', filters] as const,
+    queryFn: ({ pageParam, signal }) =>
+      request(portalLeaseChargesUrl(leaseId, filters, pageParam as string | undefined), {
+        schema: portalChargeList,
+        signal,
+      }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    enabled: leaseId.length > 0,
   });
 }

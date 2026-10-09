@@ -129,7 +129,45 @@ export const chargeDriftFixtures: readonly ChargeDriftFixture[] = [
     }],
   },
   {
-    name: 'D7 a manual charge is never drift — it has no generation key to compare',
+    name: 'D7a a corrected period is silent — the voided original still holds the key',
+    // Found by frontend-dev while building the banner. Before this, the successor's
+    // null key made the period look uncovered and it reported `missing` forever,
+    // offering a "run generation" that the voided original's key guarantees will
+    // write nothing. Callers pass voided rows precisely so this case is visible.
+    charges: [
+      written({ id: ID1, generationKey: '2026-04-01', voidedAt: '2026-04-02T00:00:00.000Z', voidedReason: 'Wrong amount' }),
+      written({ id: ID2, generationKey: null, source: 'manual', supersedesChargeId: ID1, amountCents: 90000 }),
+    ],
+    planned: [planned({ generationKey: '2026-04-01' })],
+    expected: [],
+  },
+  {
+    name: 'D7b a period voided with NO successor is also silent — a deliberate hole',
+    charges: [written({ id: ID1, generationKey: '2026-04-01', voidedAt: '2026-04-02T00:00:00.000Z', voidedReason: 'Waived this month' })],
+    planned: [planned({ generationKey: '2026-04-01' })],
+    expected: [],
+  },
+  {
+    name: 'D7c a voided row is never compared — only the live one drifts',
+    charges: [
+      written({ id: ID2, generationKey: '2026-04-01', voidedAt: '2026-04-02T00:00:00.000Z', amountCents: 999999 }),
+      written({ id: ID1, generationKey: '2026-04-01', amountCents: 100000 }),
+    ],
+    planned: [planned({ generationKey: '2026-04-01', amountCents: 110000 })],
+    expected: [{
+      kind: 'amount', generationKey: '2026-04-01', chargeId: ID1,
+      actual: { amountCents: 100000, dueDate: '2026-04-01' },
+      expected: { amountCents: 110000, dueDate: '2026-04-01' },
+    }],
+  },
+  {
+    name: 'D7d an unscheduled period that was voided is silent — nothing left to act on',
+    charges: [written({ id: ID1, generationKey: '2026-06-01', voidedAt: '2026-05-01T00:00:00.000Z' })],
+    planned: [],
+    expected: [],
+  },
+  {
+    name: 'D8 a manual charge is never drift — it has no generation key to compare',
     charges: [written({ id: ID1, generationKey: null, source: 'manual', type: 'late_fee' })],
     planned: [],
     expected: [],

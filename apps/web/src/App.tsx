@@ -6,6 +6,7 @@ import { TenantDetailPage } from '@/features/tenants/TenantDetailPage';
 import { LeasesListPage } from '@/features/leases/LeasesListPage';
 import { LeaseDetailPage } from '@/features/leases/LeaseDetailPage';
 import { CreateLeasePage } from '@/features/leases/wizard/CreateLeasePage';
+import { ChargesListPage } from '@/features/charges/ChargesListPage';
 import { PortalLeasesListPage } from '@/features/portal/PortalLeasesListPage';
 import { PortalLeaseDetailPage } from '@/features/portal/PortalLeaseDetailPage';
 import { SignInPage } from '@/features/auth/SignInPage';
@@ -58,6 +59,7 @@ export function App() {
             <Route path="/leases" element={<LeasesListPage />} />
             <Route path="/leases/new" element={<CreateLeasePage />} />
             <Route path="/leases/:id" element={<LeaseDetailPage />} />
+            <Route path="/charges" element={<ChargesListPage />} />
           </Route>
         </Route>
 

@@ -17,6 +17,7 @@ import { leaseStatusVariant } from './lease-ui';
 import { moveOutBillingCopy } from './frequency-copy';
 import { LeaseRosterPanel } from './LeaseRosterPanel';
 import { LeaseChainTimeline } from './LeaseChainTimeline';
+import { ChargesPanel } from '@/features/charges/ChargesPanel';
 import { ActivateLeaseDialog } from './ActivateLeaseDialog';
 import { CancelLeaseDialog } from './CancelLeaseDialog';
 import { EndLeaseDialog } from './EndLeaseDialog';
@@ -109,10 +110,14 @@ export function LeaseDetailPage() {
           <Tabs defaultValue="roster" className="mt-6">
             <TabsList>
               <TabsTrigger value="roster">Roster</TabsTrigger>
+              <TabsTrigger value="charges">Charges</TabsTrigger>
               <TabsTrigger value="chain">Chain</TabsTrigger>
             </TabsList>
             <TabsContent value="roster">
               <LeaseRosterPanel lease={lease} />
+            </TabsContent>
+            <TabsContent value="charges">
+              <ChargesPanel lease={lease} />
             </TabsContent>
             <TabsContent value="chain">
               <LeaseChainTimeline lease={lease} />
