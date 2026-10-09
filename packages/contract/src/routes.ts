@@ -63,6 +63,8 @@ export const routes = {
   leases: {
     charges: (leaseId: string) => `/v1/leases/${leaseId}/charges`,
     generateCharges: (leaseId: string) => `/v1/leases/${leaseId}/charges/generate`,
+    /** Bill one period early, on purpose — a tenant paying next month's rent now. */
+    generateNextPeriod: (leaseId: string) => `/v1/leases/${leaseId}/charges/generate-next-period`,
     /** Nested under the lease so the resolve is (org, lease, charge) — a bare charge
      *  id would leave it ambiguous whether it had been scoped. */
     voidCharge: (leaseId: string, chargeId: string) => `/v1/leases/${leaseId}/charges/${chargeId}/void`,

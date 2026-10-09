@@ -408,7 +408,22 @@ export function rentForPeriodStart(terms: LeaseBillingTerms, periodStart: IsoDat
 }
 
 export const MAX_SCHEDULE_PERIODS = 600;
-export const GENERATION_LOOKAHEAD_DAYS = 31;
+/**
+ * How far ahead the scheduled run writes charges: not at all.
+ *
+ * A period's charge is created on that period's first day, never before. A charge is
+ * a debt document, and one that exists for a month which has not started reads as
+ * money already owed — it inflates every total and makes an activation preview look
+ * alarming for no reason.
+ *
+ * Billing further ahead is a deliberate act, not a default: see
+ * `chargesThroughNextPeriod`, which the landlord triggers when a tenant wants to pay
+ * early.
+ *
+ * Kept as a named constant rather than inlined because the value is a decision, and
+ * Phase 4 is expected to make it configurable per organisation.
+ */
+export const GENERATION_LOOKAHEAD_DAYS = 0;
 export const DEPOSIT_GENERATION_KEY = 'deposit';
 export const OPENING_BALANCE_GENERATION_KEY = 'opening';
 
@@ -678,6 +693,32 @@ export function chargesDueForGeneration(terms: LeaseBillingTerms, today: IsoDate
 /* ======================================================================== */
 /* validation, shared with the contract's superRefine                       */
 /* ======================================================================== */
+
+/**
+ * Everything `chargesDueForGeneration` would write today, PLUS the period after the
+ * one `today` falls in — and nothing beyond it.
+ *
+ * This is the landlord billing one month early on purpose: a tenant turns up on 27
+ * Ashoj wanting to pay Kartik's rent before the scheduled run would create it. The
+ * horizon is derived from the lease's own period grid rather than a date somebody
+ * types, so the result stays a function of (terms, today) and repeating the action
+ * writes nothing new.
+ *
+ * Exactly one period, deliberately. "Bill the next year upfront" freezes twelve
+ * periods' terms against a rent that may still change, which is a different feature
+ * with different consequences.
+ */
+export function chargesThroughNextPeriod(terms: LeaseBillingTerms, today: IsoDate): PlannedCharge[] {
+  const anchor = maxIsoDate(terms.startDate, terms.ledgerStartDate);
+  // Before the lease's own grid begins there is no "next" period to reach into; the
+  // ordinary horizon already covers the opening stub.
+  if (compareIsoDate(today, anchor) < 0) return chargesDueForGeneration(terms, today);
+
+  const current = periodContaining(terms.frequency, anchor, today, terms.calendar);
+  // One day past the current period's end lands inside the next one, whatever its
+  // length — no month arithmetic, and correct in any calendar.
+  return buildSchedule(terms, addDays(current.end, 1));
+}
 
 export function validateBillingTerms(terms: LeaseBillingTerms): string | null {
   if (terms.billingDay > MAX_BILLING_DAY[terms.calendar]) {

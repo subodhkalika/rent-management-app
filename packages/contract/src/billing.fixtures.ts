@@ -715,13 +715,19 @@ const f6TermsForGeneration: LeaseBillingTerms = {
 };
 
 export const generationFixtures: readonly GenerationFixture[] = [
-  // F11 — monthly, terms of F1.
-  { name: 'F11 monthly today=2026-02-28', terms: f1TermsForGeneration, today: '2026-02-28', expectedKeys: ['2026-01-01', '2026-02-01', '2026-03-01'] },
-  { name: 'F11 monthly today=2026-03-01', terms: f1TermsForGeneration, today: '2026-03-01', expectedKeys: ['2026-01-01', '2026-02-01', '2026-03-01', '2026-04-01'] },
-  { name: 'F11 monthly today=2026-03-20', terms: f1TermsForGeneration, today: '2026-03-20', expectedKeys: ['2026-01-01', '2026-02-01', '2026-03-01', '2026-04-01'] },
-  // F12 — yearly, terms of F6.
-  { name: 'F12 yearly today=2027-02-05', terms: f6TermsForGeneration, today: '2027-02-05', expectedKeys: ['2026-04-01'] },
-  { name: 'F12 yearly today=2027-03-05', terms: f6TermsForGeneration, today: '2027-03-05', expectedKeys: ['2026-04-01', '2027-04-01'] },
+  // F11 — monthly, terms of F1. A period's charge appears ON its first day and not
+  // a day earlier: the pair at 2026-02-28 / 2026-03-01 is the boundary itself, and
+  // it is the reason this fixture exists rather than a round-numbered date.
+  { name: 'F11 monthly today=2026-02-28 — March has not started, so March is absent', terms: f1TermsForGeneration, today: '2026-02-28', expectedKeys: ['2026-01-01', '2026-02-01'] },
+  { name: 'F11 monthly today=2026-03-01 — the first morning of March, and there it is', terms: f1TermsForGeneration, today: '2026-03-01', expectedKeys: ['2026-01-01', '2026-02-01', '2026-03-01'] },
+  { name: 'F11 monthly today=2026-03-20 — mid-period adds nothing further', terms: f1TermsForGeneration, today: '2026-03-20', expectedKeys: ['2026-01-01', '2026-02-01', '2026-03-01'] },
+  { name: 'F11 monthly today=2026-03-31 — still nothing, right up to the last day', terms: f1TermsForGeneration, today: '2026-03-31', expectedKeys: ['2026-01-01', '2026-02-01', '2026-03-01'] },
+  // F12 — yearly. The same rule at a twelve-month cadence, where billing a period
+  // early would mean a whole year of rent appearing before the year began.
+  { name: 'F12 yearly today=2027-02-05 — next year is months away', terms: f6TermsForGeneration, today: '2027-02-05', expectedKeys: ['2026-04-01'] },
+  { name: 'F12 yearly today=2027-03-05 — still the old year, still one charge', terms: f6TermsForGeneration, today: '2027-03-05', expectedKeys: ['2026-04-01'] },
+  { name: 'F12 yearly today=2027-03-31 — the day before, and it has not appeared', terms: f6TermsForGeneration, today: '2027-03-31', expectedKeys: ['2026-04-01'] },
+  { name: 'F12 yearly today=2027-04-01 — the new year starts, so the charge exists', terms: f6TermsForGeneration, today: '2027-04-01', expectedKeys: ['2026-04-01', '2027-04-01'] },
 ];
 
 /* ======================================================================== */
