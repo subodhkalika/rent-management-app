@@ -111,4 +111,49 @@ describe('OnboardingPage', () => {
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     expect(screen.queryByText('Properties page')).not.toBeInTheDocument();
   });
+
+  it('derives the slug itself — the form never asks for one', () => {
+    expect(screen.queryByLabelText(/url/i)).not.toBeInTheDocument();
+  });
+
+  it("retries with a suffix when a stranger's organization already holds the slug", async () => {
+    // The slug is globally unique but invisible, so two unrelated landlords both
+    // naming their organization "Mero Ghar" used to mean the second was told the
+    // URL was taken — blocked by a name they cannot see and had no part in.
+    const slugs: string[] = [];
+    create.mockImplementation(async ({ slug }: { slug: string }) => {
+      slugs.push(slug);
+      return slugs.length === 1
+        ? { data: null, error: { code: 'ORGANIZATION_SLUG_ALREADY_TAKEN' } }
+        : { data: { id: 'org_2', name: 'Mero Ghar', slug }, error: null };
+    });
+    setActive.mockResolvedValue({ data: { id: 'org_2' }, error: null });
+
+    const user = userEvent.setup();
+    renderPage();
+    await user.type(screen.getByLabelText(/organization name/i), 'Mero Ghar');
+    await user.click(screen.getByRole('button', { name: /create organization/i }));
+
+    expect(await screen.findByText('Properties page')).toBeInTheDocument();
+    expect(slugs[0]).toBe('mero-ghar');
+    expect(slugs[1]).toMatch(/^mero-ghar-/);
+  });
+
+  it('creates an organization whose name is entirely non-Latin', async () => {
+    // "मेरो घर" slugifies to nothing, which the old required URL field rejected.
+    const slugs: string[] = [];
+    create.mockImplementation(async ({ slug }: { slug: string }) => {
+      slugs.push(slug);
+      return { data: { id: 'org_3', name: 'मेरो घर', slug }, error: null };
+    });
+    setActive.mockResolvedValue({ data: { id: 'org_3' }, error: null });
+
+    const user = userEvent.setup();
+    renderPage();
+    await user.type(screen.getByLabelText(/organization name/i), 'मेरो घर');
+    await user.click(screen.getByRole('button', { name: /create organization/i }));
+
+    expect(await screen.findByText('Properties page')).toBeInTheDocument();
+    expect(slugs[0]).toBe('org');
+  });
 });

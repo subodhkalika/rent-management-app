@@ -38,13 +38,12 @@ export const resetPasswordSchema = z
   });
 export type ResetPasswordValues = z.infer<typeof resetPasswordSchema>;
 
-const slugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-
+/**
+ * No slug. Better Auth needs one, but nothing here shows it, so it is derived at
+ * submit time rather than asked for — see `slugify.ts` for why asking was worse
+ * than guessing.
+ */
 export const onboardingSchema = z.object({
-  name: z.string().min(1, 'Organization name is required'),
-  slug: z
-    .string()
-    .min(1, 'URL is required')
-    .regex(slugPattern, 'Use lowercase letters, numbers and hyphens only'),
+  name: z.string().trim().min(1, 'Organization name is required').max(200),
 });
 export type OnboardingValues = z.infer<typeof onboardingSchema>;

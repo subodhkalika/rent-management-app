@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -6,7 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { organization } from '@/lib/auth-client';
 import { onboardingSchema, type OnboardingValues } from './schemas';
 import { mapOnboardingError } from './auth-errors';
-import { slugify } from './slugify';
+import { organizationSlugFor, withSuffix } from './slugify';
 import { meKeys } from '@/features/me/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -23,30 +23,31 @@ import {
 export function OnboardingPage() {
   const navigate = useNavigate();
   const [formError, setFormError] = useState<string | null>(null);
-  // Once the user edits the slug directly, stop overwriting it from the name.
-  const slugEditedRef = useRef(false);
 
   const form = useForm<OnboardingValues>({
     resolver: zodResolver(onboardingSchema),
-    defaultValues: { name: '', slug: '' },
+    defaultValues: { name: '' },
   });
 
   const queryClient = useQueryClient();
 
-  const nameValue = form.watch('name');
-  useEffect(() => {
-    if (slugEditedRef.current) return;
-    form.setValue('slug', slugify(nameValue), { shouldValidate: form.formState.isSubmitted });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nameValue]);
-
   const onSubmit = form.handleSubmit(async (values) => {
     setFormError(null);
 
-    const { data: org, error: createError } = await organization.create({
+    // The slug is derived, not asked for. On the one error that is about the slug
+    // rather than about this person — someone unrelated already has it — retry once
+    // with a disambiguated variant instead of showing them a wall they cannot climb.
+    let attempt = await organization.create({
       name: values.name,
-      slug: values.slug,
+      slug: organizationSlugFor(values.name),
     });
+    if (attempt.error?.code === 'ORGANIZATION_SLUG_ALREADY_TAKEN') {
+      attempt = await organization.create({
+        name: values.name,
+        slug: withSuffix(organizationSlugFor(values.name)),
+      });
+    }
+    const { data: org, error: createError } = attempt;
     if (createError || !org) {
       setFormError(mapOnboardingError(createError?.code));
       return;
@@ -94,25 +95,6 @@ export function OnboardingPage() {
                     <FormLabel>Organization name</FormLabel>
                     <FormControl>
                       <Input placeholder="Acme Property Management" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="slug"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>URL</FormLabel>
-                    <FormControl>
-                      <Input
-                        {...field}
-                        onChange={(e) => {
-                          slugEditedRef.current = true;
-                          field.onChange(e);
-                        }}
-                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
