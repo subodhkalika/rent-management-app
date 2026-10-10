@@ -85,6 +85,7 @@ const unitRow: UnitRow = {
   orgId: 'org_1',
   propertyId: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e0f',
   label: '2B',
+  type: 'flat',
   bedrooms: 2,
   bathrooms: 1.5,
   squareFeet: 900,
@@ -147,6 +148,28 @@ describe('mapUnit', () => {
     const mapped = mapUnit(unitRow) as Record<string, unknown>;
     expect(mapped.orgId).toBeUndefined();
     expect(mapped.deletedAt).toBeUndefined();
+  });
+
+  it('round-trips a shutter with no bedroom or bathroom count as null, not zero', () => {
+    const shutterRow: UnitRow = {
+      ...unitRow,
+      type: 'shutter',
+      bedrooms: null,
+      bathrooms: null,
+      squareFeet: null,
+    };
+    const mapped = mapUnit(shutterRow);
+    expect(mapped.type).toBe('shutter');
+    expect(mapped.bedrooms).toBeNull();
+    expect(mapped.bathrooms).toBeNull();
+    expect(unitSchema.safeParse(mapped).success).toBe(true);
+  });
+
+  it('keeps an existing flat\'s bedroom and bathroom counts', () => {
+    const mapped = mapUnit(unitRow);
+    expect(mapped.type).toBe('flat');
+    expect(mapped.bedrooms).toBe(2);
+    expect(mapped.bathrooms).toBe(1.5);
   });
 });
 

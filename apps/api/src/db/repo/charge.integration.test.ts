@@ -97,6 +97,7 @@ describe.skipIf(!DATABASE_URL)('charge.ts orchestration functions — live Postg
 
     const unitRow = await unitRepo.createUnit(orgId, db, propertyId, {
       label: '1A',
+      type: 'flat',
       bedrooms: 1,
       bathrooms: 1,
       marketRentCents: 100000,

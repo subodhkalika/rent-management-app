@@ -60,6 +60,7 @@ describe.skipIf(!DATABASE_URL)('portal/lease.ts — live Postgres', () => {
 
     const unitRow = await unitRepo.createUnit(orgId, db, propertyId, {
       label: '1A',
+      type: 'flat',
       bedrooms: 1,
       bathrooms: 1,
       marketRentCents: 100000,

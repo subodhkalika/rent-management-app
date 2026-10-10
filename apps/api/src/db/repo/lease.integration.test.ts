@@ -114,6 +114,7 @@ describe.skipIf(!DATABASE_URL)('lease.ts orchestration functions — live Postgr
 
     const unitRow = await unitRepo.createUnit(orgId, db, propertyId, {
       label: '1A',
+      type: 'flat',
       bedrooms: 1,
       bathrooms: 1,
       marketRentCents: 100000,
@@ -839,6 +840,7 @@ describe.skipIf(!DATABASE_URL)('lease.ts orchestration functions — live Postgr
       });
       const bsUnit = await unitRepo.createUnit(orgId, db, bsProperty.id, {
         label: 'BS1',
+        type: 'flat',
         bedrooms: 1,
         bathrooms: 1,
         marketRentCents: 100000,

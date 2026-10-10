@@ -64,6 +64,7 @@ describe('getUnitQuery', () => {
 });
 
 const createBody = {
+  type: 'flat' as const,
   label: '2B',
   bedrooms: 2,
   bathrooms: 1.5,

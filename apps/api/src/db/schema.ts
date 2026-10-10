@@ -133,6 +133,15 @@ export const propertyTypeEnum = pgEnum('property_type', [
 
 export const unitStatusEnum = pgEnum('unit_status', ['vacant', 'occupied', 'unavailable']);
 
+// What kind of thing is being let. Mirrors `unitType` in packages/contract/src/unit.ts.
+// 'flat' is the backfill value for every row that existed before this column: the
+// old schema REQUIRED bedrooms and bathrooms, which only a residential flat (or a
+// house, but the two were never distinguished) would have been asked for, so every
+// existing row already is one.
+export const unitTypeEnum = pgEnum('unit_type', [
+  'flat', 'room', 'house', 'shutter', 'garage', 'office', 'other',
+]);
+
 // Whether an early move-out stops rent. Mirrors `moveOutBillingPolicy` in
 // packages/contract/src/billing.ts. `bill_full_term` is the default because it is
 // the behaviour every existing property already has — this migration is a semantic
@@ -199,9 +208,13 @@ export const unit = pgTable(
     propertyId: uuid().notNull().references(() => property.id, { onDelete: 'cascade' }),
 
     label: text().notNull(),
-    bedrooms: integer().notNull().default(0),
+    // 'flat' default backfills every pre-existing row — see unitTypeEnum above.
+    type: unitTypeEnum().notNull().default('flat'),
+    // Nullable: meaningless for a shutter, a garage, a single room. A flat or house
+    // still asks for both, but nothing below the application layer requires it.
+    bedrooms: integer(),
     // real, not integer: half-baths are universal (1.5 bath).
-    bathrooms: real().notNull().default(0),
+    bathrooms: real(),
     squareFeet: integer(),
 
     // Money is integer minor units in a bigint. mode:'number' is safe here because

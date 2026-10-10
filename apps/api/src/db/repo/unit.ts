@@ -95,8 +95,9 @@ export function createUnitQuery(
     orgId,
     propertyId,
     label: data.label,
-    bedrooms: data.bedrooms,
-    bathrooms: data.bathrooms,
+    type: data.type,
+    bedrooms: data.bedrooms ?? null,
+    bathrooms: data.bathrooms ?? null,
     squareFeet: data.squareFeet ?? null,
     marketRentCents: data.marketRentCents,
     currency: data.currency,
@@ -136,8 +137,9 @@ export async function createUnit(
 export function updateUnitQuery(orgId: string, db: Database, id: string, data: UpdateUnitBody) {
   const patch: Partial<typeof unit.$inferInsert> = { updatedAt: new Date() };
   if (data.label !== undefined) patch.label = data.label;
-  if (data.bedrooms !== undefined) patch.bedrooms = data.bedrooms;
-  if (data.bathrooms !== undefined) patch.bathrooms = data.bathrooms;
+  if (data.type !== undefined) patch.type = data.type;
+  if (data.bedrooms !== undefined) patch.bedrooms = data.bedrooms ?? null;
+  if (data.bathrooms !== undefined) patch.bathrooms = data.bathrooms ?? null;
   if (data.squareFeet !== undefined) patch.squareFeet = data.squareFeet ?? null;
   if (data.marketRentCents !== undefined) patch.marketRentCents = data.marketRentCents;
   if (data.currency !== undefined) patch.currency = data.currency;

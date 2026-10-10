@@ -161,6 +161,7 @@ export function mapUnit(row: UnitRow): Unit {
     id: row.id,
     propertyId: row.propertyId,
     label: row.label,
+    type: row.type,
     bedrooms: row.bedrooms,
     bathrooms: row.bathrooms,
     squareFeet: row.squareFeet,

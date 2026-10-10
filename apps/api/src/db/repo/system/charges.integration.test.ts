@@ -49,6 +49,7 @@ describe.skipIf(!DATABASE_URL)('listLeasesForGeneration — live Postgres', () =
 
     const unitRow = await unitRepo.createUnit(orgId, db, propertyId, {
       label: '1A',
+      type: 'flat',
       bedrooms: 1,
       bathrooms: 1,
       marketRentCents: 100000,
@@ -106,6 +107,7 @@ describe.skipIf(!DATABASE_URL)('listLeasesForGeneration — live Postgres', () =
     // unit, and the previous test already left one active on `unitId`.
     const secondUnit = await unitRepo.createUnit(orgId, db, propertyId, {
       label: '1B',
+      type: 'flat',
       bedrooms: 1,
       bathrooms: 1,
       marketRentCents: 100000,
