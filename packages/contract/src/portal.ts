@@ -161,3 +161,51 @@ export const portalCharge = z.object({
   supersedesChargeId: uuid.nullable(),
 });
 export type PortalCharge = z.infer<typeof portalCharge>;
+
+/* ---------- payments and balance ---------- */
+
+/**
+ * A payment as the tenant sees it.
+ *
+ * `note` is the most important omission: it is the landlord's private margin —
+ * "paid late again, chase in person" — and it is the one mutable field on the table
+ * precisely because it is not a document anyone else reads.
+ *
+ * `reference` IS kept. It is the tenant's own bank reference, and withholding the one
+ * field that lets them match a line to their statement would make the page useless.
+ */
+export const portalPayment = z.object({
+  id: uuid,
+  leaseId: uuid,
+  kind: z.enum(['payment', 'refund']),
+  method: z.string(),
+  amountCents: money,
+  currency,
+  receivedOn: isoDate,
+  reference: z.string().nullable(),
+  isVoided: z.boolean(),
+  /** So "$1,200 replaced by $1,020" reads as one correction rather than two payments. */
+  supersedesPaymentId: uuid.nullable(),
+});
+export type PortalPayment = z.infer<typeof portalPayment>;
+
+/**
+ * No signed balance, deliberately. A tenant reading "-500" has to work out which way
+ * the minus points. `outstandingCents` and `creditCents` are mutually exclusive and
+ * both non-negative, so the page says either "You owe $500" or "You are $500 in
+ * credit" and never has to render a sign.
+ */
+export const portalBalance = z.object({
+  leaseId: uuid,
+  currency,
+  asOfDate: isoDate,
+  outstandingCents: z.number().int().nonnegative(),
+  /** The same number arrears uses, without the word. */
+  overdueCents: z.number().int().nonnegative(),
+  depositOutstandingCents: z.number().int().nonnegative(),
+  creditCents: z.number().int().nonnegative(),
+  /** What they opened the page to find out. */
+  nextDueDate: isoDate.nullable(),
+  nextDueAmountCents: z.number().int().nonnegative().nullable(),
+});
+export type PortalBalance = z.infer<typeof portalBalance>;

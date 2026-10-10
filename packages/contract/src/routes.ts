@@ -32,11 +32,17 @@ export const routes = {
     /** Portfolio-wide, across every property. */
     list: () => '/v1/charges',
   },
+  arrears: {
+    list: () => '/v1/arrears',
+  },
   internal: {
     /** Public: a watcher with no credentials must be able to see the cron is alive. */
     cronHealth: () => '/v1/internal/cron/health',
   },
   portal: {
+    leasePayments: (leaseId: string) => `/v1/portal/leases/${leaseId}/payments`,
+    leaseBalance: (leaseId: string) => `/v1/portal/leases/${leaseId}/balance`,
+
     leaseCharges: (leaseId: string) => `/v1/portal/leases/${leaseId}/charges`,
 
     /** Public: the caller is not signed in yet when accepting a fresh invite. */
@@ -61,6 +67,14 @@ export const routes = {
     remove: (id: string) => `/v1/units/${id}`,
   },
   leases: {
+    payments: (leaseId: string) => `/v1/leases/${leaseId}/payments`,
+    voidPayment: (leaseId: string, paymentId: string) => `/v1/leases/${leaseId}/payments/${paymentId}/void`,
+    correctPayment: (leaseId: string, paymentId: string) => `/v1/leases/${leaseId}/payments/${paymentId}/correct`,
+    updatePaymentNote: (leaseId: string, paymentId: string) => `/v1/leases/${leaseId}/payments/${paymentId}`,
+    /** The whole tenancy, interleaved — charges and payments with a running balance. */
+    ledger: (leaseId: string) => `/v1/leases/${leaseId}/ledger`,
+    balance: (leaseId: string) => `/v1/leases/${leaseId}/balance`,
+
     charges: (leaseId: string) => `/v1/leases/${leaseId}/charges`,
     generateCharges: (leaseId: string) => `/v1/leases/${leaseId}/charges/generate`,
     /** Bill one period early, on purpose — a tenant paying next month's rent now. */
