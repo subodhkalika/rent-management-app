@@ -149,6 +149,17 @@ export function AppShell() {
               >
                 Charges
               </Link>
+              <Link
+                to="/arrears"
+                className={cn(
+                  'transition-colors',
+                  location.pathname.startsWith('/arrears')
+                    ? 'font-medium text-foreground'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                Arrears
+              </Link>
             </nav>
           )}
 

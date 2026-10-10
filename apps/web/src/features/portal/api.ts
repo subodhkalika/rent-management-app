@@ -9,6 +9,8 @@ import {
   portalLease,
   portalLeaseDetail,
   portalCharge,
+  portalPayment,
+  portalBalance,
   paged,
   type PortalProfile,
   type UpdatePortalProfileBody,
@@ -17,6 +19,7 @@ import {
   type InvitePreview,
   type PortalLease,
   type PortalLeaseDetail,
+  type PortalBalance,
   type IsoDate,
 } from '@rms/contract';
 import { ApiClientError, request } from '@/lib/api';
@@ -144,6 +147,57 @@ export function usePortalLeaseCharges(leaseId: string, filters: PortalChargeFilt
       }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    enabled: leaseId.length > 0,
+  });
+}
+
+/* ---------- payments and balance ---------- */
+
+export interface PortalPaymentFilters {
+  from?: IsoDate;
+  to?: IsoDate;
+}
+
+const portalPaymentList = paged(portalPayment);
+type PortalPaymentList = z.infer<typeof portalPaymentList>;
+
+function portalLeasePaymentsUrl(leaseId: string, filters: PortalPaymentFilters, cursor?: string) {
+  const params = new URLSearchParams();
+  if (filters.from) params.set('from', filters.from);
+  if (filters.to) params.set('to', filters.to);
+  if (cursor) params.set('cursor', cursor);
+  const qs = params.toString();
+  const base = routes.portal.leasePayments(leaseId);
+  return qs ? `${base}?${qs}` : base;
+}
+
+/** The tenant's own payment history for this lease — their statement's other
+ *  half, alongside `usePortalLeaseCharges`. Co-tenants see each other's payments
+ *  (V1 §1.4: joint liability for one obligation). */
+export function usePortalLeasePayments(leaseId: string, filters: PortalPaymentFilters = {}) {
+  return useInfiniteQuery<PortalPaymentList, ApiClientError>({
+    queryKey: ['portal', 'leases', leaseId, 'payments', filters] as const,
+    queryFn: ({ pageParam, signal }) =>
+      request(portalLeasePaymentsUrl(leaseId, filters, pageParam as string | undefined), {
+        schema: portalPaymentList,
+        signal,
+      }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    enabled: leaseId.length > 0,
+  });
+}
+
+/**
+ * The balance headline — "You owe $X" or "You are $X in credit", never a signed
+ * number (docs/PLAN-PHASE3B.md §7.2). `overdueCents` is the word "arrears"
+ * avoided; `creditCents` is reported only when this tenant is linked to the
+ * chain's latest lease, zeroed otherwise — both decided server-side.
+ */
+export function usePortalLeaseBalance(leaseId: string) {
+  return useQuery<PortalBalance, ApiClientError>({
+    queryKey: ['portal', 'leases', leaseId, 'balance'] as const,
+    queryFn: ({ signal }) => request(routes.portal.leaseBalance(leaseId), { schema: portalBalance, signal }),
     enabled: leaseId.length > 0,
   });
 }

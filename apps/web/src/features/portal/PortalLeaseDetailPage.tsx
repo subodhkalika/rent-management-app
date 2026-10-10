@@ -9,6 +9,8 @@ import { formatCivilDate } from '@/lib/format-civil-date';
 import { leaseStatusVariant } from '@/features/leases/lease-ui';
 import { moveOutBillingCopy } from '@/features/leases/frequency-copy';
 import { PortalChargesPanel } from '@/features/charges/PortalChargesPanel';
+import { PortalBalanceHeadline } from '@/features/payments/PortalBalanceHeadline';
+import { PortalPaymentsPanel } from '@/features/payments/PortalPaymentsPanel';
 import { usePortalLease } from './api';
 
 export function PortalLeaseDetailPage() {
@@ -95,7 +97,12 @@ function LeaseContent({ lease }: { lease: NonNullable<ReturnType<typeof usePorta
         </p>
       </div>
 
+      <div className="mt-4">
+        <PortalBalanceHeadline leaseId={lease.id} calendar={lease.calendar} currency={lease.currency} />
+      </div>
+
       <PortalChargesPanel leaseId={lease.id} calendar={lease.calendar} currency={lease.currency} />
+      <PortalPaymentsPanel leaseId={lease.id} calendar={lease.calendar} currency={lease.currency} />
     </>
   );
 }

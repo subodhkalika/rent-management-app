@@ -114,6 +114,14 @@ export function useAllGeneratedRentCharges(leaseId: string) {
 
 function invalidateLeaseCharges(queryClient: ReturnType<typeof useQueryClient>, leaseId: string) {
   void queryClient.invalidateQueries({ queryKey: [...chargesKeys.all, 'lease', leaseId] });
+  // Voiding or correcting a charge changes what the ledger's FIFO allocates and
+  // every balance derived from it (docs/PLAN-PHASE3B.md §3.4) — the ledger tab
+  // reads stale `appliedCents`/`status` otherwise. Invalidated by the literal
+  // query key `features/payments/api.ts` uses (`ledgerKeys.lease` /
+  // `balanceKeys.lease`), not an import, so the two features stay decoupled.
+  void queryClient.invalidateQueries({ queryKey: ['ledger', leaseId] });
+  void queryClient.invalidateQueries({ queryKey: ['balance', leaseId] });
+  void queryClient.invalidateQueries({ queryKey: ['arrears'] });
 }
 
 export function useGenerateCharges(leaseId: string) {

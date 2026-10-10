@@ -2,6 +2,8 @@ import { Link } from 'react-router-dom';
 import { leaseStatusLabels } from '@rms/contract';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { BalanceChip } from '@/features/payments/BalanceChip';
+import { useLeaseBalance } from '@/features/payments/api';
 import { useLeases } from './api';
 import { leaseStatusVariant } from './lease-ui';
 
@@ -24,8 +26,19 @@ export function UnitLeaseCell({ unitId }: { unitId: string }) {
   }
 
   return (
-    <Link to={`/leases/${lease.id}`} className="inline-flex items-center gap-1.5 hover:underline">
-      <Badge variant={leaseStatusVariant[lease.status]}>{leaseStatusLabels[lease.status]}</Badge>
-    </Link>
+    <div className="inline-flex items-center gap-1.5">
+      <Link to={`/leases/${lease.id}`} className="hover:underline">
+        <Badge variant={leaseStatusVariant[lease.status]}>{leaseStatusLabels[lease.status]}</Badge>
+      </Link>
+      <UnitLeaseBalance leaseId={lease.id} currency={lease.currency} />
+    </div>
   );
+}
+
+/** Quiet while loading — a balance chip is an enhancement on this row, not
+ *  something worth a layout-shifting skeleton next to an already-rendered badge. */
+function UnitLeaseBalance({ leaseId, currency }: { leaseId: string; currency: Parameters<typeof BalanceChip>[0]['currency'] }) {
+  const { data: balance } = useLeaseBalance(leaseId);
+  if (!balance) return null;
+  return <BalanceChip balanceCents={balance.chain.balanceCents} currency={currency} />;
 }

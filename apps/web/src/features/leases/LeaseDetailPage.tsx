@@ -17,7 +17,9 @@ import { leaseStatusVariant } from './lease-ui';
 import { moveOutBillingCopy } from './frequency-copy';
 import { LeaseRosterPanel } from './LeaseRosterPanel';
 import { LeaseChainTimeline } from './LeaseChainTimeline';
-import { ChargesPanel } from '@/features/charges/ChargesPanel';
+import { LedgerPanel } from '@/features/payments/LedgerPanel';
+import { BalanceChip } from '@/features/payments/BalanceChip';
+import { useLeaseBalance } from '@/features/payments/api';
 import { ActivateLeaseDialog } from './ActivateLeaseDialog';
 import { CancelLeaseDialog } from './CancelLeaseDialog';
 import { EndLeaseDialog } from './EndLeaseDialog';
@@ -58,6 +60,7 @@ export function LeaseDetailPage() {
                 <div className="flex items-center gap-2">
                   <h1 className="text-2xl font-semibold tracking-tight">{lease.unitLabel}</h1>
                   <Badge variant={leaseStatusVariant[lease.status]}>{leaseStatusLabels[lease.status]}</Badge>
+                  <LeaseBalanceChip leaseId={lease.id} currency={lease.currency} />
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {lease.propertyName} · {lease.primaryTenantName ?? 'No primary tenant yet'}
@@ -110,14 +113,14 @@ export function LeaseDetailPage() {
           <Tabs defaultValue="roster" className="mt-6">
             <TabsList>
               <TabsTrigger value="roster">Roster</TabsTrigger>
-              <TabsTrigger value="charges">Charges</TabsTrigger>
+              <TabsTrigger value="ledger">Ledger</TabsTrigger>
               <TabsTrigger value="chain">Chain</TabsTrigger>
             </TabsList>
             <TabsContent value="roster">
               <LeaseRosterPanel lease={lease} />
             </TabsContent>
-            <TabsContent value="charges">
-              <ChargesPanel lease={lease} />
+            <TabsContent value="ledger">
+              <LedgerPanel lease={lease} />
             </TabsContent>
             <TabsContent value="chain">
               <LeaseChainTimeline lease={lease} />
@@ -185,6 +188,16 @@ function LeaseTermsSummary({ lease }: { lease: NonNullable<ReturnType<typeof use
       )}
     </div>
   );
+}
+
+/** The lease header's balance chip — chain-wide, never lease-scoped (a lease's
+ *  own slice carries no signed balance; see `leaseBalanceSlice` in the contract).
+ *  Quiet while loading rather than a layout-shifting skeleton: it sits next to a
+ *  status badge that's already settled by the time this resolves. */
+function LeaseBalanceChip({ leaseId, currency }: { leaseId: string; currency: Parameters<typeof BalanceChip>[0]['currency'] }) {
+  const { data: balance } = useLeaseBalance(leaseId);
+  if (!balance) return null;
+  return <BalanceChip balanceCents={balance.chain.balanceCents} currency={currency} />;
 }
 
 function LeaseHeaderSkeleton() {

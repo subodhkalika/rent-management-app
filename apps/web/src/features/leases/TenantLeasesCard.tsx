@@ -1,8 +1,10 @@
 import { Link } from 'react-router-dom';
-import { formatMoney, leaseStatusLabels, rentFrequencyLabels } from '@rms/contract';
+import { formatMoney, leaseStatusLabels, rentFrequencyLabels, type Currency } from '@rms/contract';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { formatCivilDate } from '@/lib/format-civil-date';
+import { BalanceChip } from '@/features/payments/BalanceChip';
+import { useLeaseBalance } from '@/features/payments/api';
 import { useLeases } from './api';
 import { leaseStatusVariant } from './lease-ui';
 
@@ -40,6 +42,7 @@ export function TenantLeasesCard({ tenantId }: { tenantId: string }) {
                     {lease.endDate ? formatCivilDate(lease.endDate, lease.calendar) : 'rolling'}
                   </span>
                   <Badge variant={leaseStatusVariant[lease.status]}>{leaseStatusLabels[lease.status]}</Badge>
+                  <TenantLeaseBalance leaseId={lease.id} currency={lease.currency} />
                 </div>
               </li>
             ))}
@@ -48,4 +51,11 @@ export function TenantLeasesCard({ tenantId }: { tenantId: string }) {
       </div>
     </section>
   );
+}
+
+/** Quiet while loading, same reasoning as `UnitLeaseCell`'s own chip. */
+function TenantLeaseBalance({ leaseId, currency }: { leaseId: string; currency: Currency }) {
+  const { data: balance } = useLeaseBalance(leaseId);
+  if (!balance) return null;
+  return <BalanceChip balanceCents={balance.chain.balanceCents} currency={currency} />;
 }
