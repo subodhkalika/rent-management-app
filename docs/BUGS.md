@@ -85,6 +85,66 @@ optional text fields on the tenant form.
 
 ---
 
+## 5. The lease page white-screens right after creating a lease — CRASH
+
+**Reported:** "got Something went wrong … when creating a lease.
+`TypeError: Cannot read properties of undefined (reading 'map')` at
+`LeaseRosterPanel.tsx:41`"
+
+The only crash on this list, and a blocker: the lease you just made is unreachable
+until you reload.
+
+**Cause, traced.** `packages/contract/src/lease.ts` has two shapes —
+`lease = leaseSummary` (line 420) and `leaseDetail = leaseSummary.extend({ tenants, … })`
+(line 432). Only the detail shape carries `tenants`.
+
+`apps/web/src/features/leases/api.ts:86-89` parses the create response with the
+**summary** schema and then seeds it into the **detail** cache key:
+
+```ts
+mutationFn: ... { schema: lease }                                  // summary — no tenants
+onSuccess: (created) =>
+  queryClient.setQueryData(leasesKeys.detail(created.id), created) // stored as detail
+```
+
+The page then reads that cached object, `lease.tenants` is `undefined`, and
+`.map()` throws. Reloading works because the real `GET` replaces the cache with a
+genuine detail response — the same tell as the onboarding bug.
+
+TypeScript did not catch it because `leasesKeys.detail()` returns a plain tuple
+(`api.ts:26`), so `setQueryData` has no type to compare the summary against.
+
+**Fix shape:** do not seed a detail cache from a summary response. Either invalidate
+the detail key and let it fetch, or have `POST /v1/leases` return the detail shape.
+Invalidating is the smaller change and removes the class of bug; returning detail is
+the one that makes the crash unrepresentable.
+
+Then look for the same pattern elsewhere — any `setQueryData` on a detail key fed by
+a mutation response is the same trap. Typing the key factory so a summary cannot be
+written to a detail key would close it permanently.
+
+---
+
+## 6. Unit fields assume a residential flat
+
+**Reported:** "on add unit, bathroom info not required. keep bedrooms as rooms label.
+better to add it like unit type: shutter, room, flat etc. For a person who rents a
+shutter the verbiage of room or bedroom doesn't suit."
+
+`createUnitBody` requires `bedrooms` and `bathrooms`. For a shop shutter, a single
+room, or a garage, both are meaningless and one is mandatory.
+
+**Fix shape:** a `unitType` — shutter, room, flat, house, garage, other — and let it
+decide which fields appear. A flat asks for bedrooms and bathrooms; a shutter asks
+for neither and perhaps asks for floor area instead. `bedrooms` and `bathrooms`
+become optional in the contract.
+
+This is the same shape as issues 1, 2 and 3: the model assumes a residential
+Western let. It is the largest of them, because it changes the unit schema rather
+than a field's rules.
+
+---
+
 ## Notes
 
 Every one of these was found by using the app, not by a test. Three of the four are
