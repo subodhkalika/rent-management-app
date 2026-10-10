@@ -1,13 +1,14 @@
-# Open issues
+# Issues found by hand
 
-Found by hand while using the app. **Not fixed** — these are recorded here so the
-fix is quick when it is wanted, with the cause already traced.
+Found by using the app, not by a test. **All six below are fixed** (2026-10-11) —
+kept as a record of what the causes turned out to be, because two of them were the
+same mistake twice and the other four were the same assumption four times.
 
-Last updated: 2026-10-11.
+Add new findings above this line as they come up.
 
 ---
 
-## 1. The country field only accepts two characters
+## ✅ 1. The country field only accepts two characters
 
 **Reported:** "add property form, country only allows two characters, I cannot type nepal"
 
@@ -24,7 +25,7 @@ picker, which already solved this.
 
 ---
 
-## 2. Add-property defaults are wrong for this user
+## ✅ 2. Add-property defaults are wrong for this user
 
 **Reported:** "the add property modal should by default select Bikram Sambat calendar
 and on the move out billing, it should by default select the stop billing on the move
@@ -45,7 +46,7 @@ the better default generally: billing past the day someone left needs a reason.
 
 ---
 
-## 3. NPR is missing from the currency list
+## ✅ 3. NPR is missing from the currency list
 
 **Reported:** "The Add unit form does not have NPR as currency in the options"
 
@@ -62,7 +63,7 @@ changes.
 
 ---
 
-## 4. An optional email is rejected when left empty
+## ✅ 4. An optional email is rejected when left empty
 
 **Reported:** "The add tenant modal says Enter a valid email address for optional
 field. same with edit when empty on optional field."
@@ -85,7 +86,7 @@ optional text fields on the tenant form.
 
 ---
 
-## 5. The lease page white-screens right after creating a lease — CRASH
+## ✅ 5. The lease page white-screens right after creating a lease — CRASH
 
 **Reported:** "got Something went wrong … when creating a lease.
 `TypeError: Cannot read properties of undefined (reading 'map')` at
@@ -125,7 +126,7 @@ written to a detail key would close it permanently.
 
 ---
 
-## 6. Unit fields assume a residential flat
+## ✅ 6. Unit fields assume a residential flat
 
 **Reported:** "on add unit, bathroom info not required. keep bedrooms as rooms label.
 better to add it like unit type: shutter, room, flat etc. For a person who rents a
@@ -147,7 +148,19 @@ than a field's rules.
 
 ## Notes
 
-Every one of these was found by using the app, not by a test. Three of the four are
-about a non-US, non-Latin landlord — a country that is not two letters anyone
-remembers, a calendar that is not Gregorian, a currency that was never listed. Worth
-assuming there are more of that shape.
+Two patterns ran through these, and both are worth remembering.
+
+**Four of the six assumed a US-or-European residential landlord**: a country code you
+are expected to know, a Gregorian calendar, a currency that was never listed, and a
+bedroom count demanded of a shop shutter. None of them were visible from inside the
+code — they needed somebody in Nepal renting a shutter to find them.
+
+**Two were the same mistake**: trusting a client cache the server had already moved
+past. Onboarding navigated on a stale actor context; creating a lease seeded a detail
+cache from a summary response. Both had the identical tell — a reload fixed it. The
+second is now a compile error rather than a correction, because a mistake made twice
+will be made a third time.
+
+Every one of these was found by clicking, and not one of them would have been caught
+by a test. That is not an argument for fewer tests; it is an argument for using the
+thing you are building.
