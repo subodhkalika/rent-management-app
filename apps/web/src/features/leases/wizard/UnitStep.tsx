@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useProperties } from '@/features/properties/api';
 import { useUnits } from '@/features/units/api';
+import { unitSummaryLine } from '@/features/units/unit-summary';
 import type { WizardForm } from './types';
 
 interface UnitStepProps {
@@ -93,9 +94,7 @@ export function UnitStep({ form, onUnitSelected }: UnitStepProps) {
                     <RadioGroupItem value={unit.id} id={`wizard-unit-${unit.id}`} />
                     <span>
                       <span className="block font-medium">{unit.label}</span>
-                      <span className="block text-muted-foreground">
-                        {unit.bedrooms} bd / {unit.bathrooms} ba
-                      </span>
+                      <span className="block text-muted-foreground">{unitSummaryLine(unit)}</span>
                     </span>
                   </span>
                   <Badge variant={unit.status === 'occupied' ? 'default' : 'secondary'}>

@@ -27,6 +27,7 @@ const unit: Unit = {
   id: '22222222-2222-7222-8222-222222222222',
   propertyId: property.id,
   label: 'Unit 1',
+  type: 'flat',
   bedrooms: 1,
   bathrooms: 1,
   squareFeet: null,

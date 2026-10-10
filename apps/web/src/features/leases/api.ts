@@ -1,4 +1,10 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type DataTag,
+} from '@tanstack/react-query';
 import { z } from 'zod';
 import {
   routes,
@@ -23,7 +29,20 @@ import { ApiClientError, request } from '@/lib/api';
 export const leasesKeys = {
   all: ['leases'] as const,
   list: (filters: LeaseFilters) => [...leasesKeys.all, 'list', filters] as const,
-  detail: (id: string) => [...leasesKeys.all, 'detail', id] as const,
+  /**
+   * Tagged with `LeaseDetail`, not `Lease` (the summary `POST`/`PATCH` routes
+   * return) — see the contract's `lease` vs `leaseDetail` split. This is what
+   * makes writing a summary into this key a compile error rather than a runtime
+   * `.tenants` crash: `setQueryData(leasesKeys.detail(id), someLease)` now fails
+   * to typecheck unless `someLease` actually has `tenants`, `chain`, etc.
+   * `useLease` below still fetches with the `leaseDetail` schema and gets the
+   * real shape back; this tag only constrains *writes* into the cache.
+   */
+  detail: (id: string) =>
+    [...leasesKeys.all, 'detail', id] as const as DataTag<
+      readonly ['leases', 'detail', string],
+      LeaseDetail
+    >,
 };
 
 export interface LeaseFilters {
@@ -85,8 +104,15 @@ export function useCreateLease() {
   return useMutation<Lease, ApiClientError, CreateLeaseBody>({
     mutationFn: (body) => request(routes.leases.create(), { method: 'POST', body, schema: lease }),
     onSuccess: (created) => {
+      // `POST /v1/leases` returns the SUMMARY shape (`lease`), which has no
+      // `tenants`/`chain`/`rentSteps`. Seeding those straight into the detail
+      // cache used to white-screen the lease page the instant you navigated to
+      // it after creating one — `LeaseRosterPanel` read `lease.tenants` as
+      // undefined and `.map()` threw. Invalidate instead and let the real GET
+      // (parsed with `leaseDetail`) populate the cache; `leasesKeys.detail` is
+      // now tagged with `LeaseDetail` so writing a bare `Lease` here would not
+      // even compile.
       void queryClient.invalidateQueries({ queryKey: leasesKeys.all });
-      queryClient.setQueryData(leasesKeys.detail(created.id), created);
     },
   });
 }
@@ -127,9 +153,10 @@ export function useRenewLease(id: string) {
   const queryClient = useQueryClient();
   return useMutation<Lease, ApiClientError, RenewLeaseBody>({
     mutationFn: (body) => request(routes.leases.renew(id), { method: 'POST', body, schema: lease }),
-    onSuccess: (created) => {
+    onSuccess: () => {
+      // Same trap as `useCreateLease`: `renew` also returns the summary shape.
+      // Invalidate and let the detail page's real GET fill the cache.
       void queryClient.invalidateQueries({ queryKey: leasesKeys.all });
-      queryClient.setQueryData(leasesKeys.detail(created.id), created);
       void queryClient.invalidateQueries({ queryKey: ['units'] });
       void queryClient.invalidateQueries({ queryKey: ['properties'] });
     },

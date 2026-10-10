@@ -6,9 +6,15 @@ import type { z } from 'zod';
 import {
   createUnitBody,
   unitStatusLabels,
+  unitType,
+  unitTypeLabels,
+  unitTypeHasBedrooms,
+  unitTypeHasBathrooms,
+  currency as currencySchema,
   type CreateUnitBody,
   type Unit,
   type UnitStatus,
+  type UnitType,
 } from '@rms/contract';
 import { Button } from '@/components/ui/button';
 import {
@@ -41,16 +47,21 @@ import { useCreateUnit, useUpdateUnit } from './api';
 import { RentInput } from './RentInput';
 
 const unitStatuses = Object.keys(unitStatusLabels) as UnitStatus[];
-const currencies = ['USD', 'EUR', 'GBP', 'INR', 'AUD', 'CAD'] as const;
+const unitTypes = unitType.options;
+// Driven by the contract's own enum rather than a hand-kept list, so a currency the
+// contract already accepts (NPR joined the enum alongside the unit-type work) shows
+// up here the moment it's added there, with no second place to remember to edit.
+const currencies = currencySchema.options;
 
-// `status` has a Zod `.default()`, so the schema's input type (what the form holds
-// before submit) makes it optional, while its output type (what `handleSubmit` hands
-// back, and what the mutation sends) makes it required. react-hook-form's resolver
-// generics expect exactly that split.
+// `status` and `type` both carry a Zod `.default()`, so the schema's input type
+// (what the form holds before submit) makes them optional, while its output type
+// (what `handleSubmit` hands back, and what the mutation sends) makes them
+// required. react-hook-form's resolver generics expect exactly that split.
 type UnitFormInput = z.input<typeof createUnitBody>;
 
 const emptyValues: CreateUnitBody = {
   label: '',
+  type: 'flat',
   bedrooms: 1,
   bathrooms: 1,
   squareFeet: undefined,
@@ -63,8 +74,9 @@ const emptyValues: CreateUnitBody = {
 function valuesFromUnit(unit: Unit): CreateUnitBody {
   return {
     label: unit.label,
-    bedrooms: unit.bedrooms,
-    bathrooms: unit.bathrooms,
+    type: unit.type,
+    bedrooms: unit.bedrooms ?? undefined,
+    bathrooms: unit.bathrooms ?? undefined,
     squareFeet: unit.squareFeet ?? undefined,
     marketRentCents: unit.marketRentCents,
     currency: unit.currency,
@@ -97,8 +109,24 @@ export function UnitFormDialog({ open, onOpenChange, propertyId, unit }: UnitFor
   const updateMutation = useUpdateUnit(propertyId, unit?.id ?? '');
   const mutation = isEditing ? updateMutation : createMutation;
 
+  // The type decides which of bedrooms/bathrooms are even questions worth asking —
+  // `unitTypeHasBedrooms` / `unitTypeHasBathrooms` are exported by the contract so
+  // this form and `unitSummaryLine` (the units table, the lease wizard's unit
+  // picker) never disagree about which types have rooms.
+  const selectedType = form.watch('type') as UnitType;
+  const showBedrooms = unitTypeHasBedrooms(selectedType);
+  const showBathrooms = unitTypeHasBathrooms(selectedType);
+
   const onSubmit = form.handleSubmit((values) => {
-    const payload: CreateUnitBody = { ...values, notes: blankToUndefined(values.notes) };
+    const payload: CreateUnitBody = {
+      ...values,
+      // Strip whichever of these the chosen type doesn't ask for, rather than
+      // silently submitting a stale value left over from a type the user picked
+      // and then changed away from.
+      bedrooms: unitTypeHasBedrooms(values.type) ? values.bedrooms : undefined,
+      bathrooms: unitTypeHasBathrooms(values.type) ? values.bathrooms : undefined,
+      notes: blankToUndefined(values.notes),
+    };
     mutation.mutate(payload, {
       onSuccess: () => {
         toast.success(isEditing ? 'Unit updated' : 'Unit added');
@@ -125,6 +153,31 @@ export function UnitFormDialog({ open, onOpenChange, propertyId, unit }: UnitFor
           <form onSubmit={onSubmit} className="space-y-4">
             <FormField
               control={form.control}
+              name="type"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Type</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select a type" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {unitTypes.map((t) => (
+                        <SelectItem key={t} value={t}>
+                          {unitTypeLabels[t]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
               name="label"
               render={({ field }) => (
                 <FormItem>
@@ -137,78 +190,89 @@ export function UnitFormDialog({ open, onOpenChange, propertyId, unit }: UnitFor
               )}
             />
 
-            <div className="grid grid-cols-3 gap-4">
-              <FormField
-                control={form.control}
-                name="bedrooms"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Bedrooms</FormLabel>
-                    <FormControl>
-                      <Input
-                        type="number"
-                        min={0}
-                        max={50}
-                        step={1}
-                        value={field.value}
-                        onBlur={field.onBlur}
-                        name={field.name}
-                        ref={field.ref}
-                        onChange={(e) => field.onChange(e.target.valueAsNumber)}
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
+            {(showBedrooms || showBathrooms) && (
+              <div className="grid grid-cols-2 gap-4">
+                {showBedrooms && (
+                  <FormField
+                    control={form.control}
+                    name="bedrooms"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Bedrooms</FormLabel>
+                        <FormControl>
+                          <Input
+                            type="number"
+                            min={0}
+                            max={50}
+                            step={1}
+                            value={field.value ?? ''}
+                            onBlur={field.onBlur}
+                            name={field.name}
+                            ref={field.ref}
+                            onChange={(e) =>
+                              field.onChange(e.target.value === '' ? undefined : e.target.valueAsNumber)
+                            }
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
                 )}
-              />
-              <FormField
-                control={form.control}
-                name="bathrooms"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Bathrooms</FormLabel>
-                    <FormControl>
-                      <Input
-                        type="number"
-                        min={0}
-                        max={50}
-                        step={0.5}
-                        value={field.value}
-                        onBlur={field.onBlur}
-                        name={field.name}
-                        ref={field.ref}
-                        onChange={(e) => field.onChange(e.target.valueAsNumber)}
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
+                {showBathrooms && (
+                  <FormField
+                    control={form.control}
+                    name="bathrooms"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Bathrooms</FormLabel>
+                        <FormControl>
+                          <Input
+                            type="number"
+                            min={0}
+                            max={50}
+                            step={0.5}
+                            value={field.value ?? ''}
+                            onBlur={field.onBlur}
+                            name={field.name}
+                            ref={field.ref}
+                            onChange={(e) =>
+                              field.onChange(e.target.value === '' ? undefined : e.target.valueAsNumber)
+                            }
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
                 )}
-              />
-              <FormField
-                control={form.control}
-                name="squareFeet"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Sq ft (optional)</FormLabel>
-                    <FormControl>
-                      <Input
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={field.value ?? ''}
-                        onBlur={field.onBlur}
-                        name={field.name}
-                        ref={field.ref}
-                        onChange={(e) =>
-                          field.onChange(e.target.value === '' ? undefined : e.target.valueAsNumber)
-                        }
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
+              </div>
+            )}
+
+            <FormField
+              control={form.control}
+              name="squareFeet"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Sq ft (optional)</FormLabel>
+                  <FormControl>
+                    <Input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={field.value ?? ''}
+                      onBlur={field.onBlur}
+                      name={field.name}
+                      ref={field.ref}
+                      onChange={(e) =>
+                        field.onChange(e.target.value === '' ? undefined : e.target.valueAsNumber)
+                      }
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
 
             <div className="grid grid-cols-2 gap-4">
               <FormField
@@ -288,7 +352,11 @@ export function UnitFormDialog({ open, onOpenChange, propertyId, unit }: UnitFor
                 <FormItem>
                   <FormLabel>Notes (optional)</FormLabel>
                   <FormControl>
-                    <Textarea rows={3} {...field} />
+                    <Textarea
+                      rows={3}
+                      {...field}
+                      value={(field.value as string | undefined) ?? ''}
+                    />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

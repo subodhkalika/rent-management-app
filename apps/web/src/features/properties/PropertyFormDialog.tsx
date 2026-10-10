@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { toast } from 'sonner';
@@ -45,6 +45,8 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { useCreateProperty, useUpdateProperty } from './api';
 import { applyServerErrors, blankToUndefined, errorMessage } from '@/lib/form-errors';
 import { browserTimezone, timezoneOptions } from './timezones';
+import { countryOptions } from './countries';
+import { calendarSystemForCountry } from './calendar-for-country';
 import { moveOutBillingPolicyTitle, moveOutBillingPolicyHelp, calendarSystemHelp } from './billing-settings-copy';
 
 const propertyTypes = Object.keys(propertyTypeLabels) as PropertyType[];
@@ -66,12 +68,17 @@ function emptyValues(): CreatePropertyBody {
     // Right far more often than UTC — saves most landlords a decision they would
     // otherwise never think to make, and leave wrong.
     timezone: browserTimezone(),
-    // Legally conservative and matches the behaviour every existing property
-    // already has, so defaulting it costs no one a surprise.
-    moveOutBillingPolicy: 'bill_full_term',
-    // Follows the building's market; most landlords on this product bill in
-    // Gregorian, so that stays the default rather than asking up front.
-    calendar: 'gregorian',
+    // Billing past the day someone left needs a reason, not the other way round —
+    // this is the more defensible default even though `bill_full_term` is what the
+    // contract itself defaults to when the field is omitted entirely (that default
+    // stays legally conservative for a client who sends nothing; this form always
+    // sends an explicit choice either way, so it can afford to lead with the one
+    // most landlords actually want).
+    moveOutBillingPolicy: 'stop_at_move_out',
+    // Follows the building's market, derived from the country below — most
+    // countries bill in Gregorian, so that's the starting point until a country
+    // says otherwise.
+    calendar: calendarSystemForCountry('US'),
     notes: '',
   };
 }
@@ -102,12 +109,36 @@ export function PropertyFormDialog({ open, onOpenChange, property }: PropertyFor
     defaultValues: property ? valuesFromProperty(property) : emptyValues(),
   });
 
+  // Whether the landlord has touched the calendar field directly. Mirrors the
+  // slug-field lesson (docs/BUGS.md #2): a value that re-derives from another
+  // field forever is exactly as annoying as one that locks the instant it's
+  // touched once — so this only auto-fills the calendar from the country until
+  // the landlord picks a calendar by hand, and never fights them again after
+  // that, no matter how many more times the country changes.
+  const calendarTouchedRef = useRef(false);
+
   // Reset to the right defaults each time the dialog opens, for whichever property
   // (or none) it was opened with.
   useEffect(() => {
-    if (open) form.reset(property ? valuesFromProperty(property) : emptyValues());
+    if (open) {
+      form.reset(property ? valuesFromProperty(property) : emptyValues());
+      calendarTouchedRef.current = false;
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, property]);
+
+  // Derive the calendar from the chosen country — Bikram Sambat is right for a
+  // Nepali property and wrong for everyone else, the same reasoning that keeps
+  // it from being hardcoded as the form's default. Never runs once the landlord
+  // has set the calendar by hand (see `calendarTouchedRef`), and never runs
+  // while editing an existing property — an already-saved calendar is a
+  // deliberate choice, not a default waiting to be overridden by an address edit.
+  const countryValue = form.watch('address.country');
+  useEffect(() => {
+    if (isEditing || calendarTouchedRef.current) return;
+    form.setValue('calendar', calendarSystemForCountry(countryValue));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [countryValue, isEditing]);
 
   const createMutation = useCreateProperty();
   const updateMutation = useUpdateProperty(property?.id ?? '');
@@ -205,7 +236,7 @@ export function PropertyFormDialog({ open, onOpenChange, property }: PropertyFor
                   <FormItem className="sm:col-span-2">
                     <FormLabel>Apt / suite (optional)</FormLabel>
                     <FormControl>
-                      <Input {...field} />
+                      <Input {...field} value={(field.value as string | undefined) ?? ''} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -257,7 +288,14 @@ export function PropertyFormDialog({ open, onOpenChange, property }: PropertyFor
                   <FormItem>
                     <FormLabel>Country</FormLabel>
                     <FormControl>
-                      <Input placeholder="US" maxLength={2} {...field} />
+                      <Combobox
+                        value={field.value}
+                        onChange={field.onChange}
+                        options={countryOptions}
+                        placeholder="Select a country"
+                        searchPlaceholder="Search countries…"
+                        emptyText="No matching country."
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -299,7 +337,10 @@ export function PropertyFormDialog({ open, onOpenChange, property }: PropertyFor
                   <FormControl>
                     <RadioGroup
                       value={field.value}
-                      onValueChange={field.onChange}
+                      onValueChange={(value) => {
+                        calendarTouchedRef.current = true;
+                        field.onChange(value);
+                      }}
                       className="gap-2"
                     >
                       {calendarSystems.map((option) => (
@@ -328,6 +369,7 @@ export function PropertyFormDialog({ open, onOpenChange, property }: PropertyFor
                   <FormDescription>
                     This changes what a billing period <em>is</em>, not merely how dates are
                     shown.
+                    {!isEditing && ' Defaults from the country above — pick one here and it stops following it.'}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -381,7 +423,7 @@ export function PropertyFormDialog({ open, onOpenChange, property }: PropertyFor
                 <FormItem>
                   <FormLabel>Notes (optional)</FormLabel>
                   <FormControl>
-                    <Textarea rows={3} {...field} />
+                    <Textarea rows={3} {...field} value={(field.value as string | undefined) ?? ''} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

@@ -121,13 +121,79 @@ describe('PropertyFormDialog', () => {
     expect(trigger).not.toHaveTextContent(/select a timezone/i);
   });
 
-  it('defaults a new property to Gregorian and "bill the full term"', () => {
+  it('defaults a new property to Gregorian (country defaults to US) and "stop billing on move-out"', () => {
     renderDialog();
 
     expect(screen.getByRole('radio', { name: /^gregorian/i })).toBeChecked();
     expect(
-      screen.getByRole('radio', { name: /bill the full term even if they leave early/i }),
+      screen.getByRole('radio', { name: /stop billing on the move-out date/i }),
     ).toBeChecked();
+  });
+
+  it('shows the country as a searchable select of names, not a 2-letter text box', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole('combobox', { name: /country/i }));
+    await user.type(screen.getByPlaceholderText(/search countries/i), 'nepal');
+    await user.click(await screen.findByRole('option', { name: 'Nepal' }));
+
+    expect(screen.getByRole('combobox', { name: /country/i })).toHaveTextContent('Nepal');
+  });
+
+  it('derives the calendar from the chosen country — Nepal switches it to Bikram Sambat', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    // Starts Gregorian (the default country is US).
+    expect(screen.getByRole('radio', { name: /^gregorian/i })).toBeChecked();
+
+    await user.click(screen.getByRole('combobox', { name: /country/i }));
+    await user.type(screen.getByPlaceholderText(/search countries/i), 'nepal');
+    await user.click(await screen.findByRole('option', { name: 'Nepal' }));
+
+    expect(screen.getByRole('radio', { name: /^bikram sambat/i })).toBeChecked();
+  });
+
+  it('stops deriving the calendar from the country once the landlord picks one by hand', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    // Pick Nepal, which would normally derive Bikram Sambat...
+    await user.click(screen.getByRole('combobox', { name: /country/i }));
+    await user.type(screen.getByPlaceholderText(/search countries/i), 'nepal');
+    await user.click(await screen.findByRole('option', { name: 'Nepal' }));
+    expect(screen.getByRole('radio', { name: /^bikram sambat/i })).toBeChecked();
+
+    // ...but the landlord overrides it back to Gregorian by hand...
+    await user.click(screen.getByRole('radio', { name: /^gregorian/i }));
+
+    // ...and re-picking a country (even Nepal again) must not fight that choice.
+    await user.click(screen.getByRole('combobox', { name: /country/i }));
+    await user.type(screen.getByPlaceholderText(/search countries/i), 'united states');
+    await user.click(await screen.findByRole('option', { name: 'United States' }));
+    expect(screen.getByRole('radio', { name: /^gregorian/i })).toBeChecked();
+
+    await user.click(screen.getByRole('combobox', { name: /country/i }));
+    await user.type(screen.getByPlaceholderText(/search countries/i), 'nepal');
+    await user.click(await screen.findByRole('option', { name: 'Nepal' }));
+    expect(screen.getByRole('radio', { name: /^gregorian/i })).toBeChecked();
+  });
+
+  it('never derives the calendar from the country while editing an existing property', async () => {
+    // An already-saved property's calendar is a deliberate choice, not a default
+    // waiting to be overridden the moment someone edits its address.
+    const property = makeProperty({ calendar: 'gregorian', address: { ...makeProperty().address, country: 'NP' } });
+    const user = userEvent.setup();
+    renderDialog(property);
+
+    expect(screen.getByRole('radio', { name: /^gregorian/i })).toBeChecked();
+
+    await user.click(screen.getByRole('combobox', { name: /country/i }));
+    await user.type(screen.getByPlaceholderText(/search countries/i), 'united states');
+    await user.click(await screen.findByRole('option', { name: 'United States' }));
+
+    expect(screen.getByRole('radio', { name: /^gregorian/i })).toBeChecked();
   });
 
   it('round-trips an existing property\'s calendar and move-out policy into the form', () => {

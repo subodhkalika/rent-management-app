@@ -165,7 +165,7 @@ export function TenantFormDialog({ open, onOpenChange, tenant }: TenantFormDialo
                 <FormItem>
                   <FormLabel>Email (optional)</FormLabel>
                   <FormControl>
-                    <Input type="email" {...field} />
+                    <Input type="email" {...field} value={(field.value as string | undefined) ?? ''} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -179,7 +179,7 @@ export function TenantFormDialog({ open, onOpenChange, tenant }: TenantFormDialo
                 <FormItem>
                   <FormLabel>Phone (optional)</FormLabel>
                   <FormControl>
-                    <Input type="tel" {...field} />
+                    <Input type="tel" {...field} value={(field.value as string | undefined) ?? ''} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -194,7 +194,7 @@ export function TenantFormDialog({ open, onOpenChange, tenant }: TenantFormDialo
                   <FormItem>
                     <FormLabel>Emergency contact (optional)</FormLabel>
                     <FormControl>
-                      <Input {...field} />
+                      <Input {...field} value={(field.value as string | undefined) ?? ''} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -207,7 +207,7 @@ export function TenantFormDialog({ open, onOpenChange, tenant }: TenantFormDialo
                   <FormItem>
                     <FormLabel>Emergency phone (optional)</FormLabel>
                     <FormControl>
-                      <Input type="tel" {...field} />
+                      <Input type="tel" {...field} value={(field.value as string | undefined) ?? ''} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -247,7 +247,7 @@ export function TenantFormDialog({ open, onOpenChange, tenant }: TenantFormDialo
                 <FormItem>
                   <FormLabel>Notes (optional, private)</FormLabel>
                   <FormControl>
-                    <Textarea rows={3} {...field} />
+                    <Textarea rows={3} {...field} value={(field.value as string | undefined) ?? ''} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>

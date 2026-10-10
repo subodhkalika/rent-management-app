@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { toast } from 'sonner';
+import type { z } from 'zod';
 import { updatePortalProfileBody, type PortalProfile, type UpdatePortalProfileBody } from '@rms/contract';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -21,7 +22,15 @@ import { applyServerErrors, blankToUndefined, errorMessage } from '@/lib/form-er
 import { useSelectedTenancy } from './tenancy-context';
 import { usePortalProfile, useUpdatePortalProfile } from './api';
 
-function valuesFromProfile(profile: PortalProfile): UpdatePortalProfileBody {
+// `phone`, `emergencyContactName` and `emergencyContactPhone` all route through
+// `optionalText` in the contract now (so an empty, focused-then-blanked input is
+// accepted as absent rather than rejected) — its `z.preprocess` makes the input
+// type `unknown` for react-hook-form's purposes, while the parsed/output type is
+// still `string | undefined`. Same split as `PropertyFormInput` / `TenantFormInput`
+// / `UnitFormInput`.
+type PortalProfileFormInput = z.input<typeof updatePortalProfileBody>;
+
+function valuesFromProfile(profile: PortalProfile): PortalProfileFormInput {
   return {
     phone: profile.phone ?? '',
     emergencyContactName: profile.emergencyContactName ?? '',
@@ -56,7 +65,7 @@ export function PortalProfilePage() {
 }
 
 function ProfileForm({ profile, tenantId }: { profile: PortalProfile; tenantId: string }) {
-  const form = useForm<UpdatePortalProfileBody>({
+  const form = useForm<PortalProfileFormInput, unknown, UpdatePortalProfileBody>({
     resolver: zodResolver(updatePortalProfileBody),
     defaultValues: valuesFromProfile(profile),
   });
@@ -120,7 +129,7 @@ function ProfileForm({ profile, tenantId }: { profile: PortalProfile; tenantId: 
                   <FormItem>
                     <FormLabel>Phone</FormLabel>
                     <FormControl>
-                      <Input type="tel" {...field} />
+                      <Input type="tel" {...field} value={(field.value as string | undefined) ?? ''} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -135,7 +144,7 @@ function ProfileForm({ profile, tenantId }: { profile: PortalProfile; tenantId: 
                     <FormItem>
                       <FormLabel>Emergency contact name</FormLabel>
                       <FormControl>
-                        <Input {...field} />
+                        <Input {...field} value={(field.value as string | undefined) ?? ''} />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -148,7 +157,7 @@ function ProfileForm({ profile, tenantId }: { profile: PortalProfile; tenantId: 
                     <FormItem>
                       <FormLabel>Emergency contact phone</FormLabel>
                       <FormControl>
-                        <Input type="tel" {...field} />
+                        <Input type="tel" {...field} value={(field.value as string | undefined) ?? ''} />
                       </FormControl>
                       <FormMessage />
                     </FormItem>

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { DoorOpen, Pencil, Plus, Trash2 } from 'lucide-react';
-import { formatMoney, unitStatusLabels, type Unit } from '@rms/contract';
+import { formatMoney, unitStatusLabels, unitTypeLabels, type Unit } from '@rms/contract';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -16,6 +16,7 @@ import { UnitLeaseCell } from '@/features/leases/UnitLeaseCell';
 import { useUnits } from './api';
 import { UnitFormDialog } from './UnitFormDialog';
 import { DeleteUnitDialog } from './DeleteUnitDialog';
+import { unitRoomsLine } from './unit-summary';
 
 const statusVariant = {
   vacant: 'secondary',
@@ -61,7 +62,8 @@ export function UnitsSection({ propertyId }: { propertyId: string }) {
               <TableHeader>
                 <TableRow>
                   <TableHead>Label</TableHead>
-                  <TableHead>Beds / baths</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead>Rooms</TableHead>
                   <TableHead>Sq ft</TableHead>
                   <TableHead>Market rent</TableHead>
                   <TableHead>Status</TableHead>
@@ -75,9 +77,8 @@ export function UnitsSection({ propertyId }: { propertyId: string }) {
                 {items.map((unit) => (
                   <TableRow key={unit.id}>
                     <TableCell className="font-medium">{unit.label}</TableCell>
-                    <TableCell>
-                      {unit.bedrooms} bd / {unit.bathrooms} ba
-                    </TableCell>
+                    <TableCell>{unitTypeLabels[unit.type]}</TableCell>
+                    <TableCell>{unitRoomsLine(unit) ?? '—'}</TableCell>
                     <TableCell>
                       {unit.squareFeet ? unit.squareFeet.toLocaleString() : '—'}
                     </TableCell>
