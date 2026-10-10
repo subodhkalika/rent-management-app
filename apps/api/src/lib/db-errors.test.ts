@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isUniqueViolation } from './db-errors.js';
+import { isUniqueViolation, isCheckViolation } from './db-errors.js';
 
 describe('isUniqueViolation', () => {
   it('is true for a bare Postgres unique-violation error', () => {
@@ -37,5 +37,38 @@ describe('isUniqueViolation', () => {
     expect(isUniqueViolation(undefined)).toBe(false);
     expect(isUniqueViolation('boom')).toBe(false);
     expect(isUniqueViolation(new Error('boom'))).toBe(false);
+  });
+});
+
+describe('isCheckViolation', () => {
+  it('is true for a bare Postgres check-violation error (SQLSTATE 23514)', () => {
+    expect(isCheckViolation({ code: '23514' })).toBe(true);
+  });
+
+  it('is true for a wrapped DrizzleQueryError-shaped error', () => {
+    expect(isCheckViolation({ cause: { code: '23514' } })).toBe(true);
+  });
+
+  it('is true for a real DrizzleQueryError instance', async () => {
+    const { DrizzleQueryError } = await import('drizzle-orm/errors');
+    const driverError = Object.assign(new Error('new row violates check constraint'), { code: '23514' });
+    const wrapped = new DrizzleQueryError('insert into payment ...', [], driverError);
+    expect(isCheckViolation(wrapped)).toBe(true);
+  });
+
+  it('is false for a unique violation, and vice versa — the two never both match', () => {
+    expect(isCheckViolation({ code: '23505' })).toBe(false);
+    expect(isUniqueViolation({ code: '23514' })).toBe(false);
+  });
+
+  it('gives up beyond a bounded cause depth rather than looping forever', () => {
+    const deeplyNested = { cause: { cause: { cause: { cause: { cause: { code: '23514' } } } } } };
+    expect(isCheckViolation(deeplyNested)).toBe(false);
+  });
+
+  it('is false for non-error values', () => {
+    expect(isCheckViolation(null)).toBe(false);
+    expect(isCheckViolation(undefined)).toBe(false);
+    expect(isCheckViolation('boom')).toBe(false);
   });
 });

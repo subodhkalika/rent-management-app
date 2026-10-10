@@ -1,20 +1,34 @@
-import type {
-  Property,
-  Unit,
-  Tenant,
-  PortalAccess,
-  PortalProfile,
-  LeaseSummary,
-  LeaseDetail,
-  LeaseTenantSummary,
-  PortalLease,
-  PortalLeaseDetail,
-  RentStepSummary,
-  RentStepCorrection,
-  PortalRentStep,
-  Charge,
-  ChargeWithLease,
-  PortalCharge,
+import {
+  chargeStatusFor,
+  type Property,
+  type Unit,
+  type Tenant,
+  type PortalAccess,
+  type PortalProfile,
+  type LeaseSummary,
+  type LeaseDetail,
+  type LeaseTenantSummary,
+  type PortalLease,
+  type PortalLeaseDetail,
+  type RentStepSummary,
+  type RentStepCorrection,
+  type PortalRentStep,
+  type Charge,
+  type ChargeWithLease,
+  type PortalCharge,
+  type Payment,
+  type PortalPayment,
+  type AllocatedCharge,
+  type LedgerEntry,
+  type LedgerLease,
+  type ChainBalance,
+  type LeaseBalanceSlice,
+  type LeaseBalanceResponse,
+  type ArrearsRow,
+  type ArrearsGroup,
+  type ArrearsResponse,
+  type PortalBalance,
+  type IsoDate,
 } from '@rms/contract';
 import type { PropertyRow } from '../db/repo/property.js';
 import type { UnitRow } from '../db/repo/unit.js';
@@ -30,6 +44,16 @@ import {
 } from '../db/repo/lease.js';
 import type { PortalLeaseRow, PortalLeaseDetailRow } from '../db/repo/portal/lease.js';
 import type { ChargeRow, ChargeWithLeaseRow } from '../db/repo/charge.js';
+import type {
+  AllocatedChargeRow,
+  LedgerLeaseRow,
+  RawLedgerEntry,
+  ChainBalanceResult,
+  LeaseBalanceSliceResult,
+  LeaseAndChainBalance,
+  ArrearsChainRow,
+} from '../db/repo/ledger.js';
+import type { PortalBalanceResult } from '../db/repo/portal/balance.js';
 
 /**
  * Explicit DB row -> contract type mapping. Never spread a row into a response —
@@ -392,5 +416,232 @@ export function mapPortalCharge(row: ChargeRow): PortalCharge {
     currency: row.currency as PortalCharge['currency'],
     isVoided: row.voidedAt !== null,
     supersedesChargeId: row.supersedesChargeId,
+  };
+}
+
+/* ======================================================================== *
+ * payments, the ledger and balances (PLAN-PHASE3B.md) — allocation is DERIVED,
+ * never stored. Every mapper below shapes a row that `repo/ledger.ts`'s one
+ * window function already produced; none of them allocate anything themselves.
+ * ======================================================================== */
+
+/** The exact subset `mapPayment`/`mapPortalPayment` need — satisfied by BOTH
+ *  `repo/payment.ts`'s own `PaymentRow` (the lease-scoped list/resolve shape)
+ *  and `repo/ledger.ts`'s `ChainPaymentRow` (the whole-chain ledger shape),
+ *  which differ only in `voidedByUserId` — never surfaced to either actor. */
+interface PaymentMappable {
+  id: string;
+  leaseId: string;
+  kind: Payment['kind'];
+  method: Payment['method'];
+  amountCents: number;
+  currency: string;
+  receivedOn: string;
+  reference: string | null;
+  note: string | null;
+  supersedesPaymentId: string | null;
+  voidedAt: Date | null;
+  voidedReason: string | null;
+  recordedByUserId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export function mapPayment(row: PaymentMappable): Payment {
+  return {
+    id: row.id,
+    leaseId: row.leaseId,
+    kind: row.kind,
+    method: row.method,
+    amountCents: row.amountCents,
+    currency: row.currency as Payment['currency'],
+    receivedOn: row.receivedOn,
+    reference: row.reference,
+    note: row.note,
+    supersedesPaymentId: row.supersedesPaymentId,
+    voidedAt: row.voidedAt ? row.voidedAt.toISOString() : null,
+    voidedReason: row.voidedReason,
+    recordedByUserId: row.recordedByUserId,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+/**
+ * The tenant's own statement line. `note` and `voidedReason` are the two
+ * deliberate omissions (portal.ts's own comment on `portalPayment`) — the
+ * landlord's private margin and a reason that may be unflattering or name
+ * another tenancy. `voidedAt` becomes a plain `isVoided`: whether, not when.
+ */
+export function mapPortalPayment(row: PaymentMappable): PortalPayment {
+  return {
+    id: row.id,
+    leaseId: row.leaseId,
+    kind: row.kind,
+    method: row.method,
+    amountCents: row.amountCents,
+    currency: row.currency as PortalPayment['currency'],
+    receivedOn: row.receivedOn,
+    reference: row.reference,
+    isVoided: row.voidedAt !== null,
+    supersedesPaymentId: row.supersedesPaymentId,
+  };
+}
+
+/**
+ * `allocatedCharge = charge.extend({ appliedCents, status })` — reuses
+ * `mapCharge` for the frozen half so an internal column added to `charge` can
+ * never leak here just because it exists on the row. `status` is NEVER a
+ * stored column — `chargeStatusFor` (the contract's own rule) computes it fresh
+ * from `today`, which must be `localToday(property.timezone)`, never the
+ * server's clock.
+ */
+export function mapAllocatedCharge(row: AllocatedChargeRow, today: IsoDate): AllocatedCharge {
+  return {
+    ...mapCharge(row),
+    appliedCents: row.appliedCents,
+    status: chargeStatusFor({
+      amountCents: row.amountCents,
+      appliedCents: row.appliedCents,
+      dueDate: row.dueDate,
+      isVoided: row.voidedAt !== null,
+      today,
+    }),
+  };
+}
+
+/**
+ * A discriminated union, not a flattened row (ledger.ts's own contract
+ * comment). `appliedCents` (FIFO by due date) and `runningBalanceCents`
+ * (chronological by effective date) do NOT agree row-by-row — `repo/ledger.ts`'s
+ * `buildRunningLedger` computes the latter over the SAME allocated rows this
+ * function renders, never a second allocation.
+ */
+export function mapLedgerEntry(entry: RawLedgerEntry, today: IsoDate): LedgerEntry {
+  if (entry.kind === 'charge') {
+    return {
+      kind: 'charge',
+      leaseId: entry.leaseId,
+      effectiveDate: entry.effectiveDate,
+      runningBalanceCents: entry.runningBalanceCents,
+      charge: mapAllocatedCharge(entry.charge, today),
+    };
+  }
+  return {
+    kind: 'payment',
+    leaseId: entry.leaseId,
+    effectiveDate: entry.effectiveDate,
+    runningBalanceCents: entry.runningBalanceCents,
+    payment: mapPayment(entry.payment),
+  };
+}
+
+export function mapLedgerLease(row: LedgerLeaseRow): LedgerLease {
+  return {
+    leaseId: row.leaseId,
+    startDate: row.startDate,
+    endDate: row.endDate,
+    isCurrent: row.isCurrent,
+  };
+}
+
+/**
+ * The five-number identity — `balanceCents === outstandingCents - creditCents`
+ * — is asserted in `repo/ledger.integration.test.ts`, over every allocation
+ * fixture; this is purely a reshape of numbers `buildChainBalance` already
+ * computed.
+ */
+export function mapChainBalance(row: ChainBalanceResult): ChainBalance {
+  return {
+    chainId: row.chainId,
+    currency: row.currency as ChainBalance['currency'],
+    asOfDate: row.asOfDate,
+    chargedCents: row.chargedCents,
+    paidCents: row.paidCents,
+    outstandingCents: row.outstandingCents,
+    creditCents: row.creditCents,
+    balanceCents: row.balanceCents,
+    arrearsCents: row.arrearsCents,
+    depositOutstandingCents: row.depositOutstandingCents,
+    rentOutstandingCents: row.rentOutstandingCents,
+    oldestOverdueDueDate: row.oldestOverdueDueDate,
+  };
+}
+
+/** No `creditCents`, no signed balance (§5.3) — a credit belongs to the
+ *  tenancy, not to one of its leases. */
+export function mapLeaseBalanceSlice(row: LeaseBalanceSliceResult): LeaseBalanceSlice {
+  return {
+    leaseId: row.leaseId,
+    outstandingCents: row.outstandingCents,
+    arrearsCents: row.arrearsCents,
+    depositOutstandingCents: row.depositOutstandingCents,
+    rentOutstandingCents: row.rentOutstandingCents,
+  };
+}
+
+export function mapLeaseBalanceResponse(data: LeaseAndChainBalance): LeaseBalanceResponse {
+  return {
+    lease: mapLeaseBalanceSlice(data.lease),
+    chain: mapChainBalance(data.chain),
+  };
+}
+
+export function mapArrearsRow(row: ArrearsChainRow): ArrearsRow {
+  return {
+    chainId: row.chainId,
+    leaseId: row.leaseId,
+    propertyId: row.propertyId,
+    propertyName: row.propertyName,
+    unitId: row.unitId,
+    unitLabel: row.unitLabel,
+    primaryTenantName: row.primaryTenantName,
+    arrearsCents: row.arrearsCents,
+    oldestOverdueDueDate: row.oldestOverdueDueDate,
+    daysLate: row.daysLate,
+    isCurrent: row.isCurrent,
+  };
+}
+
+/**
+ * Grouped by currency at the TOP level (§6.2) — there is no shape here in which
+ * a client could accidentally sum across currencies, because no array ever
+ * contains two of them.
+ */
+export function mapArrearsResponse(
+  rows: readonly ArrearsChainRow[],
+  truncated: boolean,
+  asOfDate: IsoDate,
+): ArrearsResponse {
+  const byCurrency = new Map<string, { chainCount: number; totalArrearsCents: number; rows: ArrearsRow[] }>();
+  for (const row of rows) {
+    const group = byCurrency.get(row.currency) ?? { chainCount: 0, totalArrearsCents: 0, rows: [] };
+    group.chainCount += 1;
+    group.totalArrearsCents += row.arrearsCents;
+    group.rows.push(mapArrearsRow(row));
+    byCurrency.set(row.currency, group);
+  }
+
+  const groups: ArrearsGroup[] = [...byCurrency.entries()].map(([currency, g]) => ({
+    currency: currency as ArrearsGroup['currency'],
+    chainCount: g.chainCount,
+    totalArrearsCents: g.totalArrearsCents,
+    rows: g.rows,
+  }));
+
+  return { asOfDate, groups, truncated };
+}
+
+export function mapPortalBalance(data: PortalBalanceResult): PortalBalance {
+  return {
+    leaseId: data.leaseId,
+    currency: data.currency as PortalBalance['currency'],
+    asOfDate: data.asOfDate,
+    outstandingCents: data.outstandingCents,
+    overdueCents: data.overdueCents,
+    depositOutstandingCents: data.depositOutstandingCents,
+    creditCents: data.creditCents,
+    nextDueDate: data.nextDueDate,
+    nextDueAmountCents: data.nextDueAmountCents,
   };
 }

@@ -68,7 +68,11 @@ export interface ChargeRow {
   createdAt: Date;
 }
 
-function chargeColumns() {
+// Exported so repo/ledger.ts's allocation query can select the FULL charge shape
+// alongside its own computed `appliedCents` — one column-list definition, reused
+// rather than duplicated (PLAN-PHASE3B.md §3.2's own correction 3: an explicit
+// column list, never `c.*`).
+export function chargeColumns() {
   return {
     id: charge.id,
     leaseId: charge.leaseId,

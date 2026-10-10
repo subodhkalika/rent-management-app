@@ -735,6 +735,99 @@ export const charge = pgTable(
 );
 
 /* ------------------------------------------------------------------ *
+ * payment — PLAN-PHASE3B.md §2. Money RECEIVED, a record of an event that
+ * happened. Nothing automates a payment — a person recorded it — which is where
+ * every difference from `charge` comes from:
+ *
+ *  - `note` is the only mutable field (never shown to a tenant — see portal.ts's
+ *    own comment on `portalPayment`), and `updated_at` is present (not absent, as
+ *    on `charge`) precisely BECAUSE one field can change — its presence is the
+ *    signal that something here can, not an invitation to add more.
+ *  - `recorded_by_user_id` is NOT NULL (unlike charge's own nullable
+ *    `created_by_user_id`, where NULL means the generator): nothing automated
+ *    ever writes a payment, so a NULL here would be unexplainable.
+ *  - No idempotency key. Two identical cash payments of $50 on the same day are
+ *    two real events — a unique index would silently drop the second. The
+ *    double-entry guard is a UI confirm step, never a schema constraint.
+ *
+ * Allocation (which money settles which charge) is NEVER stored here or anywhere
+ * else — it is derived fresh by the window function in `db/repo/ledger.ts` every
+ * time it is asked. See that file's own module comment.
+ * ------------------------------------------------------------------ */
+
+export const paymentKindEnum = pgEnum('payment_kind', ['payment', 'refund']);
+export const paymentMethodEnum = pgEnum('payment_method', [
+  'bank_transfer', 'cash', 'cheque', 'card_external', 'upi', 'other',
+]);
+
+export const payment = pgTable(
+  'payment',
+  {
+    id: uuid().primaryKey(),
+    orgId: text().notNull().references(() => organization.id, { onDelete: 'cascade' }),
+    // Restrict, not cascade: a payment is a permanent financial record and must
+    // outlive any lease-deletion path — same reasoning as `charge.lease_id`
+    // above, and the other half of hardDeleteLease's own precondition (3a gave
+    // the zero-CHARGE half; 3b adds the zero-PAYMENT half — repo/lease.ts).
+    leaseId: uuid().notNull().references(() => lease.id, { onDelete: 'restrict' }),
+
+    kind: paymentKindEnum().notNull(),
+    method: paymentMethodEnum().notNull(),
+    // CHECK > 0, NOT >= 0 (contrast charge_amount_ck) — a charge can legitimately
+    // be zero (a prorated rent rounding down); nothing generates a payment, so a
+    // $0 payment is a mis-click, not an event. Unreachable through the API
+    // (paymentAmountCents already refines `> 0`), and lib/db-errors.ts gains the
+    // 23514 -> 422 branch anyway, the same gap 3a's own CHECK left predicted.
+    amountCents: bigint({ mode: 'number' }).notNull(),
+    // Copied from lease.currency at write time. Immutable; never accepted from
+    // the client — recordPaymentBody carries no currency field at all.
+    currency: text().notNull(),
+    // The PROPERTY's local date, never the recorder's browser date (PLAN-
+    // PHASE3B.md §2.5). A plain `date`, never a timestamptz — DST cannot move a
+    // date. No lower bound: a deposit paid at signing can predate the lease's
+    // own startDate, and an onboarded tenancy can have payments predating
+    // ledgerStartDate. Both are real.
+    receivedOn: date().notNull(),
+    // Cheque number, bank reference. IMMUTABLE — it is evidence. 1..200 chars,
+    // enforced by the contract.
+    reference: text(),
+    // The ONLY mutable field. Private bookkeeping that never reaches a tenant.
+    // 0..1000 chars, enforced by the contract.
+    note: text(),
+
+    // The correction chain. Self-referencing, restrict — a correction's
+    // predecessor must never disappear out from under it. Same shape as
+    // `charge.supersedesChargeId`.
+    supersedesPaymentId: uuid().references((): AnyPgColumn => payment.id, { onDelete: 'restrict' }),
+
+    // The ONLY other mutation this table ever accepts, besides `note`. All three
+    // NULL until voided, set together, exactly once.
+    voidedAt: timestamp({ withTimezone: true }),
+    // 10..500 chars, enforced by the contract's voidPaymentBody/correctPaymentBody.
+    voidedReason: text(),
+    voidedByUserId: text().references(() => user.id),
+
+    // Never NULL — a person always recorded this (contrast charge's nullable
+    // created_by_user_id, where NULL means the generator).
+    recordedByUserId: text().notNull().references(() => user.id),
+    createdAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('payment_amount_ck', sql`${t.amountCents} > 0`),
+
+    // The ledger, the payment list, and the FIFO net-paid aggregate (leading
+    // (org_id, lease_id) serves the chain aggregate once per lease in the
+    // chain). This is the ONLY index 3b's payment queries need — deliberately
+    // NOT adding one on (org_id, received_on) (that is Phase 4's income-report
+    // index, named so nobody adds it early) or on kind/method/voided_at (a
+    // lease has tens of payments; filtering an already-tiny result set needs no
+    // index of its own).
+    index('payment_lease_received_idx').on(t.orgId, t.leaseId, t.receivedOn, t.id),
+  ],
+);
+
+/* ------------------------------------------------------------------ *
  * job_run — the one table with NO org_id, and that is correct: it describes the
  * SYSTEM (one cron run across every org), not a tenant. A reviewer applying the
  * tenancy guard's usual rule to this table would be checking the wrong thing —

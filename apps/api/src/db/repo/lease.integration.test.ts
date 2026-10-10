@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { uuidv7, generatorFixtures, chargesThroughNextPeriod, localToday } from '@rms/contract';
 import { createDb, type Database } from '../index.js';
-import { organization, user, property, unit, tenant, lease, leaseTenant, leaseRentStepCorrection, charge } from '../schema.js';
+import { organization, user, property, unit, tenant, lease, leaseTenant, leaseRentStepCorrection, charge, payment } from '../schema.js';
 import { ApiException } from '../../lib/errors.js';
 import { isUniqueViolation } from '../../lib/db-errors.js';
 import * as leaseRepo from './lease.js';
@@ -160,6 +160,9 @@ describe.skipIf(!DATABASE_URL)('lease.ts orchestration functions — live Postgr
       // runs, and deleting `lease` before these would itself hit the same
       // constraint the §3.5 precondition test is specifically proving.
       await db.delete(charge).where(eq(charge.orgId, orgToClean));
+      // `payment.lease_id` is ON DELETE RESTRICT too (PLAN-PHASE3B.md §2.2) —
+      // same reasoning, same ordering requirement as `charge` above.
+      await db.delete(payment).where(eq(payment.orgId, orgToClean));
       await db.delete(lease).where(eq(lease.orgId, orgToClean));
       await db.delete(unit).where(eq(unit.orgId, orgToClean));
       await db.delete(property).where(eq(property.orgId, orgToClean));
@@ -491,6 +494,77 @@ describe.skipIf(!DATABASE_URL)('lease.ts orchestration functions — live Postgr
     });
 
     /**
+     * PLAN-PHASE3B.md §13: `chain_id` must mean "one tenancy" BY CONSTRUCTION —
+     * chain-wide FIFO allocation (repo/ledger.ts) depends on it. A "renewal"
+     * sharing no tenant with the predecessor is a brand-new tenancy; it must be
+     * a new lease (a new chain), not a renewal reusing the old one. This is the
+     * Phase 2 behaviour change the Phase 3b plan calls for.
+     */
+    it('a renewal sharing no tenant with the predecessor 409s — carrying forward a disjoint roster', async () => {
+      const predecessor = await leaseRepo.createLease(orgId, db, userId, baseCreateBody()); // tenantAId only
+      await leaseRepo.activateLease(orgId, db, predecessor.id);
+
+      // A brand new tenant, never on the predecessor's roster at all.
+      const strangerId = (
+        await tenantRepo.createTenant(orgId, db, { firstName: 'Stranger', lastName: 'Danger', status: 'prospect' })
+      ).id;
+
+      await expect(
+        leaseRepo.renewLease(orgId, db, userId, predecessor.id, {
+          startDate: '2027-01-01',
+          rentCents: 100000,
+          carryTenantIds: [strangerId],
+          primaryTenantId: strangerId,
+        }),
+      ).rejects.toMatchObject({
+        code: 'conflict',
+        message: 'A renewal must carry forward at least one tenant from the current lease. Start a new lease instead.',
+      });
+
+      // Untouched, not torn: the predecessor stays active, no successor exists.
+      const stillActive = await leaseRepo.getLease(orgId, db, predecessor.id);
+      expect(stillActive?.status).toBe('active');
+    });
+
+    it('a renewal carrying forward AT LEAST ONE shared tenant succeeds, even if the rest of the roster changes', async () => {
+      const predecessor = await leaseRepo.createLease(orgId, db, userId, {
+        ...baseCreateBody(),
+        tenantIds: [tenantAId, tenantBId],
+        primaryTenantId: tenantAId,
+      });
+      await leaseRepo.activateLease(orgId, db, predecessor.id);
+
+      const strangerId = (
+        await tenantRepo.createTenant(orgId, db, { firstName: 'New', lastName: 'Roommate', status: 'prospect' })
+      ).id;
+
+      // tenantBId carries forward; tenantAId leaves, strangerId joins — one
+      // shared tenant is enough for this to read as the same tenancy.
+      const renewed = await leaseRepo.renewLease(orgId, db, userId, predecessor.id, {
+        startDate: '2027-01-01',
+        rentCents: 110000,
+        carryTenantIds: [tenantBId, strangerId],
+        primaryTenantId: tenantBId,
+      });
+      expect(renewed?.status).toBe('active');
+      expect(renewed?.chainId).toBe(predecessor.chainId);
+      expect(renewed?.tenantCount).toBe(2);
+    });
+
+    it('an EXPLICIT empty carryTenantIds against a predecessor with live tenants 409s', async () => {
+      const predecessor = await leaseRepo.createLease(orgId, db, userId, baseCreateBody());
+      await leaseRepo.activateLease(orgId, db, predecessor.id);
+
+      await expect(
+        leaseRepo.renewLease(orgId, db, userId, predecessor.id, {
+          startDate: '2027-01-01',
+          rentCents: 100000,
+          carryTenantIds: [],
+        }),
+      ).rejects.toMatchObject({ code: 'conflict' });
+    });
+
+    /**
      * MINOR 1: an onboarded predecessor's `ledgerStartDate` can sit after its
      * `startDate`. `predecessorEnd = newStart - 1` can then land BEFORE that
      * ledger start, violating `lease_ledger_ck` (`ledger_start_date <=
@@ -597,6 +671,37 @@ describe.skipIf(!DATABASE_URL)('lease.ts orchestration functions — live Postgr
         currency: 'USD',
         source: 'manual',
         createdByUserId: userId,
+      });
+
+      const result = await leaseRepo.hardDeleteLease(orgId, db, created.id);
+      expect(result).toBe('blocked');
+
+      const stillThere = await leaseRepo.getLease(orgId, db, created.id);
+      expect(stillThere).not.toBeNull();
+    });
+
+    /**
+     * PLAN-PHASE3B.md §4.13: the zero-PAYMENT half of the same precondition —
+     * `payment.lease_id` is `ON DELETE RESTRICT` too. A cancelled lease never
+     * reaches `recordPayment` through the ordinary route (it refuses draft/
+     * cancelled, same as charges), so this inserts the payment row directly to
+     * prove the PRECONDITION CHECK itself, not just the happy path.
+     */
+    it('a cancelled lease holding a payment row (however it got one) is blocked, never 500ing on the FK', async () => {
+      const created = await leaseRepo.createLease(orgId, db, userId, baseCreateBody());
+      const cancelled = await leaseRepo.cancelLease(orgId, db, created.id);
+      expect(cancelled?.status).toBe('cancelled');
+
+      await db.insert(payment).values({
+        id: uuidv7(),
+        orgId,
+        leaseId: created.id,
+        kind: 'payment',
+        method: 'cash',
+        amountCents: 100,
+        currency: 'USD',
+        receivedOn: '2026-01-01',
+        recordedByUserId: userId,
       });
 
       const result = await leaseRepo.hardDeleteLease(orgId, db, created.id);

@@ -10,6 +10,15 @@ import {
   charge as chargeSchema,
   chargeWithLease as chargeWithLeaseSchema,
   portalCharge as portalChargeSchema,
+  payment as paymentSchema,
+  portalPayment as portalPaymentSchema,
+  allocatedCharge as allocatedChargeSchema,
+  chainBalance as chainBalanceSchema,
+  leaseBalanceSlice as leaseBalanceSliceSchema,
+  leaseBalanceResponse as leaseBalanceResponseSchema,
+  arrearsRow as arrearsRowSchema,
+  arrearsResponse as arrearsResponseSchema,
+  portalBalance as portalBalanceSchema,
 } from '@rms/contract';
 import type { PropertyRow } from '../db/repo/property.js';
 import type { UnitRow } from '../db/repo/unit.js';
@@ -17,6 +26,15 @@ import type { TenantRow } from '../db/repo/tenant.js';
 import type { PortalProfileRow } from '../db/repo/portal/profile.js';
 import { escalationFromRow, type RentStepRow, type RentStepCorrectionRow } from '../db/repo/lease.js';
 import type { ChargeRow, ChargeWithLeaseRow } from '../db/repo/charge.js';
+import type { PaymentRow } from '../db/repo/payment.js';
+import type {
+  AllocatedChargeRow,
+  ChainBalanceResult,
+  LeaseBalanceSliceResult,
+  ArrearsChainRow,
+  RawLedgerEntry,
+} from '../db/repo/ledger.js';
+import type { PortalBalanceResult } from '../db/repo/portal/balance.js';
 import {
   mapProperty,
   mapUnit,
@@ -29,6 +47,17 @@ import {
   mapCharge,
   mapChargeWithLease,
   mapPortalCharge,
+  mapPayment,
+  mapPortalPayment,
+  mapAllocatedCharge,
+  mapLedgerEntry,
+  mapLedgerLease,
+  mapChainBalance,
+  mapLeaseBalanceSlice,
+  mapLeaseBalanceResponse,
+  mapArrearsRow,
+  mapArrearsResponse,
+  mapPortalBalance,
 } from './mappers.js';
 
 const propertyRow: PropertyRow = {
@@ -508,5 +537,301 @@ describe('mapPortalCharge', () => {
   it('keeps supersedesChargeId — "$1,000 replaced by $900" reads as one correction', () => {
     const mapped = mapPortalCharge({ ...chargeRow, supersedesChargeId: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e40' });
     expect(mapped.supersedesChargeId).toBe('0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e40');
+  });
+});
+
+/* ======================================================================== *
+ * payments, the ledger and balances — PLAN-PHASE3B.md
+ * ======================================================================== */
+
+const paymentRow: PaymentRow = {
+  id: '0191c2e4-3c4d-7e5f-8a6b-7c8d9e0f1a2b',
+  leaseId: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e0f',
+  kind: 'payment',
+  method: 'bank_transfer',
+  amountCents: 150000,
+  currency: 'USD',
+  receivedOn: '2026-04-01',
+  reference: 'REF-001',
+  note: 'Paid late again — chase in person.',
+  supersedesPaymentId: null,
+  voidedAt: null,
+  voidedReason: null,
+  voidedByUserId: null,
+  recordedByUserId: 'user_1',
+  createdAt: new Date('2026-04-01T00:00:00.000Z'),
+  updatedAt: new Date('2026-04-01T00:00:00.000Z'),
+};
+
+describe('mapPayment', () => {
+  it('produces a value matching the contract schema', () => {
+    expect(paymentSchema.safeParse(mapPayment(paymentRow)).success).toBe(true);
+  });
+
+  it('never leaks voidedByUserId — structurally absent from the landlord payment shape', () => {
+    const withVoidedBy: PaymentRow = { ...paymentRow, voidedByUserId: 'user_42' };
+    const mapped = mapPayment(withVoidedBy) as Record<string, unknown>;
+    expect(mapped.voidedByUserId).toBeUndefined();
+  });
+
+  it('keeps note and reference — the landlord sees both', () => {
+    const mapped = mapPayment(paymentRow);
+    expect(mapped.note).toBe('Paid late again — chase in person.');
+    expect(mapped.reference).toBe('REF-001');
+  });
+
+  it('formats voidedAt as an ISO string, preserves null', () => {
+    expect(mapPayment(paymentRow).voidedAt).toBeNull();
+    const voided = mapPayment({
+      ...paymentRow,
+      voidedAt: new Date('2026-04-02T00:00:00.000Z'),
+      voidedReason: 'Bounced cheque.',
+    });
+    expect(voided.voidedAt).toBe('2026-04-02T00:00:00.000Z');
+  });
+});
+
+describe('mapPortalPayment', () => {
+  it('produces a value matching the contract schema', () => {
+    expect(portalPaymentSchema.safeParse(mapPortalPayment(paymentRow)).success).toBe(true);
+  });
+
+  it('never leaks note, voidedReason, or any user id — the landlord\'s private margin', () => {
+    const mapped = mapPortalPayment({
+      ...paymentRow,
+      voidedAt: new Date('2026-04-02T00:00:00.000Z'),
+      voidedReason: 'Unflattering reason.',
+    }) as Record<string, unknown>;
+    expect(mapped.note).toBeUndefined();
+    expect(mapped.voidedReason).toBeUndefined();
+    expect(mapped.recordedByUserId).toBeUndefined();
+    expect(mapped.voidedByUserId).toBeUndefined();
+  });
+
+  it('collapses voidedAt to isVoided, keeps reference — the tenant\'s own bank reference', () => {
+    const mapped = mapPortalPayment(paymentRow);
+    expect(mapped.isVoided).toBe(false);
+    expect(mapped.reference).toBe('REF-001');
+  });
+
+  it('keeps supersedesPaymentId — "$1,200 replaced by $1,020" reads as one correction', () => {
+    const mapped = mapPortalPayment({ ...paymentRow, supersedesPaymentId: '0191c2e4-4d5e-7f6a-9b7c-8d9e0f1a2b3c' });
+    expect(mapped.supersedesPaymentId).toBe('0191c2e4-4d5e-7f6a-9b7c-8d9e0f1a2b3c');
+  });
+});
+
+const allocatedChargeRow: AllocatedChargeRow = {
+  ...chargeRow,
+  chainId: '0191c2e4-5e6f-7a7b-8c8d-9e0f1a2b3c4d',
+  propertyTimezone: 'UTC',
+  appliedCents: 50000,
+};
+
+describe('mapAllocatedCharge', () => {
+  it('produces a value matching the contract schema', () => {
+    expect(allocatedChargeSchema.safeParse(mapAllocatedCharge(allocatedChargeRow, '2026-05-01')).success).toBe(true);
+  });
+
+  it('derives status via chargeStatusFor — never a stored column', () => {
+    const paid = mapAllocatedCharge({ ...allocatedChargeRow, amountCents: 50000, appliedCents: 50000 }, '2026-05-01');
+    expect(paid.status).toBe('paid');
+
+    const overdue = mapAllocatedCharge(
+      { ...allocatedChargeRow, dueDate: '2020-01-01', amountCents: 50000, appliedCents: 0 },
+      '2026-05-01',
+    );
+    expect(overdue.status).toBe('overdue');
+
+    const voided = mapAllocatedCharge({ ...allocatedChargeRow, voidedAt: new Date(), appliedCents: 0 }, '2026-05-01');
+    expect(voided.status).toBe('void');
+  });
+
+  it('a zero-amount charge is born paid, never overdue — the §3.5 trap', () => {
+    const mapped = mapAllocatedCharge(
+      { ...allocatedChargeRow, dueDate: '2020-01-01', amountCents: 0, appliedCents: 0 },
+      '2026-05-01',
+    );
+    expect(mapped.status).toBe('paid');
+  });
+
+  it('never leaks chainId or propertyTimezone — both are internal-only', () => {
+    const mapped = mapAllocatedCharge(allocatedChargeRow, '2026-05-01') as Record<string, unknown>;
+    expect(mapped.chainId).toBeUndefined();
+    expect(mapped.propertyTimezone).toBeUndefined();
+  });
+});
+
+describe('mapLedgerEntry', () => {
+  it('a charge entry matches the discriminated union, charge half', () => {
+    const entry: RawLedgerEntry = {
+      kind: 'charge',
+      leaseId: allocatedChargeRow.leaseId,
+      effectiveDate: '2026-04-01',
+      runningBalanceCents: 50000,
+      charge: allocatedChargeRow,
+    };
+    const mapped = mapLedgerEntry(entry, '2026-05-01');
+    expect(mapped.kind).toBe('charge');
+    if (mapped.kind === 'charge') {
+      expect(mapped.charge.appliedCents).toBe(50000);
+      expect(mapped.runningBalanceCents).toBe(50000);
+    }
+  });
+
+  it('a payment entry matches the discriminated union, payment half', () => {
+    const entry: RawLedgerEntry = {
+      kind: 'payment',
+      leaseId: paymentRow.leaseId,
+      effectiveDate: '2026-04-01',
+      runningBalanceCents: -50000,
+      payment: paymentRow,
+    };
+    const mapped = mapLedgerEntry(entry, '2026-05-01');
+    expect(mapped.kind).toBe('payment');
+    if (mapped.kind === 'payment') {
+      expect(mapped.payment.id).toBe(paymentRow.id);
+      expect(mapped.runningBalanceCents).toBe(-50000);
+    }
+  });
+});
+
+describe('mapLedgerLease', () => {
+  it('passes the four fields through unchanged', () => {
+    const mapped = mapLedgerLease({
+      leaseId: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e0f',
+      startDate: '2026-01-01',
+      endDate: null,
+      isCurrent: true,
+    });
+    expect(mapped).toEqual({
+      leaseId: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e0f',
+      startDate: '2026-01-01',
+      endDate: null,
+      isCurrent: true,
+    });
+  });
+});
+
+const chainBalanceResult: ChainBalanceResult = {
+  chainId: '0191c2e4-5e6f-7a7b-8c8d-9e0f1a2b3c4d',
+  currency: 'USD',
+  asOfDate: '2026-05-01',
+  chargedCents: 100000,
+  paidCents: 150000,
+  outstandingCents: 0,
+  creditCents: 50000,
+  balanceCents: -50000,
+  arrearsCents: 0,
+  depositOutstandingCents: 0,
+  rentOutstandingCents: 0,
+  oldestOverdueDueDate: null,
+};
+
+describe('mapChainBalance', () => {
+  it('produces a value matching the contract schema — a signed balanceCents, never money', () => {
+    expect(chainBalanceSchema.safeParse(mapChainBalance(chainBalanceResult)).success).toBe(true);
+  });
+
+  it('carries the signed balance through — a credit is negative, not clamped', () => {
+    expect(mapChainBalance(chainBalanceResult).balanceCents).toBe(-50000);
+  });
+});
+
+describe('mapLeaseBalanceSlice / mapLeaseBalanceResponse', () => {
+  const sliceResult: LeaseBalanceSliceResult = {
+    leaseId: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e0f',
+    outstandingCents: 20000,
+    arrearsCents: 20000,
+    depositOutstandingCents: 0,
+    rentOutstandingCents: 20000,
+  };
+
+  it('mapLeaseBalanceSlice produces a value matching the contract schema, with no creditCents field', () => {
+    const mapped = mapLeaseBalanceSlice(sliceResult) as Record<string, unknown>;
+    expect(leaseBalanceSliceSchema.safeParse(mapped).success).toBe(true);
+    expect(mapped.creditCents).toBeUndefined();
+    expect(mapped.balanceCents).toBeUndefined();
+  });
+
+  it('mapLeaseBalanceResponse combines both slices in one response', () => {
+    const mapped = mapLeaseBalanceResponse({ lease: sliceResult, chain: chainBalanceResult });
+    expect(leaseBalanceResponseSchema.safeParse(mapped).success).toBe(true);
+    expect(mapped.lease.leaseId).toBe(sliceResult.leaseId);
+    expect(mapped.chain.chainId).toBe(chainBalanceResult.chainId);
+  });
+});
+
+const arrearsChainRow: ArrearsChainRow = {
+  chainId: '0191c2e4-5e6f-7a7b-8c8d-9e0f1a2b3c4d',
+  leaseId: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e0f',
+  currency: 'USD',
+  propertyId: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e20',
+  propertyName: 'Maple Court',
+  unitId: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e30',
+  unitLabel: '2B',
+  primaryTenantName: 'Dana Lee',
+  arrearsCents: 50000,
+  oldestOverdueDueDate: '2026-03-01',
+  daysLate: 40,
+  isCurrent: true,
+};
+
+describe('mapArrearsRow', () => {
+  it('produces a value matching the contract schema', () => {
+    expect(arrearsRowSchema.safeParse(mapArrearsRow(arrearsChainRow)).success).toBe(true);
+  });
+});
+
+describe('mapArrearsResponse', () => {
+  it('groups by currency at the top level — no array ever contains two currencies', () => {
+    const usdRow = arrearsChainRow;
+    const gbpRow: ArrearsChainRow = { ...arrearsChainRow, chainId: '0191c2e4-6f7a-7b8c-9d9e-0f1a2b3c4d5e', currency: 'GBP', arrearsCents: 10000 };
+
+    const mapped = mapArrearsResponse([usdRow, gbpRow], false, '2026-05-01');
+    expect(arrearsResponseSchema.safeParse(mapped).success).toBe(true);
+    expect(mapped.groups).toHaveLength(2);
+    const usdGroup = mapped.groups.find((g) => g.currency === 'USD')!;
+    expect(usdGroup.chainCount).toBe(1);
+    expect(usdGroup.totalArrearsCents).toBe(50000);
+    const gbpGroup = mapped.groups.find((g) => g.currency === 'GBP')!;
+    expect(gbpGroup.totalArrearsCents).toBe(10000);
+  });
+
+  it('sums totalArrearsCents and counts chains within one currency group', () => {
+    const second: ArrearsChainRow = { ...arrearsChainRow, chainId: '0191c2e4-7a8b-7c9d-9e0f-1a2b3c4d5e6f', arrearsCents: 25000 };
+    const mapped = mapArrearsResponse([arrearsChainRow, second], false, '2026-05-01');
+    expect(mapped.groups).toHaveLength(1);
+    expect(mapped.groups[0]!.chainCount).toBe(2);
+    expect(mapped.groups[0]!.totalArrearsCents).toBe(75000);
+  });
+
+  it('an empty input is a real, valid state — no groups, never an error', () => {
+    const mapped = mapArrearsResponse([], false, '2026-05-01');
+    expect(arrearsResponseSchema.safeParse(mapped).success).toBe(true);
+    expect(mapped.groups).toEqual([]);
+  });
+
+  it('carries the truncated flag through unchanged', () => {
+    expect(mapArrearsResponse([], true, '2026-05-01').truncated).toBe(true);
+  });
+});
+
+describe('mapPortalBalance', () => {
+  const portalBalanceResult: PortalBalanceResult = {
+    leaseId: '0191c2e4-1a2b-7c3d-8e4f-5a6b7c8d9e0f',
+    currency: 'USD',
+    asOfDate: '2026-05-01',
+    outstandingCents: 0,
+    overdueCents: 0,
+    depositOutstandingCents: 0,
+    creditCents: 50000,
+    nextDueDate: null,
+    nextDueAmountCents: 0,
+  };
+
+  it('produces a value matching the contract schema — no signed balanceCents field at all', () => {
+    const mapped = mapPortalBalance(portalBalanceResult) as Record<string, unknown>;
+    expect(portalBalanceSchema.safeParse(mapped).success).toBe(true);
+    expect(mapped.balanceCents).toBeUndefined();
   });
 });

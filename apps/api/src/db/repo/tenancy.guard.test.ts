@@ -43,7 +43,7 @@ function landlordRepoFiles(): string[] {
  * near-empty) glob fails loudly instead of silently passing every `it()` below
  * vacuously, which is exactly how the original bug went unnoticed.
  */
-const MIN_LANDLORD_REPO_FILES = 5; // property.ts, unit.ts, tenant.ts, lease.ts, charge.ts
+const MIN_LANDLORD_REPO_FILES = 7; // property.ts, unit.ts, tenant.ts, lease.ts, charge.ts, payment.ts, ledger.ts
 
 describe('tenant isolation guard', () => {
   const files = landlordRepoFiles();

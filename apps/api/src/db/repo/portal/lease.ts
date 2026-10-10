@@ -23,6 +23,11 @@ import { listRentStepsQuery, type RentStepRow } from '../lease.js';
 export interface PortalLeaseRow {
   id: string;
   orgId: string;
+  // Internal only — never serialised to the tenant (portal.ts has no field for
+  // it). Phase 3b's `repo/portal/balance.ts` needs it to scope the SAME
+  // chain-wide allocation the landlord runs down to the leases THIS caller is
+  // actually linked to (§7.3 of PLAN-PHASE3B.md).
+  chainId: string;
   landlordName: string;
   status: (typeof lease.$inferSelect)['status'];
   unitLabel: string;
@@ -63,6 +68,7 @@ function portalLeaseColumns() {
   return {
     id: lease.id,
     orgId: lease.orgId,
+    chainId: lease.chainId,
     landlordName: organization.name,
     status: lease.status,
     unitLabel: unit.label,

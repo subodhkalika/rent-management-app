@@ -21,7 +21,7 @@ const PORTAL_DIR = dirname(fileURLToPath(import.meta.url));
 
 /** Bump UP when a legitimate portal repo file is added. Never down — see
  *  tenancy.guard.test.ts for why a floor exists at all. */
-const MIN_PORTAL_REPO_FILES = 3; // scope.ts, profile.ts, lease.ts
+const MIN_PORTAL_REPO_FILES = 4; // scope.ts, profile.ts, lease.ts, balance.ts
 
 // `resolveScopeQuery` is `resolveScope`'s split-out query builder (same pattern as
 // property.ts/unit.ts/tenant.ts), so it is exempt for the identical reason.

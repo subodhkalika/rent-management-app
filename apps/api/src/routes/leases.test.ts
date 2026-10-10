@@ -314,6 +314,23 @@ describe('§5.2 illegal transitions', () => {
     expect(res.status).toBe(409);
   });
 
+  /**
+   * PLAN-PHASE3B.md §13: a renewal sharing no tenant with its predecessor 409s
+   * — `chain_id` must mean "one tenancy" by construction, which chain-wide
+   * FIFO allocation depends on.
+   */
+  it('renew carrying forward a disjoint roster -> 409', async () => {
+    leaseRepoMock.renewLease.mockRejectedValue(
+      conflict('A renewal must carry forward at least one tenant from the current lease. Start a new lease instead.'),
+    );
+    const res = await post(`/v1/leases/${LEASE_ID}/renew`, {
+      startDate: '2026-02-01',
+      rentCents: 100000,
+      carryTenantIds: ['00000000-0000-7000-8000-00000000f001'],
+    });
+    expect(res.status).toBe(409);
+  });
+
   it("DELETE on active/ended/terminated -> 409 'kept for the record'", async () => {
     leaseRepoMock.hardDeleteLease.mockResolvedValue('blocked');
     const res = await buildApp().request(`/v1/leases/${LEASE_ID}`, { method: 'DELETE' }, testEnv);

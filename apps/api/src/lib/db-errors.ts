@@ -1,4 +1,5 @@
 const PG_UNIQUE_VIOLATION = '23505';
+const PG_CHECK_VIOLATION = '23514';
 /** How many `.cause` links to follow before giving up. Drizzle wraps the driver's
  *  error in one `DrizzleQueryError`, so 1 would do — a couple of spares costs
  *  nothing and survives a future wrapper being added in between. */
@@ -6,6 +7,17 @@ const MAX_CAUSE_DEPTH = 5;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
+}
+
+/** Walks a bounded number of `.cause` links looking for a Postgres SQLSTATE, the
+ *  shared mechanics behind both `isUniqueViolation` and `isCheckViolation` below. */
+function hasSqlState(err: unknown, code: string): boolean {
+  let current: unknown = err;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH && isRecord(current); depth++) {
+    if (current.code === code) return true;
+    current = current.cause;
+  }
+  return false;
 }
 
 /**
@@ -21,10 +33,20 @@ function isRecord(v: unknown): v is Record<string, unknown> {
  * this doesn't silently stop matching if a Drizzle/driver bump adds another layer.
  */
 export function isUniqueViolation(err: unknown): boolean {
-  let current: unknown = err;
-  for (let depth = 0; depth < MAX_CAUSE_DEPTH && isRecord(current); depth++) {
-    if (current.code === PG_UNIQUE_VIOLATION) return true;
-    current = current.cause;
-  }
-  return false;
+  return hasSqlState(err, PG_UNIQUE_VIOLATION);
+}
+
+/**
+ * True when `err` is a Postgres CHECK-violation (SQLSTATE 23514).
+ *
+ * PLAN-PHASE3B.md §2.4: `payment_amount_ck` (`amount_cents > 0`) is unreachable
+ * through the API — the contract's `paymentAmountCents` already refines `> 0` — but
+ * 3a predicted exactly this gap for `charge_amount_ck` and 3b adds two more CHECKs
+ * (`payment_amount_ck` here, plus the existing charge ones) without ever closing it.
+ * Without this branch a CHECK violation that DOES reach the database (a direct
+ * repo-level caller, a future schema change that loosens the contract's own refine)
+ * surfaces as an unhandled 500 instead of a 422 naming the real field.
+ */
+export function isCheckViolation(err: unknown): boolean {
+  return hasSqlState(err, PG_CHECK_VIOLATION);
 }

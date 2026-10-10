@@ -62,6 +62,7 @@ function portalLeaseDetailRow(overrides: Partial<PortalLeaseDetailRow> = {}): Po
   return {
     id: LEASE_L1,
     orgId: 'org_A',
+    chainId: LEASE_L1,
     landlordName: 'Alice Lettings',
     status: 'active',
     unitLabel: '2B',

@@ -12,9 +12,12 @@ import { me } from './routes/me.js';
 import { tenants } from './routes/tenants.js';
 import { leases } from './routes/leases.js';
 import { charges } from './routes/charges.js';
+import { payments } from './routes/payments.js';
+import { ledger } from './routes/ledger.js';
 import { internal } from './routes/internal.js';
 import { portalLeases } from './routes/portal-leases.js';
 import { portalCharges } from './routes/portal-charges.js';
+import { portalPayments } from './routes/portal-payments.js';
 import { portal } from './routes/portal.js';
 import { scheduled } from './jobs/scheduled.js';
 import type { AppBindings } from './types.js';
@@ -58,13 +61,17 @@ app.route('/', me);
 app.route('/', tenants);
 app.route('/', leases);
 app.route('/', charges);
+app.route('/', payments);
+app.route('/', ledger);
 app.route('/', internal);
-// portalLeases and portalCharges MUST be mounted before portal: routes.portal.profile
-// is `/v1/portal/:tenantId/profile`, and Hono matches in registration order, so
-// `/v1/portal/leases/:id` has to be tried against these routers' literal paths
-// first or it would be captured as `tenantId = "leases"` by `portal`'s route.
+// portalLeases, portalCharges and portalPayments MUST be mounted before portal:
+// routes.portal.profile is `/v1/portal/:tenantId/profile`, and Hono matches in
+// registration order, so `/v1/portal/leases/:id` has to be tried against these
+// routers' literal paths first or it would be captured as `tenantId = "leases"`
+// by `portal`'s route.
 app.route('/', portalLeases);
 app.route('/', portalCharges);
+app.route('/', portalPayments);
 app.route('/', portal);
 
 app.notFound((c) =>

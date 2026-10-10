@@ -4,7 +4,7 @@
 `PLAN-*.md` files describe what was *decided*, and why — they are design records and
 they are not always current. When the two disagree, this file is right.
 
-Updated at the end of each phase. Last updated: 2026-10-10, after phase 3a.
+Updated at the end of each phase. Last updated: 2026-10-10, after phase 3b.
 
 ---
 
@@ -176,9 +176,71 @@ since there is nothing to act on.
 
 ---
 
+---
+
+## Payments and what is owed
+
+The landlord records money as it arrives — bank transfer, cash, cheque, UPI. Nothing
+is automated, and there is no card processing.
+
+### How a payment settles charges
+
+Money goes to the **oldest debt first**, by due date. Nothing is earmarked to a
+particular charge, and a payment cannot be pointed at one: what is paid is derived
+from the charges and the payments, every time it is asked for, so there is nothing
+that can drift out of step with the rows it describes.
+
+**Allocation spans the whole tenancy, not one lease.** A tenant who renewed and still
+owed from last year has that cleared by their next payment. Where a chain has more
+than one lease, the ledger says which lease a row belongs to, and an older charge
+settled this way says so — otherwise it reads as money landing in the wrong place.
+
+Everything awkward falls out of that one rule without a special case:
+
+| | |
+|---|---|
+| Paid part of the rent | The oldest charge takes what there is; the next gets nothing |
+| Paid too much | Every charge fills up and the rest is a **credit** |
+| Paid before the charge exists | The credit waits, and the charge is born paid |
+| Cheque bounced | Void the payment — allocation retreats from the newest charges back |
+| Rent changed mid-tenancy | Nothing. One queue across the whole tenancy |
+
+### Correcting money
+
+**A payment is never edited and never deleted**, with one exception: its private
+**note**, which no tenant sees. A reference number is evidence and cannot change.
+
+To fix a wrong amount, **correct** it — the original is voided and a replacement is
+linked to it, both visible. To record that money never really arrived, **void** it.
+
+> **Void and refund are not the same thing.** Void means *this never happened, or I
+> recorded it wrong*. Refund means *it happened and I sent money back*. A bounced
+> cheque is a void; returning a deposit is a refund.
+
+**Returning a deposit** is a single action, not a bare refund. A bare refund would
+retreat from the newest charges and make last month's rent read unpaid. The action
+voids the deposit charge and records the refund together, so it nets to zero and the
+ledger tells the story.
+
+### Balances and arrears
+
+A balance is shown as **"Owes X"** or **"Credit of X"** — never as a negative number,
+and never on the tenant's side as a sign at all.
+
+The deposit is counted separately from everything else. Chasing a bond is a different
+conversation from chasing rent, and an unpaid deposit must not make someone look like
+a non-payer.
+
+**Arrears** is what is past due, excluding deposits, judged in the property's own
+timezone. Rent that exists but is not due yet is not arrears. The arrears page is
+grouped by currency and never adds across them, and a tenancy that has ended still
+appears if it owes money — a departed tenant who never paid is exactly who that page
+is for.
+
+---
+
 ## What is not built yet
 
-- **Payments** — recording money received, balances, arrears. This is phase 3b.
 - **Reminders** — email before due and after overdue.
 - **Maintenance requests** and **document storage**.
 - **Reports and CSV export.**

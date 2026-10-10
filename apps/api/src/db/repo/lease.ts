@@ -31,6 +31,7 @@ import { validateEndDateSchedulable } from '../../lib/schedule.js';
 import * as unitRepo from './unit.js';
 import * as propertyRepo from './property.js';
 import * as chargeRepo from './charge.js';
+import * as paymentRepo from './payment.js';
 
 /**
  * Message fired by BOTH the pre-check in `activateLease` (the nice message) and the
@@ -1429,6 +1430,24 @@ export async function renewLease(
   const resolvedTenantIds = await resolveTenantIds(orgId, db, carryTenantIdsRaw);
   if (resolvedTenantIds.length !== carryTenantIdsRaw.length) throw notFound('Tenant');
 
+  // PLAN-PHASE3B.md §13: `chain_id` must mean "one tenancy" BY CONSTRUCTION, not
+  // by convention — chain-wide FIFO allocation (repo/ledger.ts) depends on it. A
+  // renewal sharing NO tenant with the predecessor's live roster is a new
+  // tenancy wearing a renewal's clothes: reject it, so a landlord "renewing"
+  // into a brand-new tenant has to start a fresh lease (a fresh chain) instead.
+  // Checked against the predecessor's LIVE roster, not its full history — a
+  // roommate who left years ago should not keep an otherwise-brand-new tenancy
+  // counting as "the same chain" just by having once been on it. Checked BEFORE
+  // the primaryTenantId resolution below, so an explicitly empty
+  // `carryTenantIds` gets this clear, specific 409 rather than a generic
+  // "primaryTenantId must be one of the renewed roster" 422.
+  const liveTenantIds = new Set(liveRoster.map((t) => t.tenantId));
+  if (liveTenantIds.size > 0 && !resolvedTenantIds.some((id) => liveTenantIds.has(id))) {
+    throw conflict(
+      'A renewal must carry forward at least one tenant from the current lease. Start a new lease instead.',
+    );
+  }
+
   const predecessorPrimary = liveRoster.find((t) => t.isPrimary);
   const primaryTenantId = data.primaryTenantId ?? predecessorPrimary?.tenantId;
   if (primaryTenantId === undefined || !resolvedTenantIds.includes(primaryTenantId)) {
@@ -1507,6 +1526,15 @@ export async function renewLease(
       startDate: data.startDate,
       endDate: data.endDate ?? null,
       rentCents: data.rentCents,
+      // PLAN-PHASE3B.md §6.2 asks for a 409 on a renewal that would carry a
+      // different currency than its predecessor — belt-and-braces against a
+      // chain ever summing across two currencies. There is no live code path
+      // to guard: `renewLeaseBody` has no `currency` field and no `unitId`
+      // field (a renewal never changes unit), so the ONLY currency a renewal
+      // can ever be written with is the predecessor's own, copied here rather
+      // than read from the request. Adding an `if` that can never be false
+      // would be dead code pretending to be a guard; the real guard is this
+      // line never reading from `data`.
       currency: predecessor.currency,
       rentFrequency,
       billingDay,
@@ -1588,6 +1616,15 @@ export async function hardDeleteLease(orgId: string, db: Database, id: string): 
   // invariant defended in only one place is one refactor from being defended in
   // none.
   if (await chargeRepo.existsChargeForLease(orgId, db, id)) return 'blocked';
+
+  // PLAN-PHASE3B.md §4.13: the zero-PAYMENT half of the same precondition — a
+  // draft/cancelled lease should never have a payment against it either
+  // (`recordPayment` already refuses one for the same two statuses), and
+  // `payment.lease_id` is `ON DELETE RESTRICT` exactly like `charge.lease_id`
+  // above. Same belt-and-suspenders reasoning: without this, a payment row that
+  // existed anyway would surface the database's own 23503 as an unhandled 500
+  // instead of this same clean 409.
+  if (await paymentRepo.existsPaymentForLease(orgId, db, id)) return 'blocked';
 
   const result = await hardDeleteLeaseQuery(orgId, db, id);
   if (result.length === 0) return false;
