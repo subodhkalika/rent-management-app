@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useNavigate } from 'react-router-dom';
@@ -6,6 +7,7 @@ import { organization } from '@/lib/auth-client';
 import { onboardingSchema, type OnboardingValues } from './schemas';
 import { mapOnboardingError } from './auth-errors';
 import { slugify } from './slugify';
+import { meKeys } from '@/features/me/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -28,6 +30,8 @@ export function OnboardingPage() {
     resolver: zodResolver(onboardingSchema),
     defaultValues: { name: '', slug: '' },
   });
+
+  const queryClient = useQueryClient();
 
   const nameValue = form.watch('name');
   useEffect(() => {
@@ -57,6 +61,15 @@ export function OnboardingPage() {
       setFormError(mapOnboardingError(setActiveError.code));
       return;
     }
+
+    // The server is now right, but this client is not: the guards branch on
+    // /v1/me/context, which is cached with a 60s staleTime and still says
+    // `landlord: null` from before the organization existed. Navigating on that
+    // cache sends the user straight back here with a cleared form — and because
+    // the organization really was created, retyping the same name then fails with
+    // "already exists". Refetch and WAIT before leaving, so the next screen
+    // decides on what is true rather than on what was true a moment ago.
+    await queryClient.refetchQueries({ queryKey: meKeys.context });
 
     navigate('/properties', { replace: true });
   });
