@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { uuid, isoDate, money, currency, timezone } from './common.js';
+import { uuid, isoDate, money, currency, timezone , optionalText } from './common.js';
 import { address } from './property.js';
 import { leaseStatus } from './lease.js';
 import { rentFrequency, moveOutBillingPolicy, plannedCharge, rentEscalation } from './billing.js';
@@ -31,9 +31,9 @@ export type PortalProfile = z.infer<typeof portalProfile>;
 
 /** The only fields a tenant may change about themselves. */
 export const updatePortalProfileBody = z.object({
-  phone: z.string().trim().max(40).optional(),
-  emergencyContactName: z.string().trim().max(200).optional(),
-  emergencyContactPhone: z.string().trim().max(40).optional(),
+  phone: optionalText(z.string().trim().max(40)),
+  emergencyContactName: optionalText(z.string().trim().max(200)),
+  emergencyContactPhone: optionalText(z.string().trim().max(40)),
   remindersOptedOut: z.boolean().optional(),
 });
 export type UpdatePortalProfileBody = z.infer<typeof updatePortalProfileBody>;

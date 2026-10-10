@@ -64,7 +64,20 @@ export const moneyTotal = z
   .min(-1_000_000_000_00, 'Total is implausibly large')
   .max(1_000_000_000_00, 'Total is implausibly large');
 
-export const currency = z.enum(['USD', 'EUR', 'GBP', 'INR', 'AUD', 'CAD']);
+
+/**
+ * An optional field that a form may submit as an empty string.
+ *
+ * `.optional()` accepts `undefined`, and a text input that was focused and left
+ * blank submits `''` — so an optional email rejected being left empty, which is the
+ * one thing optional is supposed to permit. Clients should still send `undefined`,
+ * but the contract must not break when they do the obvious thing instead.
+ */
+export function optionalText<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess((v) => (v === '' ? undefined : v), schema.optional());
+}
+
+export const currency = z.enum(['USD', 'EUR', 'GBP', 'INR', 'NPR', 'AUD', 'CAD']);
 export type Currency = z.infer<typeof currency>;
 
 export function formatMoney(cents: number, code: Currency, locale = 'en-US'): string {

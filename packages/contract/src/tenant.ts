@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { uuid } from './common.js';
+import { uuid , optionalText } from './common.js';
 
 /**
  * A tenant is a PERSON the landlord manages, not a login. The two are linked
@@ -36,12 +36,12 @@ export const createTenantBody = z.object({
   firstName: z.string().trim().min(1, 'First name is required').max(100),
   lastName: z.string().trim().min(1, 'Last name is required').max(100),
   /** Optional, but required before the tenant can be invited to the portal. */
-  email: z.string().trim().toLowerCase().email('Enter a valid email address').max(254).optional(),
-  phone: z.string().trim().max(40).optional(),
-  emergencyContactName: z.string().trim().max(200).optional(),
-  emergencyContactPhone: z.string().trim().max(40).optional(),
+  email: optionalText(z.string().trim().toLowerCase().email('Enter a valid email address').max(254)),
+  phone: optionalText(z.string().trim().max(40)),
+  emergencyContactName: optionalText(z.string().trim().max(200)),
+  emergencyContactPhone: optionalText(z.string().trim().max(40)),
   /** Landlord-private. Never returned by any portal endpoint. */
-  notes: z.string().trim().max(2000).optional(),
+  notes: optionalText(z.string().trim().max(2000)),
   status: tenantStatus.default('prospect'),
 });
 export type CreateTenantBody = z.infer<typeof createTenantBody>;
