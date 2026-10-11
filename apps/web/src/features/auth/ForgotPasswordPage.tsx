@@ -1,8 +1,9 @@
 import { useState } from 'react';
+import { useSignOut } from '@/features/auth/use-sign-out';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Link } from 'react-router-dom';
-import { requestPasswordReset, signOut, useSession } from '@/lib/auth-client';
+import { requestPasswordReset, useSession } from '@/lib/auth-client';
 import { forgotPasswordSchema, type ForgotPasswordValues } from './schemas';
 import { mapForgotPasswordError } from './auth-errors';
 import { Button } from '@/components/ui/button';
@@ -46,11 +47,12 @@ export function ForgotPasswordPage() {
 }
 
 function AlreadySignedIn({ email }: { email: string }) {
+  const signOutAndClear = useSignOut();
   const [signingOut, setSigningOut] = useState(false);
 
   const handleSignOut = async () => {
     setSigningOut(true);
-    await signOut();
+    await signOutAndClear();
     // No navigation needed: `useSession()` above re-renders this same page
     // once signed out, and it will show the actual form.
   };

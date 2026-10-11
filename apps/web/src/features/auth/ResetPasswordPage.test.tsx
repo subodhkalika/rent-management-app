@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -16,12 +17,14 @@ vi.mock('@/lib/auth-client', () => ({
 
 function renderPage(path = '/reset-password?token=abc123') {
   return render(
-    <MemoryRouter initialEntries={[path]}>
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route path="/reset-password" element={<ResetPasswordPage />} />
         <Route path="/signin" element={<div>Sign-in page</div>} />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 

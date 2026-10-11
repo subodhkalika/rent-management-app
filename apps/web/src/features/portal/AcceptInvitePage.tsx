@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useSignOut } from '@/features/auth/use-sign-out';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
@@ -9,7 +10,7 @@ import {
   type AcceptInviteBody,
   type InvitePreview,
 } from '@rms/contract';
-import { signOut, useSession } from '@/lib/auth-client';
+import { useSession } from '@/lib/auth-client';
 import { ApiClientError } from '@/lib/api';
 import { meKeys } from '@/features/me/api';
 import { useAcceptInvite, usePortalInvitePreview } from './api';
@@ -235,6 +236,7 @@ function SignedInAccept({
   email: string;
   preview: InvitePreview;
 }) {
+  const signOutAndClear = useSignOut();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const mutation = useAcceptInvite();
@@ -257,7 +259,7 @@ function SignedInAccept({
 
   const handleNotYou = async () => {
     setSigningOut(true);
-    await signOut();
+    await signOutAndClear();
     window.location.reload();
   };
 

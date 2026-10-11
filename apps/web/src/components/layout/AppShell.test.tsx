@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -38,7 +39,8 @@ function renderShell(initialPath: string) {
   useMeContext.mockReturnValue({ data: bothCtx });
 
   return render(
-    <MemoryRouter initialEntries={[initialPath]}>
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <MemoryRouter initialEntries={[initialPath]}>
       <Routes>
         <Route element={<AppShell />}>
           <Route path="/properties" element={<div>Properties content</div>} />
@@ -46,7 +48,8 @@ function renderShell(initialPath: string) {
           <Route path="/portal/profile" element={<div>Profile content</div>} />
         </Route>
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -73,13 +76,15 @@ describe('AppShell', () => {
     });
 
     render(
-      <MemoryRouter initialEntries={['/properties']}>
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MemoryRouter initialEntries={['/properties']}>
         <Routes>
           <Route element={<AppShell />}>
             <Route path="/properties" element={<div>Properties content</div>} />
           </Route>
         </Routes>
-      </MemoryRouter>,
+      </MemoryRouter>
+      </QueryClientProvider>,
     );
 
     expect(screen.queryByRole('link', { name: /my tenancies/i })).not.toBeInTheDocument();
@@ -98,13 +103,15 @@ describe('AppShell', () => {
 
     expect(() =>
       render(
-        <MemoryRouter initialEntries={['/portal']}>
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <MemoryRouter initialEntries={['/portal']}>
           <Routes>
             <Route element={<AppShell />}>
               <Route path="/portal" element={<TenancyProbe />} />
             </Route>
           </Routes>
-        </MemoryRouter>,
+        </MemoryRouter>
+        </QueryClientProvider>,
       ),
     ).not.toThrow();
 
@@ -118,13 +125,15 @@ describe('AppShell', () => {
 
     expect(() =>
       render(
-        <MemoryRouter initialEntries={['/portal']}>
+        <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+          <MemoryRouter initialEntries={['/portal']}>
           <Routes>
             <Route element={<AppShell />}>
               <Route path="/portal" element={<TenancyProbe />} />
             </Route>
           </Routes>
-        </MemoryRouter>,
+        </MemoryRouter>
+        </QueryClientProvider>,
       ),
     ).not.toThrow();
 

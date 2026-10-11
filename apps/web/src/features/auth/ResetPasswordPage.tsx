@@ -1,9 +1,10 @@
 import { useState } from 'react';
+import { useSignOut } from '@/features/auth/use-sign-out';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { resetPassword, signOut, useSession } from '@/lib/auth-client';
+import { resetPassword, useSession } from '@/lib/auth-client';
 import { resetPasswordSchema, type ResetPasswordValues } from './schemas';
 import { mapResetPasswordError } from './auth-errors';
 import { PasswordInput } from './PasswordInput';
@@ -27,6 +28,7 @@ import {
  * previous session cookie should not continue to work.
  */
 export function ResetPasswordPage() {
+  const signOutAndClear = useSignOut();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const token = searchParams.get('token');
@@ -69,7 +71,7 @@ export function ResetPasswordPage() {
     }
     // The password just changed under whatever session was active — sign it
     // out rather than leave a now-stale-credentialed session live.
-    if (session) await signOut();
+    if (session) await signOutAndClear();
     toast.success('Password updated. Sign in with your new password.');
     navigate('/signin', { replace: true });
   });

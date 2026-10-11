@@ -1,8 +1,9 @@
 import { useState } from 'react';
+import { useSignOut } from '@/features/auth/use-sign-out';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Building2, ChevronDown, LogOut, User } from 'lucide-react';
 import type { TenancyContext } from '@rms/contract';
-import { signOut, useSession } from '@/lib/auth-client';
+import { useSession } from '@/lib/auth-client';
 import { useMeContext } from '@/features/me/api';
 import { PortalTenancyCtx } from '@/features/portal/tenancy-context';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -27,6 +28,7 @@ import { cn } from '@/lib/utils';
  * properties" and "My tenancies".
  */
 export function AppShell() {
+  const signOutAndClear = useSignOut();
   const navigate = useNavigate();
   const location = useLocation();
   const { data: session } = useSession();
@@ -48,7 +50,7 @@ export function AppShell() {
       : tenancies[0];
 
   const handleSignOut = async () => {
-    await signOut();
+    await signOutAndClear();
     navigate('/signin', { replace: true });
   };
 
