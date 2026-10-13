@@ -108,7 +108,22 @@ zone permission name against a live account** — if `wrangler deploy --env stag
 zone grant (e.g. to "Zone: Workers Routes: Edit" plus "Zone: Zone Settings: Read")
 rather than anything in this repo's config.
 
-Also note your **Account ID** — it's on the right sidebar of any zone/account
+Also note your **Account ID**. It is a 32-character hex string — not your email,
+not the API token. Three ways to find it, easiest first:
+
+- **The dashboard URL.** `https://dash.cloudflare.com/<account-id>/...` — it is the
+  segment straight after the host.
+- **Workers & Pages** in the sidebar, then *Account details* on the right, with a
+  copy button.
+- **From the CLI**, which also proves the value is the account you think it is:
+
+  ```bash
+  cd apps/api && pnpm exec wrangler whoami
+  ```
+
+It is not a secret by itself — it appears in your own URL bar and does nothing
+without a token — but it is stored as a GitHub Secret alongside one, so treat it as
+configuration rather than something to paste into a chat window.
 Overview page in the dashboard. You'll need both values below.
 
 ## 4. Bootstrap: create both Workers **[one-time, manual]**
