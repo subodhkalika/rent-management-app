@@ -129,4 +129,11 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           packageManager: pnpm
           workingDirectory: apps/web
-          command: pages deploy dist --project-name=rms-web-production
+          # --branch is REQUIRED, not cosmetic. A custom domain only ever serves a
+          # project's PRODUCTION deployment, and Pages decides that by comparing the
+          # deployment's branch against the project's production branch (`main`).
+          # Both deploy workflows check out a detached HEAD — head_sha here, a tag in
+          # production — so wrangler has no branch to infer and the upload lands as a
+          # PREVIEW. It succeeds, it gets a working *.pages.dev URL, and the custom
+          # domain keeps showing "nothing here yet" with no error anywhere.
+          command: pages deploy dist --project-name=rms-web-production --branch=main

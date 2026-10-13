@@ -151,6 +151,14 @@ which is fine, since both get redeployed for real the first time CI runs anyway.
 Its only job here is to make each Worker exist (and, as a side effect, attach each
 custom domain route — give this a minute to propagate before testing it).
 
+> **Each Pages project's production branch must be `main`.** Check it under
+> *Settings → Builds & deployments → Production branch* when you create the project.
+> Both deploy workflows pass `--branch=main` explicitly, because they check out a
+> detached HEAD and wrangler would otherwise upload a PREVIEW deployment — which
+> succeeds, returns a working `*.pages.dev` URL, and leaves the custom domain
+> serving "nothing here yet" with no error in the logs. If you set a different
+> production branch, change the flag in both workflows to match.
+
 ## 5. Cloudflare Pages projects **[one-time, manual]**
 
 Two projects, one per environment — `deploy-staging.yml` and
