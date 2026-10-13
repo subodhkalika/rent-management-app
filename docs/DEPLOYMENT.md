@@ -3,30 +3,88 @@
 Everything here stays on a free tier. Steps marked **[one-time, manual]** are done
 once by a human, outside CI, and are not repeated on every deploy.
 
+## Layout
+
+| Environment | Web | API | Deploys when |
+|---|---|---|---|
+| **local** | `localhost:5173` (Docker) | `localhost:8787` (Docker) | always on, unrelated to this doc — see `docs/DOCKER.md` |
+| **staging** | `stg.subodhk.com` | `api-stg.subodhk.com` | every push to `main` |
+| **production** | `rent.subodhk.com` | `api.subodhk.com` | a version tag (`v*`) is pushed |
+
+Staging and production are two separate Cloudflare Workers, two separate Cloudflare
+Pages projects, and (critically) two separate Wrangler secret stores. They share one
+Neon **project** — staging's database is a **branch** of production's, not a
+separate project — but the two Workers must never be pointed at the same
+connection string. See "Neon Postgres" and "Wrangler (Worker) secrets" below.
+
 CI/CD lives in:
 
-- `.github/workflows/ci.yml` — PRs and pushes to main: install, typecheck, lint, test, build.
-- `.github/workflows/deploy.yml` — after CI succeeds on main: migrate, deploy API, deploy web.
+- `.github/workflows/ci.yml` — PRs and pushes to main: install, typecheck, lint,
+  test, build. No deploy. Also runnable as a reusable workflow (`workflow_call`),
+  which `deploy-production.yml` uses so a tagged commit gets the identical gate.
+- `.github/workflows/deploy-staging.yml` — after CI succeeds on a push to `main`:
+  migrate the Neon staging branch, deploy the API Worker to `rms-api-staging`,
+  build and deploy the web app to the `rms-web-staging` Pages project.
+- `.github/workflows/deploy-production.yml` — after a `v*` tag is pushed: re-run
+  CI against that exact commit, then migrate the production database, deploy the
+  API Worker to `rms-api-production`, build and deploy the web app to the
+  `rms-web-production` Pages project.
 
-Read both before changing either; they assume the exact npm script names in
-`apps/api/package.json` and `apps/web/package.json`.
+Read all three before changing any of them; they assume the exact npm script names
+in `apps/api/package.json` and `apps/web/package.json`.
 
-**Read §6 before the first deploy.** The API and web app end up on different domains
-on the free tier, which affects whether login works in every browser — see below.
+## 1. Domain and Cloudflare nameservers **[one-time, manual]**
 
-## 1. Neon Postgres **[one-time, manual]**
+The owner already owns `subodhk.com`. Point it at Cloudflare so the API's custom
+domains and the Pages projects' custom domains can both attach to it:
 
-1. Create a free project at <https://console.neon.tech>.
-2. From the project's **Connection Details** panel, copy two connection strings:
-   - **Pooled** (host ends `-pooler`) — the Worker uses this at runtime via
-     `@neondatabase/serverless`.
-   - **Direct / unpooled** (no `-pooler`) — CI uses this to run migrations.
-     `drizzle-kit migrate` opens a direct TCP connection; running DDL through the
-     pgbouncer transaction-mode pooler can fail or behave oddly on some statements.
-3. Keep both strings. You'll set them as two *different* secrets below — same
-   shape, different host, different purpose.
+1. Dashboard → **Add a site** → enter `subodhk.com` → pick the **Free** plan.
+2. Cloudflare scans existing DNS and shows two nameservers (e.g.
+   `aida.ns.cloudflare.com`, `walt.ns.cloudflare.com` — yours will differ).
+3. At the domain registrar (wherever `subodhk.com` was bought), replace the
+   existing nameservers with those two.
+4. Wait for propagation (minutes to ~24h; Cloudflare emails when the zone goes
+   active). Until then, skip ahead and come back — steps 2–5 below don't need the
+   zone active yet, but the custom-domain attachments in steps 4 and 5 do.
 
-## 2. Cloudflare API token **[one-time, manual]**
+No DNS records need to be created by hand for the subdomains used here
+(`stg`, `api-stg`, `rent`, `api`) — attaching a Workers custom domain or a Pages
+custom domain (steps 4 and 5) creates the necessary CNAME/proxy record for you.
+
+## 2. Neon Postgres **[one-time, manual]**
+
+One Neon **project**, two things living in it:
+
+1. Create a free project at <https://console.neon.tech> — this holds production.
+2. From the project's **Connection Details** panel, copy two connection strings
+   for the **production** (default/`main`) branch:
+   - **Pooled** (host ends `-pooler`) — the production Worker uses this at
+     runtime via `@neondatabase/serverless`.
+   - **Direct / unpooled** (no `-pooler`) — CI uses this to run migrations against
+     production. `drizzle-kit migrate` opens a direct TCP connection; running DDL
+     through the pgbouncer transaction-mode pooler can fail or behave oddly on
+     some statements.
+3. Create a **branch** for staging: Neon console → **Branches** → **Create
+   branch** → branch from `main` (production), name it `staging`. This is a
+   copy-on-write fork — cheap, isolated, and resettable without touching
+   production.
+4. From the **staging branch's** own Connection Details panel (not production's —
+   branches have their own hostnames), copy its own **pooled** and **direct**
+   connection strings.
+5. Keep all four strings. They become four *different* secrets below — same
+   shape, different host, different purpose. Mixing up a staging string and a
+   production string is the one mistake that would make "two environments
+   generating against the same database" (see `apps/api/wrangler.jsonc`'s
+   `env.staging` comment) stop being hypothetical.
+
+**Resetting staging from production:** when staging needs realistic data, reset
+the `staging` branch from Neon's console (**Branches → staging → Reset from
+parent**) or `neon branches reset` via the Neon CLI. This replaces staging's data
+with a fresh copy of production's at the moment of reset — it does **not** change
+connection strings, so nothing in GitHub Secrets or Worker secrets needs updating
+afterward.
+
+## 3. Cloudflare API token **[one-time, manual]**
 
 Create a token at <https://dash.cloudflare.com/profile/api-tokens> → **Create
 Token** → **Create Custom Token**. Grant exactly:
@@ -36,248 +94,287 @@ Token** → **Create Custom Token**. Grant exactly:
 | Account | Workers Scripts | Edit |
 | Account | Cloudflare Pages | Edit |
 | Account | Account Settings | Read |
+| Zone (`subodhk.com`) | Workers Routes | Edit |
+| Zone (`subodhk.com`) | Zone | Read |
 | User | User Details | Read |
 
-Narrower than this and `wrangler deploy` / `wrangler pages deploy` will 403.
-Broader (e.g. "Edit all resources") works but over-grants — don't use the
-default "Edit Cloudflare Workers" template as-is, it doesn't include Pages.
+The two **Zone**-scoped rows are new since the custom-domain routes
+(`api-stg.subodhk.com`, `api.subodhk.com` in `apps/api/wrangler.jsonc`) are
+zone-attached resources — the account-only scopes from before (Workers Scripts,
+Pages) were enough when the API lived on `*.workers.dev`, but are not enough to
+attach a Workers custom domain to a zone. **I could not verify the exact minimal
+zone permission name against a live account** — if `wrangler deploy --env staging`
+403s specifically on the `routes` step, the fix is almost certainly widening this
+zone grant (e.g. to "Zone: Workers Routes: Edit" plus "Zone: Zone Settings: Read")
+rather than anything in this repo's config.
 
 Also note your **Account ID** — it's on the right sidebar of any zone/account
 Overview page in the dashboard. You'll need both values below.
 
-## 3. Cloudflare Pages project **[one-time, manual]**
+## 4. Bootstrap: create both Workers **[one-time, manual]**
 
-The web app deploys to a Pages project named **`rms-web`** — `deploy.yml` hardcodes
-this name, so the project must exist under exactly this name before the first
-deploy. Easiest from your machine with the token from step 2:
-
-```bash
-pnpm dlx wrangler pages project create rms-web --production-branch=main
-```
-
-(Or create it in the dashboard: **Workers & Pages → Create → Pages → Direct
-Upload**, name it `rms-web`.) You do not need to configure a build step in the
-Pages project itself — `deploy.yml` builds the app and pushes the static output
-directly with `wrangler pages deploy`.
-
-This also fixes the Pages project's `*.pages.dev` URL, which you need for step 5.
-If the name `rms-web` is already taken globally on `pages.dev`, Cloudflare will
-assign a different subdomain — check the dashboard for the actual URL and use
-*that* in step 5, not the assumed one.
-
-## 4. Bootstrap: create the Worker **[one-time, manual]**
-
-`deploy.yml` only ever runs `wrangler deploy` (update an existing Worker) and
-`wrangler secret put` (set a secret on an existing Worker) — neither creates a
-Worker from scratch non-interactively. Something has to create `rms-api` once,
-by hand, before step 9's `wrangler secret put` commands or the automated
-pipeline in step 10 can touch it. (Running `wrangler secret put` against a
-Worker that doesn't exist yet prompts "No worker named rms-api found — create
-one?", which has no TTY to answer in CI and will hang or fail there too.)
+`deploy-staging.yml` and `deploy-production.yml` only ever run `wrangler deploy
+--env <env>` (update an existing Worker) and rely on `wrangler secret put --env
+<env>` having already been run by hand — neither creates a Worker from scratch
+non-interactively. Something has to create `rms-api-staging` and
+`rms-api-production` once each, by hand, before secrets can be set on them or the
+automated pipelines can touch them.
 
 From the repo root, with dependencies installed (`pnpm install`, once):
 
 ```bash
 cd apps/api
-CLOUDFLARE_API_TOKEN=<token from step 2> CLOUDFLARE_ACCOUNT_ID=<account id from step 2> \
-  pnpm dlx wrangler deploy
+CLOUDFLARE_API_TOKEN=<token from step 3> CLOUDFLARE_ACCOUNT_ID=<account id from step 3> \
+  pnpm dlx wrangler deploy --env staging
+CLOUDFLARE_API_TOKEN=<token from step 3> CLOUDFLARE_ACCOUNT_ID=<account id from step 3> \
+  pnpm dlx wrangler deploy --env production
 ```
 
-This deploys `rms-api` with whatever's checked in — including the default,
-localhost `WEB_ORIGIN` from `wrangler.jsonc` — which is fine, since nothing
-depends on this deploy working correctly. Its only job is to make the Worker
-exist. The command's output prints the live `*.workers.dev` URL; copy it down
-for step 5. (Steps 9 and 10 will immediately deploy real secrets and the real
-`WEB_ORIGIN` over this placeholder.)
+Each command deploys with whatever's checked in `apps/api/wrangler.jsonc` for that
+environment — including its real `WEB_ORIGIN` and its real custom-domain route —
+which is fine, since both get redeployed for real the first time CI runs anyway.
+Its only job here is to make each Worker exist (and, as a side effect, attach each
+custom domain route — give this a minute to propagate before testing it).
 
-## 5. GitHub Actions variables
+## 5. Cloudflare Pages projects **[one-time, manual]**
 
-Settings → Secrets and variables → Actions → **Variables** tab (not Secrets —
-these are public URLs, not sensitive). Read by `deploy.yml`:
-
-| Variable | Used by | Value |
-|---|---|---|
-| `VITE_API_URL` | Build-web step | The API Worker's URL from step 4, e.g. `https://rms-api.<your-subdomain>.workers.dev` — **no trailing slash** (`apps/web/src/lib/api.ts` concatenates it directly onto each request path) |
-| `WEB_ORIGIN` | Deploy-API step | The Pages project's URL from step 3, e.g. `https://rms-web.pages.dev` — **no trailing slash** |
-
-Both are baked in at deploy time, not read at runtime:
-
-- `VITE_API_URL` is a Vite env var — it's inlined into the static JS bundle when
-  `vite build` runs, so it must be set as a build-step env, not a Worker var.
-  (This was missing before: the build ran with it unset, so the deployed bundle
-  shipped with `BASE = ''` and every API call resolved against the Pages domain,
-  which serves no API.)
-- `WEB_ORIGIN` is passed to `wrangler deploy --var WEB_ORIGIN:...` so the checked-in
-  `apps/api/wrangler.jsonc` can keep `http://localhost:5173` as the default for
-  local `wrangler dev`, while production gets the real Pages origin. The API
-  sends CORS with `credentials: true`, which forbids a wildcard origin, so this
-  must be the exact Pages URL or the browser rejects every cross-origin response.
-
-Set both now. There is no working order in which you reach step 10 before these
-are set: `deploy.yml`'s first step, "Verify required deploy variables are set",
-fails the job immediately with an `::error::` annotation if either is empty —
-by design, so an empty `VITE_API_URL` or `WEB_ORIGIN` can never deploy silently
-broken config (see §10 and the step's comments in `deploy.yml` for exactly what
-breaks if it didn't).
-
-## 6. Known limitation: cross-site session cookies
-
-On the free tier, the API (`*.workers.dev`) and the web app (`*.pages.dev`) are
-different registrable domains — there is no way around this without a custom
-domain. That makes the session cookie **third-party** in production, which has
-two consequences beyond CORS:
-
-1. **Needs an explicit cookie fix in `apps/api/src/lib/auth.ts` (backend-dev's
-   file — not changed here).** Better Auth's session cookie currently uses
-   whatever default `sameSite`/`secure` Better Auth picks. A cross-site
-   `fetch(..., { credentials: 'include' })` only attaches a cookie if it's set
-   with `SameSite=None; Secure`. Without that change, login will appear to work
-   (the Worker sets the cookie) but the browser will silently drop it on the
-   *next* request, so every "logged in" user immediately looks logged out.
-   This needs fixing regardless of which option below is chosen, and is required
-   before production login works at all.
-2. **Browsers increasingly block third-party cookies outright**, even with the
-   attributes above set correctly (Safari ITP blocks them by default today;
-   Chrome has been phasing out third-party cookies). A `SameSite=None` fix alone
-   is not guaranteed future-proof.
-
-Two ways to make the cookie first-party instead of patching around it:
-
-| Option | How | Tradeoff |
-|---|---|---|
-| **(a) Custom domains** | `api.yourdomain.com` + `app.yourdomain.com`, same registrable domain → same-site cookie | Needs a domain you own. Domain registration is not free, so this breaks the all-free-tier constraint unless the team already owns a domain to reuse. |
-| **(b) Proxy through the Pages app** | Serve the API under the web app's own origin, e.g. a Cloudflare Pages Function at `apps/web/functions/api/[[path]]` (or similar, for every path the API currently serves — see the Vite dev proxy in `apps/web/vite.config.ts` for the exact path list) that forwards to the Worker, ideally via a service binding so the hop never leaves Cloudflare's network. Cookie becomes first-party; `VITE_API_URL` becomes unnecessary (same-origin, `BASE = ''` works again, both in dev and prod). | Stays free. Adds a thin proxy layer and one more moving part to keep in sync with the API's route list. |
-
-**Picked: (b).** It's the only option that holds the free-tier constraint without
-relying on the team happening to already own a domain. **This is not implemented
-yet** — it requires a change inside `apps/web` (a Pages Function or equivalent),
-which is `frontend-dev`'s code, not devops config, so it's out of scope for this
-pass. Flagging as a required follow-up:
-
-- [ ] `frontend-dev`: add the Pages Function proxy described above.
-- [ ] `backend-dev`: set `sameSite: 'none', secure: true` on the session cookie
-      in `apps/api/src/lib/auth.ts` regardless — needed as an interim fix even
-      before the proxy lands, and harmless once same-origin makes it moot.
-- [ ] `devops` (follow-up task): once the proxy exists, `VITE_API_URL` in step 5
-      can be dropped and `apps/web/vite.config.ts`'s proxy paths become the
-      source of truth for what the Pages Function needs to forward.
-
-**Until the proxy lands:** login may work in some browsers (current Chrome, with
-the cookie fix above applied) and silently fail in others (Safari, Firefox
-private browsing, future Chrome). Don't treat a successful login in one browser
-during testing as proof this is fixed.
-
-## 7. Cloudflare R2 bucket **[one-time, manual, when document storage lands]**
-
-Not needed until the API actually uses R2. When it does:
+Two projects, one per environment — `deploy-staging.yml` and
+`deploy-production.yml` hardcode these names, so both must exist under exactly
+these names before the first deploy:
 
 ```bash
-pnpm dlx wrangler r2 bucket create rms-documents
+pnpm dlx wrangler pages project create rms-web-staging --production-branch=main
+pnpm dlx wrangler pages project create rms-web-production --production-branch=main
 ```
 
-Then uncomment the `r2_buckets` binding in `apps/api/wrangler.jsonc`. A binding
-needs no secret — the Worker talks to R2 through the binding, not an API key.
-If the app later needs presigned URLs via R2's S3-compatible API, that needs its
-own `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` Worker secrets (create an R2 API
-token for those from the R2 dashboard) — add them here when that lands.
+(Or create them in the dashboard: **Workers & Pages → Create → Pages → Direct
+Upload**, named exactly `rms-web-staging` and `rms-web-production`.) Neither needs
+a build step configured in the Pages project itself — the deploy workflows build
+the app and push the static output directly with `wrangler pages deploy`.
 
-## 8. GitHub Secrets
+Then attach each project's custom domain — **wrangler's CLI has no `pages domain`
+command**, this is dashboard-only: **Workers & Pages → \<project\> → Custom
+domains → Set up a domain**.
+
+- `rms-web-staging` → `stg.subodhk.com`
+- `rms-web-production` → `rent.subodhk.com`
+
+The zone from step 1 must be active before this will succeed.
+
+## 6. Resolved: cookies are first-party, not cross-site
+
+Phase 1 ran the API on `*.workers.dev` and the web app on `*.pages.dev` — two
+different registrable domains, making the session cookie third-party, which risked
+browsers silently dropping it (Safari ITP, Chrome's third-party-cookie
+phase-out) regardless of any `SameSite`/`Secure` attribute fix. The fix on the
+table then was a Pages Function proxy to force same-origin.
+
+With `subodhk.com` now in hand, that problem doesn't exist. **Verified, not just
+asserted:**
+
+- "Site," for both `SameSite` cookie enforcement and every browser's third-party-
+  cookie blocking, means *scheme + registrable domain (eTLD+1)* — not full
+  hostname. This is "schemeful same-site," shipped and stable in every evergreen
+  browser engine.
+- `rent.subodhk.com` and `api.subodhk.com` are different **origins** (different
+  hostnames) but the same **site**: both `https://`, both under the registrable
+  domain `subodhk.com`.
+- The `SameSite` attribute only restricts a cookie on **cross-site** requests. For
+  a **same-site** request — even cross-origin, even a `fetch(..., { credentials:
+  'include' })`, even `POST` — the restriction does not apply at all. Better
+  Auth's default session cookie (`SameSite=Lax`, no override currently set in
+  `apps/api/src/lib/auth.ts`) is sent exactly as if it were first-party.
+- Browsers' third-party-cookie blocking (Safari ITP, Chrome's phase-out) is
+  defined over the same "site" boundary. Two subdomains of one registrable domain
+  are first-party to each other by that definition, in every one of those
+  browsers — this is the sanctioned case, not an edge case that might regress.
+- The cookie's own `Domain` attribute (host-only vs. explicit) governs which of
+  `api.subodhk.com`'s own subdomains it's replayed to — irrelevant here, since the
+  browser only ever needs to send it back to `api.subodhk.com` itself, which is
+  exactly where it was set.
+
+**Net result:** no proxy, no `SameSite=None; Secure`, nothing to future-proof.
+CORS (`Access-Control-Allow-Origin` echoing the exact `WEB_ORIGIN`,
+`Access-Control-Allow-Credentials: true`) is still required and already handled —
+see `apps/api/src/index.ts` — but that's an orthogonal, already-solved concern;
+it has nothing to do with `SameSite`.
+
+If the project is ever deployed under a setup where the web app and API are *not*
+same-site again (a different domain for one of them, a white-label domain, etc.),
+re-open this question from scratch — don't assume the reasoning above still holds.
+
+## 7. GitHub Secrets
 
 Settings → Secrets and variables → Actions → **Secrets** tab → **New repository
-secret**. These are read by the workflows in `.github/workflows/`:
+secret**. There are no repository **Variables** anymore — `WEB_ORIGIN` and the
+web app's API base URL used to live there (`--var WEB_ORIGIN:...` at deploy time);
+both are now plain, non-secret, checked-in values (`apps/api/wrangler.jsonc`'s
+`env.staging`/`env.production`, and the `VITE_API_URL` lines in
+`deploy-staging.yml`/`deploy-production.yml`), since the domains are fixed and
+public. If you still see a `WEB_ORIGIN` or `VITE_API_URL` repository Variable from
+before this change, it's dead and can be deleted.
 
 | Secret | Used by | Value |
 |---|---|---|
-| `CLOUDFLARE_API_TOKEN` | deploy.yml (API + Pages deploy) | Token from step 2 |
-| `CLOUDFLARE_ACCOUNT_ID` | deploy.yml (API + Pages deploy) | Account ID from step 2 |
-| `DATABASE_URL` | deploy.yml (migrate step only) | Neon **direct/unpooled** string from step 1 |
+| `CLOUDFLARE_API_TOKEN` | both deploy workflows (API + Pages deploy) | Token from step 3 |
+| `CLOUDFLARE_ACCOUNT_ID` | both deploy workflows (API + Pages deploy) | Account ID from step 3 |
+| `STAGING_DATABASE_URL` | deploy-staging.yml (migrate step only) | Neon **staging branch**, direct/unpooled string (step 2.4) |
+| `PRODUCTION_DATABASE_URL` | deploy-production.yml (migrate step only) | Neon **production**, direct/unpooled string (step 2.2) |
 
-CI (`ci.yml`) needs none of these secrets, and never touches the real database.
-It does now run a **throwaway Postgres** (a `postgres:17-alpine` service
-container, same image as `docker-compose.yml`'s `db`, plus the same Neon HTTP
-proxy sidecar) so `apps/api/src/db/repo/lease.integration.test.ts` and
-`.../portal/lease.integration.test.ts` run instead of silently skipping — see
-that database's own comment block in `ci.yml` for why both pieces are needed.
-Its credentials are hardcoded directly in the workflow file (`rms` /
-`rms_ci_password`), not a GitHub secret: the database exists only for the
-lifetime of one job, is never reachable from outside it, and holds nothing
-real. Nothing to set by hand here.
-(See step 5 above for the two non-secret **variables** deploy.yml also needs.)
+`CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` are shared across both workflows —
+one Cloudflare account, one token, scoped broadly enough (step 3) to deploy both
+environments. The two `*_DATABASE_URL` secrets are **not** shared — that's the
+whole point of having two of them. Get this backwards (staging's secret holding
+production's string) and a migration meant for the throwaway branch runs against
+real data instead.
 
-## 9. Wrangler (Worker) secrets
+CI (`ci.yml`) needs none of these secrets, and never touches the real database. It
+runs a throwaway Postgres service container with hardcoded, disposable credentials
+— see that file's own comments for why. Nothing to set by hand for CI itself.
 
-These are runtime secrets for the deployed Worker, set once directly against
-Cloudflare (not GitHub) with `wrangler secret put <NAME>` from `apps/api/`.
-Safe to run now — step 4 already created `rms-api`, so this sets secrets on an
-existing Worker instead of hitting the create-a-placeholder prompt:
+## 8. Wrangler (Worker) secrets — two stores, not one
+
+`wrangler secret put --env staging` and `wrangler secret put --env production`
+write to **two completely separate secret stores** — one per Worker
+(`rms-api-staging`, `rms-api-production`). Setting a secret on one does nothing
+for the other. **Run every command below twice, once per environment, with the
+right value each time** — this is the obvious mistake to avoid, not a hypothetical
+one.
 
 ```bash
 cd apps/api
-pnpm dlx wrangler secret put DATABASE_URL        # Neon POOLED string
-pnpm dlx wrangler secret put BETTER_AUTH_SECRET   # openssl rand -base64 32
-pnpm dlx wrangler secret put RESEND_API_KEY       # from resend.com → API Keys
+
+# Staging — point DATABASE_URL at the Neon STAGING BRANCH's pooled string (step 2.4)
+pnpm dlx wrangler secret put DATABASE_URL --env staging
+pnpm dlx wrangler secret put BETTER_AUTH_SECRET --env staging   # openssl rand -base64 32
+pnpm dlx wrangler secret put RESEND_API_KEY --env staging       # from resend.com → API Keys
+
+# Production — point DATABASE_URL at Neon PRODUCTION's pooled string (step 2.2)
+pnpm dlx wrangler secret put DATABASE_URL --env production
+pnpm dlx wrangler secret put BETTER_AUTH_SECRET --env production
+pnpm dlx wrangler secret put RESEND_API_KEY --env production
 ```
 
 | Secret | Where to get it |
 |---|---|
-| `DATABASE_URL` | Neon dashboard — the **pooled** connection string (step 1). Different value from the GitHub secret of the same name. |
-| `BETTER_AUTH_SECRET` | Generate locally: `openssl rand -base64 32`. Not derived from anything — just a random value only the Worker and whoever rotates it knows. |
-| `RESEND_API_KEY` | <https://resend.com> → API Keys, after verifying a sending domain. |
+| `DATABASE_URL` (staging) | Neon dashboard → staging branch → Connection Details → **pooled**. Different value from `DATABASE_URL` (production) and from both GitHub secrets. |
+| `DATABASE_URL` (production) | Neon dashboard → production (`main`) branch → Connection Details → **pooled**. |
+| `BETTER_AUTH_SECRET` | Generate locally: `openssl rand -base64 32`. Use a **different** random value for each environment — staging and production sessions should not be forgeable from one secret. Not derived from anything else. |
+| `RESEND_API_KEY` | <https://resend.com> → API Keys, after verifying a sending domain. Using the same key for both environments is fine (Resend doesn't have an environment concept) as long as you're comfortable with staging sending real email — consider a Resend sandbox/test key for staging if not. |
 
-A Worker secret set with `wrangler secret put` persists across deploys — `deploy.yml`
-never sets these, it only runs `wrangler deploy`, which leaves existing secrets alone.
+A Worker secret set with `wrangler secret put` persists across deploys — neither
+deploy workflow ever sets these, they only run `wrangler deploy --env <env>`,
+which leaves existing secrets on that environment's Worker alone.
 
-## 10. First deploy
+## 9. Cloudflare R2 bucket **[one-time, manual, when document storage lands]**
 
-Once steps 1–9 are done:
+Not needed until the API actually uses R2. When it does, create one bucket per
+environment (same reasoning as the database split — a staging upload should never
+be able to touch a production bucket):
+
+```bash
+pnpm dlx wrangler r2 bucket create rms-documents-staging
+pnpm dlx wrangler r2 bucket create rms-documents-production
+```
+
+Then add an `r2_buckets` binding under each of `env.staging` and
+`env.production` in `apps/api/wrangler.jsonc` (not the top level — bindings are
+not inherited between environments), pointing at the matching bucket. A binding
+needs no secret — the Worker talks to R2 through the binding, not an API key. If
+the app later needs presigned URLs via R2's S3-compatible API, that needs its own
+`R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` Worker secrets per environment (create
+an R2 API token for those from the R2 dashboard) — add them to step 8 when that
+lands.
+
+## 10. Release flow
+
+**Staging — automatic, on every push to `main`:**
 
 1. Push to `main` (or merge a PR into it).
 2. `CI` runs: typecheck, lint, test, build.
-3. On success, `Deploy` runs: a variables check, then migrate → deploy API
-   Worker → build and deploy web to Pages.
-   - If step 5's variables aren't set, this fails immediately at "Verify
-     required deploy variables are set" with an `::error::` saying which one —
-     go set it, then re-run the workflow from the Actions tab (or push again).
-     Nothing downstream (migrations included) runs until both are set.
-4. Check **Actions** tab for both workflows green, then hit the Worker's
-   `*.workers.dev` URL and the Pages `*.pages.dev` URL to confirm.
-5. Remember §6: a successful page load does not mean login works in every browser.
+3. On success, `Deploy (staging)` runs: a secrets check, then migrate the Neon
+   staging branch → deploy `rms-api-staging` → build and deploy
+   `rms-web-staging`.
+4. Check the **Actions** tab for both workflows green, then hit
+   `https://stg.subodhk.com` to confirm.
+
+**Production — manual, on a version tag:**
+
+1. Decide what's on `main` right now is what should go to production (it should
+   already be green in staging — that's the point of staging).
+2. Tag it and push the tag:
+   ```bash
+   git tag v2026.01.15
+   git push origin v2026.01.15
+   ```
+   Any `v*` tag works; pick a scheme and stay consistent (a date-based tag like
+   above, or semver — either is fine, this isn't a published package).
+3. `Deploy (production)` runs: CI again (against this exact commit, not
+   whatever `main` is by the time this runs) → a secrets check → migrate
+   production → deploy `rms-api-production` → build and deploy
+   `rms-web-production`.
+4. Check the **Actions** tab, then hit `https://rent.subodhk.com` to confirm.
+5. The tag itself is now the precise rollback target (step 11).
+
+If step 7 or step 8's secrets aren't set, the relevant workflow fails immediately
+at "Verify required deploy secrets are set" with an `::error::` saying which one —
+set it, then re-run the workflow from the Actions tab (or push the branch/tag
+again). Nothing downstream (migrations included) runs until they're set.
 
 ## 11. Rolling back a bad deploy
 
-**API Worker** — Cloudflare keeps every deployed version:
+**API Worker** — Cloudflare keeps every deployed version, per environment:
 
 ```bash
 cd apps/api
-pnpm dlx wrangler deployments list      # find the last-good version ID
-pnpm dlx wrangler rollback <version-id>
+pnpm dlx wrangler deployments list --env production      # find the last-good version ID
+pnpm dlx wrangler rollback <version-id> --env production
 ```
 
-This reverts traffic instantly without a rebuild. Do this first if the bad
-deploy is live and user-facing.
+(Swap `--env production` for `--env staging` to roll back the other one.) This
+reverts traffic instantly without a rebuild. Do this first if the bad deploy is
+live and user-facing.
 
-**Web (Pages)** — every deploy is a preserved, immutable release:
+**Web (Pages)** — every deploy is a preserved, immutable release, per project:
 
-- Dashboard → **Workers & Pages → rms-web → Deployments** → find the last-good
-  one → **⋮ → Rollback to this deployment**.
-- Or redeploy from the last-good commit: `git checkout <good-sha> -- apps/web && pnpm --filter web run build && pnpm dlx wrangler pages deploy apps/web/dist --project-name=rms-web`.
-  (Set `VITE_API_URL` in your shell first — see step 5 — since this bypasses `deploy.yml`.)
+- Dashboard → **Workers & Pages → rms-web-production (or rms-web-staging) →
+  Deployments** → find the last-good one → **⋮ → Rollback to this deployment**.
+- Or redeploy from the last-good tag:
+  ```bash
+  git checkout <last-good-tag> -- apps/web
+  VITE_API_URL=https://api.subodhk.com pnpm --filter web run build
+  pnpm dlx wrangler pages deploy apps/web/dist --project-name=rms-web-production
+  ```
+  (Use `https://api-stg.subodhk.com` and `rms-web-staging` for staging. This
+  bypasses the deploy workflow, so do it only when the workflow itself is the
+  thing that's broken.)
+
+**Production specifically — the tag is the rollback target:** find the last tag
+that was good (`git tag --sort=-creatordate | head`), re-push it as a new tag
+pointing at the same commit if you deleted the old one, or just re-run
+`deploy-production.yml` from the Actions tab against the old tag's already-recorded
+workflow run. Either way, you're never guessing which commit was last good —
+that's the reason production only moves on a tag.
 
 **Database migration** — there is no automatic down-migration. Because
 migrations must be forward-compatible (see `docs/ARCHITECTURE.md` §8 and
-`.claude/agents/devops.md`), a bad migration should almost never require a
-schema rollback — roll back the API Worker to the version that matches the
-*previous* schema instead, and fix the migration forward in a new PR. Only hand-write
-a corrective migration if data was actually corrupted; never edit a migration
-file that has already run in production.
+`.claude/agents/devops.md`), a bad migration should almost never require a schema
+rollback — roll back the API Worker to the version that matches the *previous*
+schema instead, and fix the migration forward in a new PR/tag. Only hand-write a
+corrective migration if data was actually corrupted; never edit a migration file
+that has already run against production. For staging specifically, a Neon branch
+reset (step 2's "Resetting staging from production") is also always an option if
+staging's data gets into a state that isn't worth fixing forward.
 
 ## Secrets summary — who can regenerate what
 
 | Secret | Regenerate by |
 |---|---|
-| `CLOUDFLARE_API_TOKEN` | Re-create in Cloudflare dashboard (step 2); update the GitHub secret |
+| `CLOUDFLARE_API_TOKEN` | Re-create in Cloudflare dashboard (step 3); update the GitHub secret |
 | `CLOUDFLARE_ACCOUNT_ID` | Not sensitive — visible in any dashboard page; static |
-| `DATABASE_URL` (both forms) | Neon dashboard → Connection Details; rotating requires updating both the GitHub secret and the Worker secret |
-| `BETTER_AUTH_SECRET` | Generate a new random value; rotating invalidates all existing sessions |
+| `STAGING_DATABASE_URL` / `PRODUCTION_DATABASE_URL` | Neon dashboard → the matching branch → Connection Details; rotating requires updating the GitHub secret (this is the migrate-time string; see the Worker's own `DATABASE_URL` below for the runtime one) |
+| `DATABASE_URL` (Worker, staging) | Neon dashboard → staging branch → Connection Details (pooled); `wrangler secret put DATABASE_URL --env staging` |
+| `DATABASE_URL` (Worker, production) | Neon dashboard → production branch → Connection Details (pooled); `wrangler secret put DATABASE_URL --env production` |
+| `BETTER_AUTH_SECRET` (either environment) | Generate a new random value; rotating invalidates all existing sessions **on that environment only** |
 | `RESEND_API_KEY` | Resend dashboard → API Keys → revoke and reissue |
-| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | R2 dashboard → Manage API Tokens (only if/when presigned URLs are added) |
+| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | R2 dashboard → Manage API Tokens (only if/when presigned URLs are added; one pair per environment) |

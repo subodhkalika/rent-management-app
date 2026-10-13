@@ -1,10 +1,20 @@
 name: CI
 
-# Runs on every PR and every push to main. No deploy here — see deploy.yml.
+# Runs on every PR and every push to main. No deploy here — see deploy-staging.yml
+# and deploy-production.yml.
+#
+# `workflow_call` makes this file reusable: deploy-production.yml calls it as a job
+# (`uses: ./.github/workflows/ci.yml`) so a version tag gets the exact same
+# typecheck/lint/test/build gate run against the exact tagged commit before
+# anything is migrated or deployed, instead of trusting that main's push already
+# covered it. (`workflow_run` branch filters only match branches, never tags, so
+# chaining off the push-to-main CI run the way deploy-staging.yml does isn't an
+# option for a tag-triggered deploy.)
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_call:
 
 # Cancel a superseded run on the same ref so we don't burn minutes on stale pushes.
 concurrency:

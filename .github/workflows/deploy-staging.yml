@@ -1,0 +1,130 @@
+name: Deploy (staging)
+
+# Fires when the CI workflow finishes on main. workflow_run only ever fires for
+# workflow runs that belong to THIS repository, so a fork PR's "CI" run can never
+# trigger it — forks run their own copy of ci.yml against their own fork, which is
+# a different repository as far as GitHub Actions is concerned.
+#
+# The `branches: [main]` filter matches the run's head branch, and the explicit
+# `event == 'push'` check below rules out a same-repo PR opened from a branch that
+# happens to be named "main". Together this guarantees staging deploys only ever
+# run after a successful CI run of a push to main.
+#
+# Production deploys on a version tag instead — see deploy-production.yml. The
+# `branches:` filter below only ever matches branch pushes, never tags, so a tag
+# push can't accidentally trigger a second (staging) deploy here.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+# Deploys queue instead of cancelling each other — never kill a deploy mid-migration.
+# Every push to main deploys to staging automatically, so this can queue up during a
+# busy day; that's fine, each one just waits its turn.
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Migrate and deploy (staging)
+    runs-on: ubuntu-latest
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    steps:
+      # Fail before touching anything (migrations included) if a required deploy
+      # secret is unset. WEB_ORIGIN and the API's public URL are no longer repo
+      # Variables — both domains are fixed, non-secret config baked straight into
+      # apps/api/wrangler.jsonc (env.staging) and this workflow's "Build web app"
+      # step, now that the project owns subodhk.com. What's left to guard against
+      # missing is the secrets below: deploying without them either 403s against
+      # Cloudflare or runs migrations against nothing.
+      - name: Verify required deploy secrets are set
+        run: |
+          missing=0
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "::error::Repository secret CLOUDFLARE_API_TOKEN is not set. See docs/DEPLOYMENT.md."
+            missing=1
+          fi
+          if [ -z "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then
+            echo "::error::Repository secret CLOUDFLARE_ACCOUNT_ID is not set. See docs/DEPLOYMENT.md."
+            missing=1
+          fi
+          if [ -z "${{ secrets.STAGING_DATABASE_URL }}" ]; then
+            echo "::error::Repository secret STAGING_DATABASE_URL is not set (Neon staging BRANCH, direct/unpooled connection string). Deploying now would either skip migrations or run them against nothing. See docs/DEPLOYMENT.md."
+            missing=1
+          fi
+          if [ "$missing" = "1" ]; then
+            exit 1
+          fi
+
+      # Pin to the exact commit CI validated, not whatever main is when this job starts.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        # No `version:` here on purpose. action-setup v4 errors out if a version is
+        # given AND package.json has `packageManager`, which ours does. Letting it
+        # read packageManager keeps one source of truth and pins the exact version
+        # the lockfile was built with, rather than a floating major.
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Staging's database is a Neon BRANCH of the production project (not a
+      # separate project) — see docs/DEPLOYMENT.md "Neon". STAGING_DATABASE_URL is
+      # that branch's direct/unpooled connection string; drizzle-kit opens a direct
+      # TCP connection to run DDL. A bad migration here only ever touches the
+      # branch, never production's data.
+      - name: Run database migrations (staging branch)
+        working-directory: apps/api
+        run: pnpm run db:migrate
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+
+      # --env staging selects apps/api/wrangler.jsonc's env.staging block: its own
+      # Worker name (rms-api-staging), its own custom domain route
+      # (api-stg.subodhk.com) and its own WEB_ORIGIN (https://stg.subodhk.com) —
+      # all plain, checked-in config now, not injected at deploy time.
+      - name: Deploy API Worker (staging)
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: pnpm
+          workingDirectory: apps/api
+          command: deploy --env staging
+
+      # VITE_API_URL is baked into the static bundle at build time (Vite env vars
+      # are not readable at runtime). Hardcoded here, not a repo Variable: the
+      # staging API's domain is fixed, public, non-secret config.
+      # Must run after "Deploy API Worker (staging)" so the URL it points at is live.
+      - name: Build web app (staging)
+        run: pnpm --filter web run build
+        env:
+          VITE_API_URL: https://api-stg.subodhk.com
+
+      # rms-web-staging must already exist as a Cloudflare Pages project with its
+      # custom domain (stg.subodhk.com) attached — see docs/DEPLOYMENT.md.
+      - name: Deploy web to Cloudflare Pages (staging)
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: pnpm
+          workingDirectory: apps/web
+          command: pages deploy dist --project-name=rms-web-staging

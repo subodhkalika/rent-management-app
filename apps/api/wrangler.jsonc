@@ -6,21 +6,60 @@
   // nodejs_compat gives us the few Node shims Better Auth needs on the edge.
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  // Top-level config is the LOCAL `wrangler dev` default only, plus a harmless
+  // bootstrap target (see docs/DEPLOYMENT.md "Bootstrap"). `env.staging` and
+  // `env.production` below are what CI actually deploys — `name`, `routes` and
+  // `triggers` are NOT inherited from here by named environments in Wrangler
+  // (each must set its own, or get none), so this block only ever affects a bare
+  // `wrangler dev` / `wrangler deploy` run with no `--env` flag.
   "vars": {
-    // Local `wrangler dev` default — the Vite dev server origin. CI's deploy to
-    // production overrides this at deploy time with
-    // `wrangler deploy --var WEB_ORIGIN:<pages-url>` (see .github/workflows/deploy.yml
-    // and docs/DEPLOYMENT.md) rather than hardcoding the production URL here, since
-    // this file also governs local dev.
     "WEB_ORIGIN": "http://localhost:5173"
   },
-  // The daily charge generator (PLAN-PHASE3A.md §5). 09:00 UTC is not load-bearing
-  // — the 31-day lookahead guarantees a month of slack before any period's own due
-  // date, so the hour should not be tuned. `src/index.ts`'s `scheduled` export
-  // (`jobs/scheduled.ts`) is what Workers invokes on this trigger.
-  "triggers": { "crons": ["0 9 * * *"] }
+  // Local-dev-only cron default. GENERATION_LOOKAHEAD_DAYS is 0 — charges are
+  // written on the first day of their own period, not ahead of it — so 09:00 UTC
+  // just needs to land sometime that day; the hour isn't load-bearing. Staging and
+  // production each set their own `triggers` below instead of inheriting this one;
+  // see env.staging's comment for why staging's is deliberately empty.
+  "triggers": { "crons": ["0 9 * * *"] },
+
+  "env": {
+    "staging": {
+      "name": "rms-api-staging",
+      "workers_dev": false,
+      "routes": [{ "pattern": "api-stg.subodhk.com", "custom_domain": true }],
+      "vars": {
+        "WEB_ORIGIN": "https://stg.subodhk.com"
+      },
+      // Deliberately NO cron trigger — this is the decision, not an oversight.
+      // Staging's DATABASE_URL Worker secret is a separate store from production's
+      // (`wrangler secret put --env staging` vs `--env production`) and is meant to
+      // point at a Neon BRANCH of the production project. Generating charges against
+      // that branch would be harmless on its own. The risk is the OTHER failure mode:
+      // if staging's secret is ever mis-set to production's connection string (by
+      // hand, during a "reset staging from production" refresh, or by copy-paste
+      // error), an active staging schedule would silently double-run the daily
+      // charge generator against the real database alongside production's own cron.
+      // Giving staging no schedule at all removes that failure mode structurally
+      // instead of relying on nobody ever mistyping a secret. To exercise the
+      // generator against staging's branch on purpose, invoke it manually:
+      // `wrangler dev --env staging --test-scheduled` (or trigger it from the
+      // Cloudflare dashboard's "Trigger Cron" button on the rms-api-staging Worker).
+      "triggers": { "crons": [] }
+    },
+    "production": {
+      "name": "rms-api-production",
+      "workers_dev": false,
+      "routes": [{ "pattern": "api.subodhk.com", "custom_domain": true }],
+      "vars": {
+        "WEB_ORIGIN": "https://rent.subodhk.com"
+      },
+      "triggers": { "crons": ["0 9 * * *"] }
+    }
+  }
+
   // Secrets (DATABASE_URL, BETTER_AUTH_SECRET, RESEND_API_KEY, R2_*) are set with
-  // `wrangler secret put` — never listed here.
+  // `wrangler secret put --env staging` / `wrangler secret put --env production` —
+  // two different stores, never listed here. See docs/DEPLOYMENT.md.
   //
   // R2 bucket for lease documents and receipts; uncomment once the bucket exists:
   // "r2_buckets": [{ "binding": "DOCS", "bucket_name": "rms-documents" }]

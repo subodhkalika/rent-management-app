@@ -1,0 +1,132 @@
+name: Deploy (production)
+
+# Production moves only when a version tag is pushed — never on every push to
+# main (that's staging's job, see deploy-staging.yml). A tag also gives a precise
+# thing to roll back to: `git push --force` can rewrite main's history, a tag
+# that's already been deployed should not move.
+#
+# Tag your release commit and push the tag to deploy it:
+#   git tag v2026.01.15 && git push origin v2026.01.15
+# Any tag matching v* works; the exact scheme doesn't matter to this workflow.
+on:
+  push:
+    tags:
+      - "v*"
+
+# Deploys queue instead of cancelling each other — never kill a deploy mid-migration.
+# Production releases are infrequent and deliberate, so queuing (rather than
+# cancelling an in-flight one) is always the right call here.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Runs the exact same typecheck/lint/test/build gate as every PR and every push
+  # to main, against the exact commit the tag points at. A tag is assumed to point
+  # at a commit that already passed CI on main, but this does not trust that
+  # assumption — it re-proves it for the specific commit being released, which
+  # costs a few CI minutes on an infrequent path (tags), not on every push.
+  ci:
+    name: CI (tagged commit)
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Migrate and deploy (production)
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      # Fail before touching anything (migrations included) if a required deploy
+      # secret is unset. WEB_ORIGIN and the API's public URL are no longer repo
+      # Variables — both domains are fixed, non-secret config baked straight into
+      # apps/api/wrangler.jsonc (env.production) and this workflow's "Build web
+      # app" step, now that the project owns subodhk.com. What's left to guard
+      # against missing is the secrets below: deploying without them either 403s
+      # against Cloudflare or runs migrations against nothing.
+      - name: Verify required deploy secrets are set
+        run: |
+          missing=0
+          if [ -z "${{ secrets.CLOUDFLARE_API_TOKEN }}" ]; then
+            echo "::error::Repository secret CLOUDFLARE_API_TOKEN is not set. See docs/DEPLOYMENT.md."
+            missing=1
+          fi
+          if [ -z "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then
+            echo "::error::Repository secret CLOUDFLARE_ACCOUNT_ID is not set. See docs/DEPLOYMENT.md."
+            missing=1
+          fi
+          if [ -z "${{ secrets.PRODUCTION_DATABASE_URL }}" ]; then
+            echo "::error::Repository secret PRODUCTION_DATABASE_URL is not set (Neon production project, direct/unpooled connection string). Deploying now would either skip migrations or run them against nothing. See docs/DEPLOYMENT.md."
+            missing=1
+          fi
+          if [ "$missing" = "1" ]; then
+            exit 1
+          fi
+
+      # The tag push is itself the ref — no override needed the way
+      # deploy-staging.yml overrides to workflow_run's head_sha. actions/checkout
+      # defaults to github.ref, which here is the tag.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        # No `version:` here on purpose. action-setup v4 errors out if a version is
+        # given AND package.json has `packageManager`, which ours does. Letting it
+        # read packageManager keeps one source of truth and pins the exact version
+        # the lockfile was built with, rather than a floating major.
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Forward-compatible migrations only (docs/ARCHITECTURE.md §8): the old
+      # Worker version keeps serving traffic for a few seconds against the new
+      # schema before "Deploy API Worker (production)" below replaces it, so a
+      # migration must never drop/rename something the currently-live code reads.
+      - name: Run database migrations (production)
+        working-directory: apps/api
+        run: pnpm run db:migrate
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+
+      # --env production selects apps/api/wrangler.jsonc's env.production block:
+      # its own Worker name (rms-api-production), its own custom domain route
+      # (api.subodhk.com) and its own WEB_ORIGIN (https://rent.subodhk.com) — all
+      # plain, checked-in config now, not injected at deploy time.
+      - name: Deploy API Worker (production)
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: pnpm
+          workingDirectory: apps/api
+          command: deploy --env production
+
+      # VITE_API_URL is baked into the static bundle at build time (Vite env vars
+      # are not readable at runtime). Hardcoded here, not a repo Variable: the
+      # production API's domain is fixed, public, non-secret config.
+      # Must run after "Deploy API Worker (production)" so the URL it points at is
+      # live (a web build calling a route that isn't deployed yet is a broken
+      # deploy — docs/DEPLOYMENT.md).
+      - name: Build web app (production)
+        run: pnpm --filter web run build
+        env:
+          VITE_API_URL: https://api.subodhk.com
+
+      # rms-web-production must already exist as a Cloudflare Pages project with
+      # its custom domain (rent.subodhk.com) attached — see docs/DEPLOYMENT.md.
+      - name: Deploy web to Cloudflare Pages (production)
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: pnpm
+          workingDirectory: apps/web
+          command: pages deploy dist --project-name=rms-web-production
