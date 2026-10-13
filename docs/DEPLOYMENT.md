@@ -8,8 +8,8 @@ once by a human, outside CI, and are not repeated on every deploy.
 | Environment | Web | API | Deploys when |
 |---|---|---|---|
 | **local** | `localhost:5173` (Docker) | `localhost:8787` (Docker) | always on, unrelated to this doc — see `docs/DOCKER.md` |
-| **staging** | `stg.subodhk.com` | `api-stg.subodhk.com` | every push to `main` |
-| **production** | `rent.subodhk.com` | `api.subodhk.com` | a version tag (`v*`) is pushed |
+| **staging** | `gharpages-stage.subodhk.com` | `api-stg.subodhk.com` | every push to `main` |
+| **production** | `gharpages-prod.subodhk.com` | `api.subodhk.com` | a version tag (`v*`) is pushed |
 
 Staging and production are two separate Cloudflare Workers, two separate Cloudflare
 Pages projects, and (critically) two separate Wrangler secret stores. They share one
@@ -171,8 +171,8 @@ Then attach each project's custom domain — **wrangler's CLI has no `pages doma
 command**, this is dashboard-only: **Workers & Pages → \<project\> → Custom
 domains → Set up a domain**.
 
-- `rms-web-staging` → `stg.subodhk.com`
-- `rms-web-production` → `rent.subodhk.com`
+- `rms-web-staging` → `gharpages-stage.subodhk.com`
+- `rms-web-production` → `gharpages-prod.subodhk.com`
 
 The zone from step 1 must be active before this will succeed.
 
@@ -191,7 +191,7 @@ asserted:**
   cookie blocking, means *scheme + registrable domain (eTLD+1)* — not full
   hostname. This is "schemeful same-site," shipped and stable in every evergreen
   browser engine.
-- `rent.subodhk.com` and `api.subodhk.com` are different **origins** (different
+- `gharpages-prod.subodhk.com` and `api.subodhk.com` are different **origins** (different
   hostnames) but the same **site**: both `https://`, both under the registrable
   domain `subodhk.com`.
 - The `SameSite` attribute only restricts a cookie on **cross-site** requests. For
@@ -311,7 +311,7 @@ lands.
    staging branch → deploy `rms-api-staging` → build and deploy
    `rms-web-staging`.
 4. Check the **Actions** tab for both workflows green, then hit
-   `https://stg.subodhk.com` to confirm.
+   `https://gharpages-stage.subodhk.com` to confirm.
 
 **Production — manual, on a version tag:**
 
@@ -328,7 +328,7 @@ lands.
    whatever `main` is by the time this runs) → a secrets check → migrate
    production → deploy `rms-api-production` → build and deploy
    `rms-web-production`.
-4. Check the **Actions** tab, then hit `https://rent.subodhk.com` to confirm.
+4. Check the **Actions** tab, then hit `https://gharpages-prod.subodhk.com` to confirm.
 5. The tag itself is now the precise rollback target (step 11).
 
 If step 7 or step 8's secrets aren't set, the relevant workflow fails immediately

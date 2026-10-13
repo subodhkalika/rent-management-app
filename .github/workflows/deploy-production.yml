@@ -98,7 +98,7 @@ jobs:
 
       # --env production selects apps/api/wrangler.jsonc's env.production block:
       # its own Worker name (rms-api-production), its own custom domain route
-      # (api.subodhk.com) and its own WEB_ORIGIN (https://rent.subodhk.com) — all
+      # (api.subodhk.com) and its own WEB_ORIGIN (https://gharpages-prod.subodhk.com) — all
       # plain, checked-in config now, not injected at deploy time.
       - name: Deploy API Worker (production)
         uses: cloudflare/wrangler-action@v4
@@ -121,7 +121,7 @@ jobs:
           VITE_API_URL: https://api.subodhk.com
 
       # rms-web-production must already exist as a Cloudflare Pages project with
-      # its custom domain (rent.subodhk.com) attached — see docs/DEPLOYMENT.md.
+      # its custom domain (gharpages-prod.subodhk.com) attached — see docs/DEPLOYMENT.md.
       - name: Deploy web to Cloudflare Pages (production)
         uses: cloudflare/wrangler-action@v4
         with:

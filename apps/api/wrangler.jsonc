@@ -28,7 +28,7 @@
       "workers_dev": false,
       "routes": [{ "pattern": "api-stg.subodhk.com", "custom_domain": true }],
       "vars": {
-        "WEB_ORIGIN": "https://stg.subodhk.com"
+        "WEB_ORIGIN": "https://gharpages-stage.subodhk.com"
       },
       // Deliberately NO cron trigger — this is the decision, not an oversight.
       // Staging's DATABASE_URL Worker secret is a separate store from production's
@@ -51,7 +51,7 @@
       "workers_dev": false,
       "routes": [{ "pattern": "api.subodhk.com", "custom_domain": true }],
       "vars": {
-        "WEB_ORIGIN": "https://rent.subodhk.com"
+        "WEB_ORIGIN": "https://gharpages-prod.subodhk.com"
       },
       "triggers": { "crons": ["0 9 * * *"] }
     }
